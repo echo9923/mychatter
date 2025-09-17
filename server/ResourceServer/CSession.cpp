@@ -6,15 +6,13 @@
 #include <json/value.h>
 #include <json/reader.h>
 #include "LogicSystem.h"
-#include "RedisMgr.h"
-#include "ConfigMgr.h"
+
 
 CSession::CSession(boost::asio::io_context& io_context, CServer* server):
 	_socket(io_context), _server(server), _b_close(false),_b_head_parse(false), _user_uid(0){
 	boost::uuids::uuid  a_uuid = boost::uuids::random_generator()();
 	_session_id = boost::uuids::to_string(a_uuid);
 	_recv_head_node = make_shared<MsgNode>(HEAD_TOTAL_LEN);
-	_last_heartbeat = std::time(nullptr);
 }
 CSession::~CSession() {
 	std::cout << "~CSession destruct" << endl;
@@ -39,6 +37,7 @@ int CSession::GetUserId()
 }
 
 void CSession::Start(){
+	std::cout << "session : " << _session_id << " started to read" << std::endl;
 	AsyncReadHead(HEAD_TOTAL_LEN);
 }
 
@@ -77,7 +76,6 @@ void CSession::Send(char* msg, short max_length, short msgid) {
 }
 
 void CSession::Close() {
-	std::lock_guard<std::mutex> lock(_session_mtx);
 	_socket.close();
 	_b_close = true;
 }
@@ -94,7 +92,7 @@ void CSession::AsyncReadBody(int total_len)
 			if (ec) {
 				std::cout << "handle read failed, error is " << ec.what() << endl;
 				Close();
-				DealExceptionSession();
+				_server->ClearSession(_session_id);
 				return;
 			}
 
@@ -106,20 +104,17 @@ void CSession::AsyncReadBody(int total_len)
 				return;
 			}
 
-			//判断连接无效
-			if (!_server->CheckValid(_session_id)) {
-				Close();
-				return;
-			}
-
 			memcpy(_recv_msg_node->_data , _data , bytes_transfered);
 			_recv_msg_node->_cur_len += bytes_transfered;
 			_recv_msg_node->_data[_recv_msg_node->_total_len] = '\0';
 			cout << "receive data is " << _recv_msg_node->_data << endl;
-			//更新session心跳时间
-			UpdateHeartbeat();
+			// 使用 std::hash 对字符串进行哈希
+			std::hash<std::string> hash_fn;
+			size_t hash_value = hash_fn(_session_id); // 生成哈希值
+			int index = hash_value % LOGIC_WORKER_COUNT;
+			std::cout << "Hash value: " << hash_value << std::endl;
 			//此处将消息投递到逻辑队列中
-			LogicSystem::GetInstance()->PostMsgToQue(make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
+			LogicSystem::GetInstance()->PostMsgToQue(make_shared<LogicNode>(shared_from_this(), _recv_msg_node), index);
 			//继续监听头部接受事件
 			AsyncReadHead(HEAD_TOTAL_LEN);
 		}
@@ -137,7 +132,7 @@ void CSession::AsyncReadHead(int total_len)
 			if (ec) {
 				std::cout << "handle read failed, error is " << ec.what() << endl;
 				Close();
-				DealExceptionSession();
+				_server->ClearSession(_session_id);
 				return;
 			}
 
@@ -146,12 +141,6 @@ void CSession::AsyncReadHead(int total_len)
 					<< HEAD_TOTAL_LEN << "]" << endl;
 				Close();
 				_server->ClearSession(_session_id);
-				return;
-			}
-
-			//判断连接无效
-			if (!_server->CheckValid(_session_id)) {
-				Close();
 				return;
 			}
 
@@ -170,10 +159,10 @@ void CSession::AsyncReadHead(int total_len)
 				_server->ClearSession(_session_id);
 				return;
 			}
-			short msg_len = 0;
+			int msg_len = 0;
 			memcpy(&msg_len, _recv_head_node->_data + HEAD_ID_LEN, HEAD_DATA_LEN);
 			//网络字节序转化为本地字节序
-			msg_len = boost::asio::detail::socket_ops::network_to_host_short(msg_len);
+			msg_len = boost::asio::detail::socket_ops::network_to_host_long(msg_len);
 			std::cout << "msg_len is " << msg_len << endl;
 
 			//id非法
@@ -195,7 +184,6 @@ void CSession::AsyncReadHead(int total_len)
 void CSession::HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self) {
 	//增加异常处理
 	try {
-		auto self = shared_from_this();
 		if (!error) {
 			std::lock_guard<std::mutex> lock(_send_lock);
 			//cout << "send data " << _send_que.front()->_data+HEAD_LENGTH << endl;
@@ -209,7 +197,7 @@ void CSession::HandleWrite(const boost::system::error_code& error, std::shared_p
 		else {
 			std::cout << "handle write failed, error is " << error.what() << endl;
 			Close();
-			DealExceptionSession();
+			_server->ClearSession(_session_id);
 		}
 	}
 	catch (std::exception& e) {
@@ -249,72 +237,7 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 	});
 }
 
-void CSession::NotifyOffline(int uid) {
-
-	Json::Value  rtvalue;
-	rtvalue["error"] = ErrorCodes::Success;
-	rtvalue["uid"] = uid;
-
-
-	std::string return_str = rtvalue.toStyledString();
-
-	Send(return_str, ID_NOTIFY_OFF_LINE_REQ);
-	return;
-}
-
 LogicNode::LogicNode(shared_ptr<CSession>  session, 
 	shared_ptr<RecvNode> recvnode):_session(session),_recvnode(recvnode) {
 	
 }
-
-
-bool CSession::IsHeartbeatExpired(std::time_t& now) {
-	double diff_sec = std::difftime(now, _last_heartbeat);
-	if (diff_sec > 20) {
-		std::cout << "heartbeat expired, session id is  " << _session_id << endl;
-		return true;
-	}
-
-	return false;
-}
-
-void CSession::UpdateHeartbeat()
-{
-	time_t now = std::time(nullptr);
-	_last_heartbeat = now;
-}
-
-void CSession::DealExceptionSession()
-{
-	auto self = shared_from_this();
-	//加锁清除session
-	auto uid_str = std::to_string(_user_uid);
-	auto lock_key = LOCK_PREFIX + uid_str;
-	auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-	Defer defer([identifier, lock_key, self, this]() {
-		_server->ClearSession(_session_id);
-		RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
-		});
-
-	if (identifier.empty()) {
-		return;
-	}
-	std::string redis_session_id = "";
-	auto bsuccess = RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, redis_session_id);
-	if (!bsuccess) {
-		return;
-	}
-
-	if (redis_session_id != _session_id) {
-		//说明有客户在其他服务器异地登录了
-		return;
-	}
-
-	RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
-	//清除用户登录信息
-	RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
-	//清除用户token信息
-	std::string token_key = USERTOKENPREFIX + uid_str;
-	RedisMgr::GetInstance()->Del(token_key);
-}
-
