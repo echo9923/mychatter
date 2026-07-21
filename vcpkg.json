@@ -1,0 +1,31 @@
+{
+  "name": "llfcchat",
+  "version-string": "1.0.0",
+  "description": "LLFC chat servers and Qt client",
+  "builtin-baseline": "a51bb4d1434e6d0927ff79db8033bed8522b85df",
+  "dependencies": [
+    "boost-asio",
+    "boost-beast",
+    "boost-date-time",
+    "boost-filesystem",
+    "boost-property-tree",
+    "boost-uuid",
+    "jsoncpp",
+    "grpc",
+    "protobuf",
+    "hiredis",
+    {
+      "name": "mysql-connector-cpp",
+      "features": ["jdbc"]
+    },
+    {
+      "name": "qt5-base",
+      "default-features": false
+    },
+    {
+      "name": "qt5-imageformats",
+      "default-features": false,
+      "features": ["webp"]
+    }
+  ]
+}

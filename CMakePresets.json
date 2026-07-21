@@ -1,0 +1,35 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-ninja",
+      "displayName": "Windows Ninja Multi-Config",
+      "description": "MSVC via VS 2026 Build Tools + Ninja Multi-Config + project vcpkg",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/out/build/windows-ninja",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+        "VCPKG_MANIFEST_DIR": "${sourceDir}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-ninja",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-ninja",
+      "configuration": "Release"
+    }
+  ]
+}
