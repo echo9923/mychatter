@@ -1,4 +1,4 @@
-#include "ChatServiceImpl.h"
+ï»¿#include "ChatServiceImpl.h"
 #include "UserMgr.h"
 #include "CSession.h"
 #include <json/json.h>
@@ -15,7 +15,7 @@ ChatServiceImpl::ChatServiceImpl()
 
 Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendReq* request, AddFriendRsp* reply)
 {
-	//²éÕÒÓÃ»§ÊÇ·ñÔÚ±¾·şÎñÆ÷
+	//æŸ¥æ‰¾ç”¨æˆ·æ˜¯å¦åœ¨æœ¬æœåŠ¡å™¨
 	auto touid = request->touid();
 	auto session = UserMgr::GetInstance()->GetSession(touid);
 
@@ -25,12 +25,12 @@ Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendR
 		reply->set_touid(request->touid());
 		});
 
-	//ÓÃ»§²»ÔÚÄÚ´æÖĞÔòÖ±½Ó·µ»Ø
+	//ç”¨æˆ·ä¸åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥è¿”å›
 	if (session == nullptr) {
 		return Status::OK;
 	}
 	
-	//ÔÚÄÚ´æÖĞÔòÖ±½Ó·¢ËÍÍ¨Öª¶Ô·½
+	//åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥å‘é€é€šçŸ¥å¯¹æ–¹
 	Json::Value  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["applyuid"] = request->applyuid();
@@ -48,7 +48,7 @@ Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendR
 
 Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFriendReq* request,
 	AuthFriendRsp* reply) {
-	//²éÕÒÓÃ»§ÊÇ·ñÔÚ±¾·şÎñÆ÷
+	//æŸ¥æ‰¾ç”¨æˆ·æ˜¯å¦åœ¨æœ¬æœåŠ¡å™¨
 	auto touid = request->touid();
 	auto fromuid = request->fromuid();
 	auto session = UserMgr::GetInstance()->GetSession(touid);
@@ -59,12 +59,12 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
 		reply->set_touid(request->touid());
 		});
 
-	//ÓÃ»§²»ÔÚÄÚ´æÖĞÔòÖ±½Ó·µ»Ø
+	//ç”¨æˆ·ä¸åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥è¿”å›
 	if (session == nullptr) {
 		return Status::OK;
 	}
 
-	//ÔÚÄÚ´æÖĞÔòÖ±½Ó·¢ËÍÍ¨Öª¶Ô·½
+	//åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥å‘é€é€šçŸ¥å¯¹æ–¹
 	Json::Value  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
@@ -104,23 +104,23 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
 
 Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 	const TextChatMsgReq* request, TextChatMsgRsp* reply) {
-	//²éÕÒÓÃ»§ÊÇ·ñÔÚ±¾·şÎñÆ÷
+	//æŸ¥æ‰¾ç”¨æˆ·æ˜¯å¦åœ¨æœ¬æœåŠ¡å™¨
 	auto touid = request->touid();
 	auto session = UserMgr::GetInstance()->GetSession(touid);
 	reply->set_error(ErrorCodes::Success);
 
-	//ÓÃ»§²»ÔÚÄÚ´æÖĞÔòÖ±½Ó·µ»Ø
+	//ç”¨æˆ·ä¸åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥è¿”å›
 	if (session == nullptr) {
 		return Status::OK;
 	}
 
-	//ÔÚÄÚ´æÖĞÔòÖ±½Ó·¢ËÍÍ¨Öª¶Ô·½
+	//åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥å‘é€é€šçŸ¥å¯¹æ–¹
 	Json::Value  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
 	rtvalue["touid"] = request->touid();
 	rtvalue["thread_id"] = request->thread_id();
-	//½«ÁÄÌìÊı¾İ×éÖ¯ÎªÊı×é
+	//å°†èŠå¤©æ•°æ®ç»„ç»‡ä¸ºæ•°ç»„
 	Json::Value text_array;
 	for (auto& msg : request->textmsgs()) {
 		Json::Value element;
@@ -141,7 +141,7 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 
 bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo)
 {
-	//ÓÅÏÈ²éredisÖĞ²éÑ¯ÓÃ»§ĞÅÏ¢
+	//ä¼˜å…ˆæŸ¥redisä¸­æŸ¥è¯¢ç”¨æˆ·ä¿¡æ¯
 	std::string info_str = "";
 	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str);
 	if (b_base) {
@@ -160,8 +160,8 @@ bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr
 			<< userinfo->name << " pwd is " << userinfo->pwd << " email is " << userinfo->email << endl;
 	}
 	else {
-		//redisÖĞÃ»ÓĞÔò²éÑ¯mysql
-		//²éÑ¯Êı¾İ¿â
+		//redisä¸­æ²¡æœ‰åˆ™æŸ¥è¯¢mysql
+		//æŸ¥è¯¢æ•°æ®åº“
 		std::shared_ptr<UserInfo> user_info = nullptr;
 		user_info = MysqlMgr::GetInstance()->GetUser(uid);
 		if (user_info == nullptr) {
@@ -170,7 +170,7 @@ bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr
 
 		userinfo = user_info;
 
-		//½«Êı¾İ¿âÄÚÈİĞ´Èëredis»º´æ
+		//å°†æ•°æ®åº“å†…å®¹å†™å…¥redisç¼“å­˜
 		Json::Value redis_root;
 		redis_root["uid"] = uid;
 		redis_root["pwd"] = userinfo->pwd;
@@ -189,7 +189,7 @@ bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr
 Status ChatServiceImpl::NotifyKickUser(::grpc::ServerContext* context, 
 	const KickUserReq* request, KickUserRsp* reply)
 {
-	//²éÕÒÓÃ»§ÊÇ·ñÔÚ±¾·şÎñÆ÷
+	//æŸ¥æ‰¾ç”¨æˆ·æ˜¯å¦åœ¨æœ¬æœåŠ¡å™¨
 	auto uid = request->uid();
 	auto session = UserMgr::GetInstance()->GetSession(uid);
 
@@ -198,14 +198,14 @@ Status ChatServiceImpl::NotifyKickUser(::grpc::ServerContext* context,
 		reply->set_uid(request->uid());
 		});
 
-	//ÓÃ»§²»ÔÚÄÚ´æÖĞÔòÖ±½Ó·µ»Ø
+	//ç”¨æˆ·ä¸åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥è¿”å›
 	if (session == nullptr) {
 		return Status::OK;
 	}
 
-	//ÔÚÄÚ´æÖĞÔòÖ±½Ó·¢ËÍÍ¨Öª¶Ô·½
+	//åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥å‘é€é€šçŸ¥å¯¹æ–¹
 	session->NotifyOffline(uid);
-	//Çå³ı¾ÉµÄÁ¬½Ó
+	//æ¸…é™¤æ—§çš„è¿æ¥
 	_p_server->ClearSession(session->GetSessionId());
 
 	return Status::OK;
@@ -218,24 +218,24 @@ void ChatServiceImpl::RegisterServer(std::shared_ptr<CServer> pServer)
 
 Status ChatServiceImpl::NotifyChatImgMsg(::grpc::ServerContext* context, const ::message::NotifyChatImgReq* request, ::message::NotifyChatImgRsp* response)
 {
-	//²éÕÒÓÃ»§ÊÇ·ñÔÚ±¾·şÎñÆ÷
+	//æŸ¥æ‰¾ç”¨æˆ·æ˜¯å¦åœ¨æœ¬æœåŠ¡å™¨
 	auto uid = request->to_uid();
 	auto session = UserMgr::GetInstance()->GetSession(uid);
 
 	Defer defer([request, response]() {
-		//ÉèÖÃ¾ßÌåµÄ»Ø°üĞÅÏ¢
+		//è®¾ç½®å…·ä½“çš„å›åŒ…ä¿¡æ¯
 		response->set_error(ErrorCodes::Success);
 		response->set_message_id(request->message_id());
 		});
 
-	//ÓÃ»§²»ÔÚÄÚ´æÖĞÔòÖ±½Ó·µ»Ø
+	//ç”¨æˆ·ä¸åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥è¿”å›
 	if (session == nullptr) {
-		//ÕâÀïÖ»ÊÇ·µ»Ø1¸ö×´Ì¬
+		//è¿™é‡Œåªæ˜¯è¿”å›1ä¸ªçŠ¶æ€
 		return Status::OK;
 	}
 
-	//ÔÚÄÚ´æÖĞÔòÖ±½Ó·¢ËÍÍ¨Öª¶Ô·½
+	//åœ¨å†…å­˜ä¸­åˆ™ç›´æ¥å‘é€é€šçŸ¥å¯¹æ–¹
 	session->NotifyChatImgRecv(request);
-	//ÕâÀïÖ»ÊÇ·µ»Ø1¸ö×´Ì¬
+	//è¿™é‡Œåªæ˜¯è¿”å›1ä¸ªçŠ¶æ€
 	return Status::OK;
 }

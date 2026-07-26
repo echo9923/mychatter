@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include "const.h"
 #include "Singleton.h"
 #include "ConfigMgr.h"
@@ -64,7 +64,7 @@ public:
 			}
 			return !connections_.empty();
 			});
-		//Èç¹ûÍ£Ö¹ÔòÖ±½Ó·µ»Ø¿ÕÖ¸Õë
+		//å¦‚æœåœæ­¢åˆ™ç›´æ¥è¿”å›ç©ºæŒ‡é’ˆ
 		if (b_stop_) {
 			return  nullptr;
 		}

@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <boost/asio.hpp>
 #include "CSession.h"
 #include <memory.h>
@@ -13,7 +13,7 @@ public:
 	CServer(boost::asio::io_context& io_context, short port);
 	~CServer();
 	void ClearSession(std::string);
-	//¸ù¾İuid»ñÈ¡session
+	//æ ¹æ®uidè·å–session
 	shared_ptr<CSession> GetSession(std::string);
 	bool CheckValid(std::string);
 	void on_timer(const boost::system::error_code& ec);

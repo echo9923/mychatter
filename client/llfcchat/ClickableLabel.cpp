@@ -1,4 +1,4 @@
-#include "ClickableLabel.h"
+ï»¿#include "ClickableLabel.h"
 #include <QMouseEvent>
 #include <QPainter>
 // ClickableLabel.cpp
@@ -40,7 +40,7 @@ void ClickableLabel::paintEvent(QPaintEvent* event)
     if (m_showOverlay && !m_overlayIcon.isNull()) {
         QPainter painter(this);
 
-        // »æÖÆ°ëÍ¸Ã÷ÕÚÕÖ
+        // ç»˜åˆ¶åŠé€æ˜é®ç½©
         if (m_hovered) {
             painter.fillRect(rect(), QColor(0, 0, 0, 100));
         }
@@ -48,8 +48,8 @@ void ClickableLabel::paintEvent(QPaintEvent* event)
             painter.fillRect(rect(), QColor(0, 0, 0, 60));
         }
 
-        // »æÖÆÍ¼±ê
-        int iconSize = qMin(width(), height()) / 3; // Í¼±ê´óĞ¡ÎªÍ¼Æ¬µÄ1/3
+        // ç»˜åˆ¶å›¾æ ‡
+        int iconSize = qMin(width(), height()) / 3; // å›¾æ ‡å¤§å°ä¸ºå›¾ç‰‡çš„1/3
         QRect iconRect(
             (width() - iconSize) / 2,
             (height() - iconSize) / 2,

@@ -1,4 +1,4 @@
-#include "RedisMgr.h"
+ï»¿#include "RedisMgr.h"
 #include "const.h"
 #include "ConfigMgr.h"
 RedisMgr::RedisMgr() {
@@ -45,14 +45,14 @@ bool RedisMgr::Get(const std::string& key, std::string& value)
 }
 
 bool RedisMgr::Set(const std::string &key, const std::string &value){
-	//Ö´ÐÐredisÃüÁîÐÐ
+	//æ‰§è¡Œrediså‘½ä»¤è¡Œ
 	auto connect = _con_pool->getConnection();
 	if (connect == nullptr) {
 		return false;
 	}
 	auto reply = (redisReply*)redisCommand(connect, "SET %s %s", key.c_str(), value.c_str());
 
-	//Èç¹û·µ»ØNULLÔòËµÃ÷Ö´ÐÐÊ§°Ü
+	//å¦‚æžœè¿”å›žNULLåˆ™è¯´æ˜Žæ‰§è¡Œå¤±è´¥
 	if (NULL == reply)
 	{
 		std::cout << "Execut command [ SET " << key << "  "<< value << " ] failure ! " << std::endl;
@@ -61,7 +61,7 @@ bool RedisMgr::Set(const std::string &key, const std::string &value){
 		return false;
 	}
 
-	//Èç¹ûÖ´ÐÐÊ§°ÜÔòÊÍ·ÅÁ¬½Ó
+	//å¦‚æžœæ‰§è¡Œå¤±è´¥åˆ™é‡Šæ”¾è¿žæŽ¥
 	if (!(reply->type == REDIS_REPLY_STATUS && (strcmp(reply->str, "OK") == 0 || strcmp(reply->str, "ok") == 0)))
 	{
 		std::cout << "Execut command [ SET " << key << "  " << value << " ] failure ! " << std::endl;
@@ -70,7 +70,7 @@ bool RedisMgr::Set(const std::string &key, const std::string &value){
 		return false;
 	}
 
-	//Ö´ÐÐ³É¹¦ ÊÍ·ÅredisCommandÖ´ÐÐºó·µ»ØµÄredisReplyËùÕ¼ÓÃµÄÄÚ´æ
+	//æ‰§è¡ŒæˆåŠŸ é‡Šæ”¾redisCommandæ‰§è¡ŒåŽè¿”å›žçš„redisReplyæ‰€å ç”¨çš„å†…å­˜
 	freeReplyObject(reply);
 	std::cout << "Execut command [ SET " << key << "  " << value << " ] success ! " << std::endl;
 	_con_pool->returnConnection(connect);

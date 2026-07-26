@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <grpcpp/grpcpp.h>
 #include "message.grpc.pb.h"
 #include "message.pb.h"
@@ -41,12 +41,12 @@ public:
 
 	bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 
-	//½ÓÊÜrpcÌßÈËÇëÇó
+	//æ¥å—rpcè¸¢äººè¯·æ±‚
 	Status NotifyKickUser(::grpc::ServerContext* context,
 		const KickUserReq* request, KickUserRsp* response) override;
 
 	void RegisterServer(std::shared_ptr<CServer> pServer);
-	//½ÓÊÕResource·şÎñÆ÷¶Ë·¢ËÍµÄÍ¼Æ¬ÁÄÌìÍ¨Öª
+	//æ¥æ”¶ResourceæœåŠ¡å™¨ç«¯å‘é€çš„å›¾ç‰‡èŠå¤©é€šçŸ¥
 	virtual ::grpc::Status NotifyChatImgMsg(::grpc::ServerContext* context, const ::message::NotifyChatImgReq* request, ::message::NotifyChatImgRsp* response) override;
 private:
 	std::shared_ptr<CServer> _p_server;

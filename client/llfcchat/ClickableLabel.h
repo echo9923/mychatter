@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <QLabel>
 #include <QWidget>
 #include <QIcon>
@@ -9,8 +9,8 @@ class ClickableLabel :
     Q_OBJECT
 public:
     explicit ClickableLabel(QWidget* parent = nullptr);
-    void setIconOverlay(const QIcon& icon); //ÉèÖÃÕÚÕÖÍ¼±ê
-    void showIconOverlay(bool show);  //ÏÔÊ¾/Òş²ØÕÚÕÖÍ¼±ê
+    void setIconOverlay(const QIcon& icon); //è®¾ç½®é®ç½©å›¾æ ‡
+    void showIconOverlay(bool show);  //æ˜¾ç¤º/éšè—é®ç½©å›¾æ ‡
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void enterEvent(QEvent* event) override;

@@ -1,11 +1,11 @@
-
+ï»¿
 #include "utils.h"
 
 std::string getCurrentTimestamp() {
     namespace pt = boost::posix_time;
-    // È¡µ±Ç°±¾µØÊ±¼ä£¨¾«È·µ½Ãë£©
+    // å–å½“å‰æœ¬åœ°æ—¶é—´ï¼ˆç²¾ç¡®åˆ°ç§’ï¼‰
     pt::ptime now = pt::second_clock::local_time();
-    // ÓÃ time_facet Ö¸¶¨¸ñÊ½
+    // ç”¨ time_facet æŒ‡å®šæ ¼å¼
     std::ostringstream oss;
     static std::locale loc(std::locale::classic(),
         new pt::time_facet("%Y-%m-%d %H:%M:%S"));

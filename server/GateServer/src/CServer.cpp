@@ -1,4 +1,4 @@
-#include "CServer.h"
+ï»¿#include "CServer.h"
 #include <iostream>
 #include "HttpConnection.h"
 #include "AsioIOServicePool.h"
@@ -14,15 +14,15 @@ void CServer::Start()
 	std::shared_ptr<HttpConnection> new_con = std::make_shared<HttpConnection>(io_context);
 	_acceptor.async_accept(new_con->GetSocket(), [self, new_con](beast::error_code ec) {
 		try {
-			//³ö´íÔò·ÅÆúÕâ¸öÁ¬½Ó£¬¼ÌÐø¼àÌýÐÂÁ´½Ó
+			//å‡ºé”™åˆ™æ”¾å¼ƒè¿™ä¸ªè¿žæŽ¥ï¼Œç»§ç»­ç›‘å¬æ–°é“¾æŽ¥
 			if (ec) {
 				self->Start();
 				return;
 			}
 
-			//´¦ÀíÐÂÁ´½Ó£¬´´½¨HpptConnectionÀà¹ÜÀíÐÂÁ¬½Ó
+			//å¤„ç†æ–°é“¾æŽ¥ï¼Œåˆ›å»ºHpptConnectionç±»ç®¡ç†æ–°è¿žæŽ¥
 			new_con->Start();
-			//¼ÌÐø¼àÌý
+			//ç»§ç»­ç›‘å¬
 			self->Start();
 		}
 		catch (std::exception& exp) {

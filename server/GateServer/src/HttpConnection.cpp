@@ -1,10 +1,10 @@
-#include "HttpConnection.h"
+﻿#include "HttpConnection.h"
 #include "LogicSystem.h"
 HttpConnection::HttpConnection(boost::asio::io_context& ioc)
 	: _socket(ioc) {
 }
 
-//�������������ӵ����ݽ�������
+//开启监听该链接的数据接受请求
 void HttpConnection::Start()
 {
 	auto self = shared_from_this();
@@ -16,7 +16,7 @@ void HttpConnection::Start()
 					return;
 				}
 
-				//��������������
+				//处理读到的数据
 
 				boost::ignore_unused(bytes_transferred);
 				self->HandleReq();
@@ -29,13 +29,13 @@ void HttpConnection::Start()
 	);
 }
 
-//char תΪ16����
+//char 转为16进制
 unsigned char ToHex(unsigned char x)
 {
 	return  x > 9 ? x + 55 : x + 48;
 }
 
-//16����תΪchar
+//16进制转为char
 unsigned char FromHex(unsigned char x)
 {
 	unsigned char y;
@@ -52,18 +52,18 @@ std::string UrlEncode(const std::string& str)
 	size_t length = str.length();
 	for (size_t i = 0; i < length; i++)
 	{
-		//�ж��Ƿ�������ֺ���ĸ����
+		//判断是否仅有数字和字母构成
 		if (isalnum((unsigned char)str[i]) ||
 			(str[i] == '-') ||
 			(str[i] == '_') ||
 			(str[i] == '.') ||
 			(str[i] == '~'))
 			strTemp += str[i];
-		else if (str[i] == ' ') //Ϊ���ַ�
+		else if (str[i] == ' ') //为空字符
 			strTemp += "+";
 		else
 		{
-			//�����ַ���Ҫ��ǰ��%���Ҹ���λ�͵���λ�ֱ�תΪ16����
+			//其他字符需要提前加%并且高四位和低四位分别转为16进制
 			strTemp += '%';
 			strTemp += ToHex((unsigned char)str[i] >> 4);
 			strTemp += ToHex((unsigned char)str[i] & 0x0F);
@@ -78,9 +78,9 @@ std::string UrlDecode(const std::string& str)
 	size_t length = str.length();
 	for (size_t i = 0; i < length; i++)
 	{
-		//��ԭ+Ϊ��
+		//还原+为空
 		if (str[i] == '+') strTemp += ' ';
-		//����%������������ַ���16����תΪchar��ƴ��
+		//遇到%将后面的两个字符从16进制转为char再拼接
 		else if (str[i] == '%')
 		{
 			assert(i + 2 < length);
@@ -94,9 +94,9 @@ std::string UrlDecode(const std::string& str)
 }
 
 void HttpConnection::PreParseGetParam() {
-	// ��ȡ URI  
+	// 提取 URI  
 	auto uri = _request.target();
-	// ���Ҳ�ѯ�ַ����Ŀ�ʼλ�ã��� '?' ��λ�ã�  
+	// 查找查询字符串的开始位置（即 '?' 的位置）  
 	auto query_pos = uri.find('?');
 	if (query_pos == std::string::npos) {
 		_get_url = uri;
@@ -112,13 +112,13 @@ void HttpConnection::PreParseGetParam() {
 		auto pair = query_string.substr(0, pos);
 		size_t eq_pos = pair.find('=');
 		if (eq_pos != std::string::npos) {
-			key = UrlDecode(pair.substr(0, eq_pos)); // ������ url_decode ����������URL����  
+			key = UrlDecode(pair.substr(0, eq_pos)); // 假设有 url_decode 函数来处理URL解码  
 			value = UrlDecode(pair.substr(eq_pos + 1));
 			_get_params[key] = value;
 		}
 		query_string.erase(0, pos + 1);
 	}
-	// �������һ�������ԣ����û�� & �ָ�����  
+	// 处理最后一个参数对（如果没有 & 分隔符）  
 	if (!query_string.empty()) {
 		size_t eq_pos = query_string.find('=');
 		if (eq_pos != std::string::npos) {
@@ -129,47 +129,68 @@ void HttpConnection::PreParseGetParam() {
 	}
 }
 
-//����http����
+//处理http请求
 void HttpConnection::HandleReq() {
-	//���ð汾
+	// 设置HTTP响应版本，与请求版本保持一致
 	_response.version(_request.version());
-	//����Ϊ������
+	// 设置为短连接（不保持连接）
 	_response.keep_alive(false);
-	// ����������Դ���ʣ�����ȫ��������ʵ��Ӧ����Ӧ������Դ��
+	// 允许所有来源访问（CORS跨域设置，实际生产环境中应限制具体的来源以保证安全）
 	_response.set(boost::beast::http::field::access_control_allow_origin, "*");
+	
+	// 处理 GET 请求
 	if (_request.method() == http::verb::get) {
+		// 解析 GET 请求的 URL 路径和查询参数
 		PreParseGetParam();
+		// 调用逻辑系统处理 GET 请求，传入解析后的 URL 和当前连接对象的共享指针
 		bool success = LogicSystem::GetInstance()->HandleGet(_get_url, shared_from_this());
+		// 如果逻辑系统处理失败（例如未找到对应的路由）
 		if (!success) {
+			// 设置 HTTP 状态码为 404 Not Found
 			_response.result(http::status::not_found);
+			// 设置响应内容类型为纯文本
 			_response.set(http::field::content_type, "text/plain");
+			// 将错误信息写入响应体
 			beast::ostream(_response.body()) << "url not found\r\n";
+			// 异步发送响应给客户端
 			WriteResponse();
 			return;
 		}
 
+		// 处理成功，设置 HTTP 状态码为 200 OK
 		_response.result(http::status::ok);
+		// 设置响应头中的 Server 字段
 		_response.set(http::field::server, "GateServer");
+		// 异步发送响应给客户端
 		WriteResponse();
 		return;
 	}
 
+	// 处理 POST 请求
 	if (_request.method() == http::verb::post) {
+		// 调用逻辑系统处理 POST 请求，传入请求的目标路径（target）和当前连接对象的共享指针
 		bool success = LogicSystem::GetInstance()->HandlePost(_request.target(), shared_from_this());
+		// 如果逻辑系统处理失败（例如未找到对应的路由）
 		if (!success) {
+			// 设置 HTTP 状态码为 404 Not Found
 			_response.result(http::status::not_found);
+			// 设置响应内容类型为纯文本
 			_response.set(http::field::content_type, "text/plain");
+			// 将错误信息写入响应体
 			beast::ostream(_response.body()) << "url not found\r\n";
+			// 异步发送响应给客户端
 			WriteResponse();
 			return;
 		}
 
+		// 处理成功，设置 HTTP 状态码为 200 OK
 		_response.result(http::status::ok);
+		// 设置响应头中的 Server 字段
 		_response.set(http::field::server, "GateServer");
+		// 异步发送响应给客户端
 		WriteResponse();
 		return;
 	}
-
 }
 
 void HttpConnection::CheckDeadline() {

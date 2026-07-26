@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include "const.h"
 #include <thread>
 
@@ -18,9 +18,9 @@ public:
 				sql::mysql::MySQL_Driver* driver = sql::mysql::get_mysql_driver_instance();
 				auto*  con = driver->connect(url_, user_, pass_);
 				con->setSchema(schema_);
-				// »ñÈ¡µ±Ç°Ê±¼ä´Á
+				// è·å–å½“å‰æ—¶é—´æˆ³
 				auto currentTime = std::chrono::system_clock::now().time_since_epoch();
-				// ½«Ê±¼ä´Á×ª»»ÎªÃë
+				// å°†æ—¶é—´æˆ³è½¬æ¢ä¸ºç§’
 				long long timestamp = std::chrono::duration_cast<std::chrono::seconds>(currentTime).count();
 				pool_.push(std::make_unique<SqlConnection>(con, timestamp));
 			}
@@ -35,23 +35,23 @@ public:
 			_check_thread.detach();
 		}
 		catch (sql::SQLException& e) {
-			// ´¦ÀíÒì³£
+			// å¤„ç†å¼‚å¸¸
 			std::cout << "mysql pool init failed, error is " << e.what()<< std::endl;
 		}
 	}
 
 	void checkConnectionPro() {
-		// 1)ÏÈ¶ÁÈ¡¡°Ä¿±ê´¦ÀíÊı¡±
+		// 1)å…ˆè¯»å–â€œç›®æ ‡å¤„ç†æ•°â€
 		size_t targetCount;
 		{
 			std::lock_guard<std::mutex> guard(mutex_);
 			targetCount = pool_.size();
 		}
 
-		//2 µ±Ç°ÒÑ¾­´¦ÀíµÄÊıÁ¿
+		//2 å½“å‰å·²ç»å¤„ç†çš„æ•°é‡
 		size_t processed = 0;
 
-		//3 Ê±¼ä´Á
+		//3 æ—¶é—´æˆ³
 		auto now = std::chrono::system_clock::now().time_since_epoch();
 		long long timestamp = std::chrono::duration_cast<std::chrono::seconds>(now).count();
 
@@ -67,7 +67,7 @@ public:
 			}
 
 			bool healthy = true;
-			//½âËøºó×ö¼ì²é/ÖØÁ¬Âß¼­
+			//è§£é”ååšæ£€æŸ¥/é‡è¿é€»è¾‘
 			if (timestamp - con->_last_oper_time >= 5) {
 				try {
 					std::unique_ptr<sql::Statement> stmt(con->_con->createStatement());
@@ -129,9 +129,9 @@ public:
 	void checkConnection() {
 		std::lock_guard<std::mutex> guard(mutex_);
 		int poolsize = pool_.size();
-		// »ñÈ¡µ±Ç°Ê±¼ä´Á
+		// è·å–å½“å‰æ—¶é—´æˆ³
 		auto currentTime = std::chrono::system_clock::now().time_since_epoch();
-		// ½«Ê±¼ä´Á×ª»»ÎªÃë
+		// å°†æ—¶é—´æˆ³è½¬æ¢ä¸ºç§’
 		long long timestamp = std::chrono::duration_cast<std::chrono::seconds>(currentTime).count();
 		for (int i = 0; i < poolsize; i++) {
 			auto con = std::move(pool_.front());
@@ -152,7 +152,7 @@ public:
 			}
 			catch (sql::SQLException& e) {
 				std::cout << "Error keeping connection alive: " << e.what() << std::endl;
-				// ÖØĞÂ´´½¨Á¬½Ó²¢Ìæ»»¾ÉµÄÁ¬½Ó
+				// é‡æ–°åˆ›å»ºè¿æ¥å¹¶æ›¿æ¢æ—§çš„è¿æ¥
 				sql::mysql::MySQL_Driver* driver = sql::mysql::get_mysql_driver_instance();
 				auto* newcon = driver->connect(url_, user_, pass_);
 				newcon->setSchema(schema_);

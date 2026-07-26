@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <fstream>  
 #include <boost/property_tree/ptree.hpp>  
 #include <boost/property_tree/ini_parser.hpp>  
@@ -30,7 +30,7 @@ struct SectionInfo {
 		if (_section_datas.find(key) == _section_datas.end()) {
 			return "";
 		}
-		// ÕâÀï¿ÉÒÔÌí¼ÓÒ»Ğ©±ß½ç¼ì²é  
+		// è¿™é‡Œå¯ä»¥æ·»åŠ ä¸€äº›è¾¹ç•Œæ£€æŸ¥  
 		return _section_datas[key];
 	}
 
@@ -38,7 +38,7 @@ struct SectionInfo {
 		if (_section_datas.find(key) == _section_datas.end()) {
 			return "";
 		}
-		// ÕâÀï¿ÉÒÔÌí¼ÓÒ»Ğ©±ß½ç¼ì²é  
+		// è¿™é‡Œå¯ä»¥æ·»åŠ ä¸€äº›è¾¹ç•Œæ£€æŸ¥  
 		return _section_datas[key];
 	}
 };
@@ -77,7 +77,7 @@ public:
 	std::string GetValue(const std::string& section, const std::string & key);
 private:
 	ConfigMgr();
-	// ´æ´¢sectionºÍkey-value¶ÔµÄmap  
+	// å­˜å‚¨sectionå’Œkey-valueå¯¹çš„map  
 	std::map<std::string, SectionInfo> _config_map;
 };
 
