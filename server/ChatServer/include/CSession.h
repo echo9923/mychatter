@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <boost/asio.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <boost/uuid/uuid_generators.hpp>
@@ -43,11 +43,11 @@ public:
 	void AsyncReadHead(int total_len);
 	void NotifyOffline(int uid);
 	void NotifyChatImgRecv(const ::message::NotifyChatImgReq* request);
-	//ÅĞ¶ÏĞÄÌøÊÇ·ñ¹ıÆÚ
+	//åˆ¤æ–­å¿ƒè·³æ˜¯å¦è¿‡æœŸ
 	bool IsHeartbeatExpired(std::time_t& now);
-	//¸üĞÂĞÄÌø
+	//æ›´æ–°å¿ƒè·³
 	void UpdateHeartbeat();
-	//´¦ÀíÒì³£Á¬½Ó
+	//å¤„ç†å¼‚å¸¸è¿æ¥
 	void DealExceptionSession();
 private:
 	void asyncReadFull(std::size_t maxLength, std::function<void(const boost::system::error_code& , std::size_t)> handler);
@@ -63,15 +63,15 @@ private:
 	bool _b_close;
 	std::queue<shared_ptr<SendNode> > _send_que;
 	std::mutex _send_lock;
-	//ÊÕµ½µÄÏûÏ¢½á¹¹
+	//æ”¶åˆ°çš„æ¶ˆæ¯ç»“æ„
 	std::shared_ptr<RecvNode> _recv_msg_node;
 	bool _b_head_parse;
-	//ÊÕµ½µÄÍ·²¿½á¹¹
+	//æ”¶åˆ°çš„å¤´éƒ¨ç»“æ„
 	std::shared_ptr<MsgNode> _recv_head_node;
 	int _user_uid;
-	//¼ÇÂ¼ÉÏ´Î½ÓÊÜÊı¾İµÄÊ±¼ä
+	//è®°å½•ä¸Šæ¬¡æ¥å—æ•°æ®çš„æ—¶é—´
 	std::atomic<time_t> _last_heartbeat;
-	//session Ëø
+	//session é”
 	std::mutex _session_mtx;
 };
 

@@ -1,22 +1,22 @@
-#include "ConfigMgr.h"
+ï»¿#include "ConfigMgr.h"
 ConfigMgr::ConfigMgr(){
-	// »ñÈ¡µ±Ç°¹¤×÷Ä¿Â¼  
+	// è·å–å½“å‰å·¥ä½œç›®å½•  
 	boost::filesystem::path current_path = boost::filesystem::current_path();
-	// ¹¹½¨config.iniÎÄ¼şµÄÍêÕûÂ·¾¶  
+	// æ„å»ºconfig.iniæ–‡ä»¶çš„å®Œæ•´è·¯å¾„  
 	boost::filesystem::path config_path = current_path / "config.ini";
 	std::cout << "Config path: " << config_path << std::endl;
 
-	// Ê¹ÓÃBoost.PropertyTreeÀ´¶ÁÈ¡INIÎÄ¼ş  
+	// ä½¿ç”¨Boost.PropertyTreeæ¥è¯»å–INIæ–‡ä»¶  
 	boost::property_tree::ptree pt;
 	boost::property_tree::read_ini(config_path.string(), pt);
 
 
-	// ±éÀúINIÎÄ¼şÖĞµÄËùÓĞsection  
+	// éå†INIæ–‡ä»¶ä¸­çš„æ‰€æœ‰section  
 	for (const auto& section_pair : pt) {
 		const std::string& section_name = section_pair.first;
 		const boost::property_tree::ptree& section_tree = section_pair.second;
 
-		// ¶ÔÓÚÃ¿¸ösection£¬±éÀúÆäËùÓĞµÄkey-value¶Ô  
+		// å¯¹äºæ¯ä¸ªsectionï¼Œéå†å…¶æ‰€æœ‰çš„key-valueå¯¹  
 		std::map<std::string, std::string> section_config;
 		for (const auto& key_value_pair : section_tree) {
 			const std::string& key = key_value_pair.first;
@@ -25,11 +25,11 @@ ConfigMgr::ConfigMgr(){
 		}
 		SectionInfo sectionInfo;
 		sectionInfo._section_datas = section_config;
-		// ½«sectionµÄkey-value¶Ô±£´æµ½config_mapÖĞ  
+		// å°†sectionçš„key-valueå¯¹ä¿å­˜åˆ°config_mapä¸­  
 		_config_map[section_name] = sectionInfo;
 	}
 
-	// Êä³öËùÓĞµÄsectionºÍkey-value¶Ô  
+	// è¾“å‡ºæ‰€æœ‰çš„sectionå’Œkey-valueå¯¹  
 	for (const auto& section_entry : _config_map) {
 		const std::string& section_name = section_entry.first;
 		SectionInfo section_config = section_entry.second;
@@ -58,7 +58,7 @@ boost::filesystem::path ConfigMgr::GetFileOutPath()
 
 void ConfigMgr::InitPath()
 {
-	// »ñÈ¡µ±Ç°¹¤×÷Ä¿Â¼  
+	// è·å–å½“å‰å·¥ä½œç›®å½•  
 	boost::filesystem::path current_path = boost::filesystem::current_path();
 	std::string bindir = _config_map["Output"].GetValue("Path");
 	std::string staticdir = _config_map["Static"].GetValue("Path");
@@ -66,17 +66,17 @@ void ConfigMgr::InitPath()
 	_bin_path = current_path / bindir;
 
 
-	// ¼ì²éÂ·¾¶ÊÇ·ñ´æÔÚ
+	// æ£€æŸ¥è·¯å¾„æ˜¯å¦å­˜åœ¨
 	if (!boost::filesystem::exists(_static_path)) {
-		// Èç¹ûÂ·¾¶²»´æÔÚ£¬´´½¨Ëü
+		// å¦‚æœè·¯å¾„ä¸å­˜åœ¨ï¼Œåˆ›å»ºå®ƒ
 		if (boost::filesystem::create_directories(_static_path)) {
-			std::cout << "Â·¾¶ÒÑ³É¹¦´´½¨: " << _static_path.string() << std::endl;
+			std::cout << "è·¯å¾„å·²æˆåŠŸåˆ›å»º: " << _static_path.string() << std::endl;
 		}
 		else {
-			std::cerr << "´´½¨Â·¾¶Ê§°Ü: " << _static_path.string() << std::endl;
+			std::cerr << "åˆ›å»ºè·¯å¾„å¤±è´¥: " << _static_path.string() << std::endl;
 		}
 	}
 	else {
-		std::cout << "Â·¾¶ÒÑ´æÔÚ: " << _static_path.string() << std::endl;
+		std::cout << "è·¯å¾„å·²å­˜åœ¨: " << _static_path.string() << std::endl;
 	}
 }

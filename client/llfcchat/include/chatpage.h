@@ -1,4 +1,4 @@
-#ifndef CHATPAGE_H
+ï»¿#ifndef CHATPAGE_H
 #define CHATPAGE_H
 
 #include <QWidget>
@@ -33,9 +33,9 @@ private slots:
 
     void on_receive_btn_clicked();
 
-    //½ÓÊÕPictureBubble´«»ØÀ´µÄÔİÍ£ĞÅºÅ
+    //æ¥æ”¶PictureBubbleä¼ å›æ¥çš„æš‚åœä¿¡å·
     void on_clicked_paused(QString unique_name, TransferType transfer_type);
-    //½ÓÊÕPictureBubble´«»ØÀ´µÄ¼ÌĞøĞÅºÅ
+    //æ¥æ”¶PictureBubbleä¼ å›æ¥çš„ç»§ç»­ä¿¡å·
     void on_clicked_resume(QString unique_name, TransferType transfer_type);
 
 private:
@@ -43,9 +43,9 @@ private:
     Ui::ChatPage *ui;
     std::shared_ptr<ChatThreadData> _chat_data;
     QMap<QString, QWidget*>  _bubble_map;
-    //¹ÜÀíÎ´»Ø¸´ÁÄÌìĞÅÏ¢
+    //ç®¡ç†æœªå›å¤èŠå¤©ä¿¡æ¯
     QHash<QString, ChatItemBase*> _unrsp_item_map;
-    //¹ÜÀíÒÑ¾­»Ø¸´µÄÏûÏ¢
+    //ç®¡ç†å·²ç»å›å¤çš„æ¶ˆæ¯
     QHash<qint64, ChatItemBase*> _base_item_map;
 };
 

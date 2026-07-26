@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <thread>
 #include <mutex>
 #include <queue>
@@ -32,7 +32,7 @@ struct FileTask {
 	int _trans_size ;
 	int _last ;
 	std::string _file_data;
-	std::function<void(const Json::Value&)>  _callback;  //Ìí¼Ó»Øµ÷º¯Êý
+	std::function<void(const Json::Value&)>  _callback;  //æ·»åŠ å›žè°ƒå‡½æ•°
 	int _chat_msg_id;
 	int _sender;
 	int _receiver;
@@ -52,7 +52,7 @@ struct DownloadTask {
 	int _seq;
 	std::string _name;
 	std::string _file_path;
-	std::function<void(const Json::Value&)>  _callback;  //Ìí¼Ó»Øµ÷º¯Êý
+	std::function<void(const Json::Value&)>  _callback;  //æ·»åŠ å›žè°ƒå‡½æ•°
 };
 
 class FileWorker

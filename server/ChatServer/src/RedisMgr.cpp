@@ -1,4 +1,4 @@
-#include "RedisMgr.h"
+ï»¿#include "RedisMgr.h"
 #include "const.h"
 #include "ConfigMgr.h"
 #include "DistLock.h"
@@ -46,14 +46,14 @@ bool RedisMgr::Get(const std::string& key, std::string& value)
 }
 
 bool RedisMgr::Set(const std::string &key, const std::string &value){
-	//Ö´ÐÐredisÃüÁîÐÐ
+	//æ‰§è¡Œrediså‘½ä»¤è¡Œ
 	auto connect = _con_pool->getConnection();
 	if (connect == nullptr) {
 		return false;
 	}
 	auto reply = (redisReply*)redisCommand(connect, "SET %s %s", key.c_str(), value.c_str());
 
-	//Èç¹û·µ»ØNULLÔòËµÃ÷Ö´ÐÐÊ§°Ü
+	//å¦‚æžœè¿”å›žNULLåˆ™è¯´æ˜Žæ‰§è¡Œå¤±è´¥
 	if (NULL == reply)
 	{
 		std::cout << "Execut command [ SET " << key << "  "<< value << " ] failure ! " << std::endl;
@@ -62,7 +62,7 @@ bool RedisMgr::Set(const std::string &key, const std::string &value){
 		return false;
 	}
 
-	//Èç¹ûÖ´ÐÐÊ§°ÜÔòÊÍ·ÅÁ¬½Ó
+	//å¦‚æžœæ‰§è¡Œå¤±è´¥åˆ™é‡Šæ”¾è¿žæŽ¥
 	if (!(reply->type == REDIS_REPLY_STATUS && (strcmp(reply->str, "OK") == 0 || strcmp(reply->str, "ok") == 0)))
 	{
 		std::cout << "Execut command [ SET " << key << "  " << value << " ] failure ! " << std::endl;
@@ -71,7 +71,7 @@ bool RedisMgr::Set(const std::string &key, const std::string &value){
 		return false;
 	}
 
-	//Ö´ÐÐ³É¹¦ ÊÍ·ÅredisCommandÖ´ÐÐºó·µ»ØµÄredisReplyËùÕ¼ÓÃµÄÄÚ´æ
+	//æ‰§è¡ŒæˆåŠŸ é‡Šæ”¾redisCommandæ‰§è¡ŒåŽè¿”å›žçš„redisReplyæ‰€å ç”¨çš„å†…å­˜
 	freeReplyObject(reply);
 	std::cout << "Execut command [ SET " << key << "  " << value << " ] success ! " << std::endl;
 	_con_pool->returnConnection(connect);
@@ -396,12 +396,12 @@ void RedisMgr::IncreaseCount(std::string server_name)
 {
 	auto lock_key = LOCK_COUNT;
 	auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-	//ÀûÓÃdefer½âËø
+	//åˆ©ç”¨deferè§£é”
 	Defer defer2([this, identifier, lock_key]() {
 		RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
 		});
 
-	//½«µÇÂ¼ÊýÁ¿Ôö¼Ó
+	//å°†ç™»å½•æ•°é‡å¢žåŠ 
 	auto rd_res = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, server_name);
 	int count = 0;
 	if (!rd_res.empty()) {
@@ -417,12 +417,12 @@ void RedisMgr::DecreaseCount(std::string server_name)
 {
 	auto lock_key = LOCK_COUNT;
 	auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-	//ÀûÓÃdefer½âËø
+	//åˆ©ç”¨deferè§£é”
 	Defer defer2([this, identifier, lock_key]() {
 		RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
 		});
 
-	//½«µÇÂ¼ÊýÁ¿¼õÉÙ
+	//å°†ç™»å½•æ•°é‡å‡å°‘
 	auto rd_res = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, server_name);
 	int count = 0;
 	if (!rd_res.empty()) {
@@ -441,7 +441,7 @@ void RedisMgr::DecreaseCount(std::string server_name)
 void RedisMgr::InitCount(std::string server_name) {
 	auto lock_key = LOCK_COUNT;
 	auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-	//ÀûÓÃdefer½âËø
+	//åˆ©ç”¨deferè§£é”
 	Defer defer2([this, identifier, lock_key]() {
 		RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
 		});
@@ -452,7 +452,7 @@ void RedisMgr::InitCount(std::string server_name) {
 void RedisMgr::DelCount(std::string server_name) {
 	auto lock_key = LOCK_COUNT;
 	auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-	//ÀûÓÃdefer½âËø
+	//åˆ©ç”¨deferè§£é”
 	Defer defer2([this, identifier, lock_key]() {
 		RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
 		});

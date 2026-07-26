@@ -1,4 +1,4 @@
-#include "FileWorker.h"
+ï»¿#include "FileWorker.h"
 #include "CSession.h"
 #include <json/json.h>
 #include <json/value.h>
@@ -49,7 +49,7 @@ FileWorker::~FileWorker()
 void FileWorker::RegisterHandlers()
 {
 	_handlers[ID_UPLOAD_FILE_REQ] = [this](std::shared_ptr<FileTask> task) {
-		// ½âÂë
+		// è§£ç 
 		std::string decoded = base64_decode(task->_file_data);
 
 		auto file_path_str = task->_path;
@@ -58,7 +58,7 @@ void FileWorker::RegisterHandlers()
 
 		boost::filesystem::path file_path(file_path_str);
 		boost::filesystem::path dir_path = file_path.parent_path();
-		// »ñÈ¡ÍêÕûÎÄ¼şÃû£¨°üº¬À©Õ¹Ãû£©
+		// è·å–å®Œæ•´æ–‡ä»¶åï¼ˆåŒ…å«æ‰©å±•åï¼‰
 		std::string filename = file_path.filename().string();
 		Json::Value result;
 		result["error"] = ErrorCodes::Success;
@@ -75,19 +75,19 @@ void FileWorker::RegisterHandlers()
 
 
 		std::ofstream outfile;
-		//µÚÒ»¸ö°ü
+		//ç¬¬ä¸€ä¸ªåŒ…
 		if (task->_seq == 1) {
-			// ´ò¿ªÎÄ¼ş£¬Èç¹û´æÔÚÔòÇå¿Õ£¬²»´æÔÚÔò´´½¨
+			// æ‰“å¼€æ–‡ä»¶ï¼Œå¦‚æœå­˜åœ¨åˆ™æ¸…ç©ºï¼Œä¸å­˜åœ¨åˆ™åˆ›å»º
 			outfile.open(file_path_str, std::ios::binary | std::ios::trunc);
 		}
 		else {
-			// ±£´æÎªÎÄ¼ş
+			// ä¿å­˜ä¸ºæ–‡ä»¶
 			outfile.open(file_path_str, std::ios::binary | std::ios::app);
 		}
 
 
 		if (!outfile) {
-			std::cerr << "ÎŞ·¨´ò¿ªÎÄ¼ş½øĞĞĞ´Èë¡£" << std::endl;
+			std::cerr << "æ— æ³•æ‰“å¼€æ–‡ä»¶è¿›è¡Œå†™å…¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -95,7 +95,7 @@ void FileWorker::RegisterHandlers()
 
 		outfile.write(decoded.data(), decoded.size());
 		if (!outfile) {
-			std::cerr << "Ğ´ÈëÎÄ¼şÊ§°Ü¡£" << std::endl;
+			std::cerr << "å†™å…¥æ–‡ä»¶å¤±è´¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -103,7 +103,7 @@ void FileWorker::RegisterHandlers()
 
 		outfile.close();
 		if (last) {
-			std::cout << "ÎÄ¼şÒÑ³É¹¦±£´æÎª: " << task->_name << std::endl;
+			std::cout << "æ–‡ä»¶å·²æˆåŠŸä¿å­˜ä¸º: " << task->_name << std::endl;
 		}
 
 		if (task->_callback) {
@@ -111,9 +111,9 @@ void FileWorker::RegisterHandlers()
 		}
 	};
 
-	//´¦ÀíÍ·ÏñÉÏ´«
+	//å¤„ç†å¤´åƒä¸Šä¼ 
 	_handlers[ID_UPLOAD_HEAD_ICON_REQ] = [this](std::shared_ptr<FileTask> task) {
-		// ½âÂë
+		// è§£ç 
 		std::string decoded = base64_decode(task->_file_data);
 
 		auto file_path_str = task->_path;
@@ -122,7 +122,7 @@ void FileWorker::RegisterHandlers()
 
 		boost::filesystem::path file_path(file_path_str);
 		boost::filesystem::path dir_path = file_path.parent_path();
-		// »ñÈ¡ÍêÕûÎÄ¼şÃû£¨°üº¬À©Õ¹Ãû£©
+		// è·å–å®Œæ•´æ–‡ä»¶åï¼ˆåŒ…å«æ‰©å±•åï¼‰
 		std::string filename = file_path.filename().string();
 		Json::Value result;
 		result["error"] = ErrorCodes::Success;
@@ -139,19 +139,19 @@ void FileWorker::RegisterHandlers()
 
 
 		std::ofstream outfile;
-		//µÚÒ»¸ö°ü
+		//ç¬¬ä¸€ä¸ªåŒ…
 		if (task->_seq == 1) {
-			// ´ò¿ªÎÄ¼ş£¬Èç¹û´æÔÚÔòÇå¿Õ£¬²»´æÔÚÔò´´½¨
+			// æ‰“å¼€æ–‡ä»¶ï¼Œå¦‚æœå­˜åœ¨åˆ™æ¸…ç©ºï¼Œä¸å­˜åœ¨åˆ™åˆ›å»º
 			outfile.open(file_path_str, std::ios::binary | std::ios::trunc);
 		}
 		else {
-			// ±£´æÎªÎÄ¼ş
+			// ä¿å­˜ä¸ºæ–‡ä»¶
 			outfile.open(file_path_str, std::ios::binary | std::ios::app);
 		}
 
 
 		if (!outfile) {
-			std::cerr << "ÎŞ·¨´ò¿ªÎÄ¼ş½øĞĞĞ´Èë¡£" << std::endl;
+			std::cerr << "æ— æ³•æ‰“å¼€æ–‡ä»¶è¿›è¡Œå†™å…¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -159,7 +159,7 @@ void FileWorker::RegisterHandlers()
 
 		outfile.write(decoded.data(), decoded.size());
 		if (!outfile) {
-			std::cerr << "Ğ´ÈëÎÄ¼şÊ§°Ü¡£" << std::endl;
+			std::cerr << "å†™å…¥æ–‡ä»¶å¤±è´¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -167,16 +167,16 @@ void FileWorker::RegisterHandlers()
 
 		outfile.close();
 		if (last) {
-			std::cout << "ÎÄ¼şÒÑ³É¹¦±£´æÎª: " << task->_name << std::endl;
-			//¸üĞÂÍ·Ïñ
+			std::cout << "æ–‡ä»¶å·²æˆåŠŸä¿å­˜ä¸º: " << task->_name << std::endl;
+			//æ›´æ–°å¤´åƒ
 			MysqlMgr::GetInstance()->UpdateUserIcon(task->_uid, filename);
-			//»ñÈ¡ÓÃ»§ĞÅÏ¢
+			//è·å–ç”¨æˆ·ä¿¡æ¯
 			auto user_info = MysqlMgr::GetInstance()->GetUser(task->_uid);
 			if (user_info == nullptr) {
 				return;
 			}
 
-			//½«Êı¾İ¿âÄÚÈİĞ´Èëredis»º´æ
+			//å°†æ•°æ®åº“å†…å®¹å†™å…¥redisç¼“å­˜
 			Json::Value redis_root;
 			redis_root["uid"] = task->_uid;
 			redis_root["pwd"] = user_info->pwd;
@@ -195,9 +195,9 @@ void FileWorker::RegisterHandlers()
 		}
 	};
 
-	//´¦ÀíÁÄÌìÍ¼Æ¬ÉÏ´«
+	//å¤„ç†èŠå¤©å›¾ç‰‡ä¸Šä¼ 
 	_handlers[ID_IMG_CHAT_UPLOAD_REQ] = [this](std::shared_ptr<FileTask> task) {
-		// ½âÂë
+		// è§£ç 
 		std::string decoded = base64_decode(task->_file_data);
 
 		auto file_path_str = task->_path;
@@ -206,7 +206,7 @@ void FileWorker::RegisterHandlers()
 
 		boost::filesystem::path file_path(file_path_str);
 		boost::filesystem::path dir_path = file_path.parent_path(); 
-		// »ñÈ¡ÍêÕûÎÄ¼şÃû£¨°üº¬À©Õ¹Ãû£©
+		// è·å–å®Œæ•´æ–‡ä»¶åï¼ˆåŒ…å«æ‰©å±•åï¼‰
 		std::string filename = file_path.filename().string();
 		Json::Value result;
 		result["error"] = ErrorCodes::Success;
@@ -223,19 +223,19 @@ void FileWorker::RegisterHandlers()
 
 
 		std::ofstream outfile;
-		//µÚÒ»¸ö°ü
+		//ç¬¬ä¸€ä¸ªåŒ…
 		if (task->_seq == 1) {
-			// ´ò¿ªÎÄ¼ş£¬Èç¹û´æÔÚÔòÇå¿Õ£¬²»´æÔÚÔò´´½¨
+			// æ‰“å¼€æ–‡ä»¶ï¼Œå¦‚æœå­˜åœ¨åˆ™æ¸…ç©ºï¼Œä¸å­˜åœ¨åˆ™åˆ›å»º
 			outfile.open(file_path_str, std::ios::binary | std::ios::trunc);
 		}
 		else {
-			// ±£´æÎªÎÄ¼ş
+			// ä¿å­˜ä¸ºæ–‡ä»¶
 			outfile.open(file_path_str, std::ios::binary | std::ios::app);
 		}
 
 
 		if (!outfile) {
-			std::cerr << "ÎŞ·¨´ò¿ªÎÄ¼ş½øĞĞĞ´Èë¡£" << std::endl;
+			std::cerr << "æ— æ³•æ‰“å¼€æ–‡ä»¶è¿›è¡Œå†™å…¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -243,7 +243,7 @@ void FileWorker::RegisterHandlers()
 
 		outfile.write(decoded.data(), decoded.size());
 		if (!outfile) {
-			std::cerr << "Ğ´ÈëÎÄ¼şÊ§°Ü¡£" << std::endl;
+			std::cerr << "å†™å…¥æ–‡ä»¶å¤±è´¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -251,15 +251,15 @@ void FileWorker::RegisterHandlers()
 
 		outfile.close();
 		if (last) {
-			std::cout << "ÎÄ¼şÒÑ³É¹¦±£´æÎª: " << task->_name << std::endl;
-			//¸üĞÂÊı¾İ¿âÁÄÌìÍ¼ÏñÉÏ´«×´Ì¬
+			std::cout << "æ–‡ä»¶å·²æˆåŠŸä¿å­˜ä¸º: " << task->_name << std::endl;
+			//æ›´æ–°æ•°æ®åº“èŠå¤©å›¾åƒä¸Šä¼ çŠ¶æ€
 			MysqlMgr::GetInstance()->UpdateUploadStatus(task->_chat_msg_id);
 
 			std::string uid_ip_value = "";
 			auto receiver_str = std::to_string(task->_receiver);
 			auto uid_ip_key = USERIPPREFIX + receiver_str;
 			bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
-			//Èç¹û½ÓÊÕÕßÎ´µÇÂ¼£¬ÔòÖ±½Ó·µ»Ø
+			//å¦‚æœæ¥æ”¶è€…æœªç™»å½•ï¼Œåˆ™ç›´æ¥è¿”å›
 			if (!b_ip) {
 				if (task->_callback) {
 					task->_callback(result);
@@ -272,7 +272,7 @@ void FileWorker::RegisterHandlers()
 				task->_callback(result);
 			}
 
-			//Í¨¹ıgrpcÍ¨ÖªChatServer
+			//é€šè¿‡grpcé€šçŸ¥ChatServer
 			ChatServerGrpcClient::GetInstance()->NotifyChatImgMsg(task->_chat_msg_id, uid_ip_value);
 			return;
 		}
@@ -282,9 +282,9 @@ void FileWorker::RegisterHandlers()
 		}
 	};
 
-	//´¦ÀíÎÄ¼şĞÅÏ¢Í¬²½ÇëÇó
+	//å¤„ç†æ–‡ä»¶ä¿¡æ¯åŒæ­¥è¯·æ±‚
 	_handlers[ID_FILE_INFO_SYNC_REQ] = [this](std::shared_ptr<FileTask> task) {
-		// ½âÂë
+		// è§£ç 
 		std::string decoded = base64_decode(task->_file_data);
 
 		auto file_path_str = task->_path;
@@ -293,7 +293,7 @@ void FileWorker::RegisterHandlers()
 
 		boost::filesystem::path file_path(file_path_str);
 		boost::filesystem::path dir_path = file_path.parent_path();
-		// »ñÈ¡ÍêÕûÎÄ¼şÃû£¨°üº¬À©Õ¹Ãû£©
+		// è·å–å®Œæ•´æ–‡ä»¶åï¼ˆåŒ…å«æ‰©å±•åï¼‰
 		std::string filename = file_path.filename().string();
 		Json::Value result;
 		result["error"] = ErrorCodes::Success;
@@ -310,19 +310,19 @@ void FileWorker::RegisterHandlers()
 
 
 		std::ofstream outfile;
-		//µÚÒ»¸ö°ü
+		//ç¬¬ä¸€ä¸ªåŒ…
 		if (task->_seq == 1) {
-			// ´ò¿ªÎÄ¼ş£¬Èç¹û´æÔÚÔòÇå¿Õ£¬²»´æÔÚÔò´´½¨
+			// æ‰“å¼€æ–‡ä»¶ï¼Œå¦‚æœå­˜åœ¨åˆ™æ¸…ç©ºï¼Œä¸å­˜åœ¨åˆ™åˆ›å»º
 			outfile.open(file_path_str, std::ios::binary | std::ios::trunc);
 		}
 		else {
-			// ±£´æÎªÎÄ¼ş
+			// ä¿å­˜ä¸ºæ–‡ä»¶
 			outfile.open(file_path_str, std::ios::binary | std::ios::app);
 		}
 
 
 		if (!outfile) {
-			std::cerr << "ÎŞ·¨´ò¿ªÎÄ¼ş½øĞĞĞ´Èë¡£" << std::endl;
+			std::cerr << "æ— æ³•æ‰“å¼€æ–‡ä»¶è¿›è¡Œå†™å…¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -330,7 +330,7 @@ void FileWorker::RegisterHandlers()
 
 		outfile.write(decoded.data(), decoded.size());
 		if (!outfile) {
-			std::cerr << "Ğ´ÈëÎÄ¼şÊ§°Ü¡£" << std::endl;
+			std::cerr << "å†™å…¥æ–‡ä»¶å¤±è´¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -338,14 +338,14 @@ void FileWorker::RegisterHandlers()
 
 		outfile.close();
 		if (last) {
-			std::cout << "ÎÄ¼şÒÑ³É¹¦±£´æÎª: " << task->_name << std::endl;
-			//todo...¸üĞÂÊı¾İ¿âÁÄÌìÍ¼ÏñÉÏ´«×´Ì¬
+			std::cout << "æ–‡ä»¶å·²æˆåŠŸä¿å­˜ä¸º: " << task->_name << std::endl;
+			//todo...æ›´æ–°æ•°æ®åº“èŠå¤©å›¾åƒä¸Šä¼ çŠ¶æ€
 			MysqlMgr::GetInstance()->UpdateUploadStatus(task->_chat_msg_id);
 			std::string uid_ip_value = "";
 			auto receiver_str = std::to_string(task->_receiver);
 			auto uid_ip_key = USERIPPREFIX + receiver_str;
 			bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
-			//Èç¹û½ÓÊÕÕßÎ´µÇÂ¼£¬ÔòÖ±½Ó·µ»Ø
+			//å¦‚æœæ¥æ”¶è€…æœªç™»å½•ï¼Œåˆ™ç›´æ¥è¿”å›
 			if (!b_ip) {
 				if (task->_callback) {
 					task->_callback(result);
@@ -358,7 +358,7 @@ void FileWorker::RegisterHandlers()
 				task->_callback(result);
 			}
 		
-			//Í¨¹ıgrpcÍ¨ÖªChatServer
+			//é€šè¿‡grpcé€šçŸ¥ChatServer
 			ChatServerGrpcClient::GetInstance()->NotifyChatImgMsg(task->_chat_msg_id, uid_ip_value);
 			return;
 		}
@@ -368,9 +368,9 @@ void FileWorker::RegisterHandlers()
 		}
 	};
 
-	//´¦ÀíĞø´«Í¼Æ¬ÇëÇó
+	//å¤„ç†ç»­ä¼ å›¾ç‰‡è¯·æ±‚
 	_handlers[ID_IMG_CHAT_CONTINUE_UPLOAD_REQ] = [this](std::shared_ptr<FileTask> task) {
-		// ½âÂë
+		// è§£ç 
 		std::string decoded = base64_decode(task->_file_data);
 
 		auto file_path_str = task->_path;
@@ -379,7 +379,7 @@ void FileWorker::RegisterHandlers()
 
 		boost::filesystem::path file_path(file_path_str);
 		boost::filesystem::path dir_path = file_path.parent_path();
-		// »ñÈ¡ÍêÕûÎÄ¼şÃû£¨°üº¬À©Õ¹Ãû£©
+		// è·å–å®Œæ•´æ–‡ä»¶åï¼ˆåŒ…å«æ‰©å±•åï¼‰
 		std::string filename = file_path.filename().string();
 		Json::Value result;
 		result["error"] = ErrorCodes::Success;
@@ -396,19 +396,19 @@ void FileWorker::RegisterHandlers()
 
 
 		std::ofstream outfile;
-		//µÚÒ»¸ö°ü
+		//ç¬¬ä¸€ä¸ªåŒ…
 		if (task->_seq == 1) {
-			// ´ò¿ªÎÄ¼ş£¬Èç¹û´æÔÚÔòÇå¿Õ£¬²»´æÔÚÔò´´½¨
+			// æ‰“å¼€æ–‡ä»¶ï¼Œå¦‚æœå­˜åœ¨åˆ™æ¸…ç©ºï¼Œä¸å­˜åœ¨åˆ™åˆ›å»º
 			outfile.open(file_path_str, std::ios::binary | std::ios::trunc);
 		}
 		else {
-			// ±£´æÎªÎÄ¼ş
+			// ä¿å­˜ä¸ºæ–‡ä»¶
 			outfile.open(file_path_str, std::ios::binary | std::ios::app);
 		}
 
 
 		if (!outfile) {
-			std::cerr << "ÎŞ·¨´ò¿ªÎÄ¼ş½øĞĞĞ´Èë¡£" << std::endl;
+			std::cerr << "æ— æ³•æ‰“å¼€æ–‡ä»¶è¿›è¡Œå†™å…¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -416,7 +416,7 @@ void FileWorker::RegisterHandlers()
 
 		outfile.write(decoded.data(), decoded.size());
 		if (!outfile) {
-			std::cerr << "Ğ´ÈëÎÄ¼şÊ§°Ü¡£" << std::endl;
+			std::cerr << "å†™å…¥æ–‡ä»¶å¤±è´¥ã€‚" << std::endl;
 			result["error"] = ErrorCodes::FileWritePermissionFailed;
 			task->_callback(result);
 			return;
@@ -424,15 +424,15 @@ void FileWorker::RegisterHandlers()
 
 		outfile.close();
 		if (last) {
-			std::cout << "ÎÄ¼şÒÑ³É¹¦±£´æÎª: " << task->_name << std::endl;
-			//¸üĞÂÊı¾İ¿âÁÄÌìÍ¼ÏñÉÏ´«×´Ì¬
+			std::cout << "æ–‡ä»¶å·²æˆåŠŸä¿å­˜ä¸º: " << task->_name << std::endl;
+			//æ›´æ–°æ•°æ®åº“èŠå¤©å›¾åƒä¸Šä¼ çŠ¶æ€
 			MysqlMgr::GetInstance()->UpdateUploadStatus(task->_chat_msg_id);
 
 			std::string uid_ip_value = "";
 			auto receiver_str = std::to_string(task->_receiver);
 			auto uid_ip_key = USERIPPREFIX + receiver_str;
 			bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
-			//Èç¹û½ÓÊÕÕßÎ´µÇÂ¼£¬ÔòÖ±½Ó·µ»Ø
+			//å¦‚æœæ¥æ”¶è€…æœªç™»å½•ï¼Œåˆ™ç›´æ¥è¿”å›
 			if (!b_ip) {
 				if (task->_callback) {
 					task->_callback(result);
@@ -441,7 +441,7 @@ void FileWorker::RegisterHandlers()
 				return;
 			}
 
-			//Í¨¹ıgrpcÍ¨ÖªChatServer
+			//é€šè¿‡grpcé€šçŸ¥ChatServer
 			ChatServerGrpcClient::GetInstance()->NotifyChatImgMsg(task->_chat_msg_id, uid_ip_value);
 			if (task->_callback) {
 				task->_callback(result);
@@ -461,7 +461,7 @@ void FileWorker::PostTask(std::shared_ptr<FileTask> task)
 {
 	{
 		std::lock_guard<std::mutex> lock(_mtx);
-		//½è¼øpythonÍòÎï½Ô¶ÔÏóË¼Ïë£¬¹¹ÔìÎ±±Õ°ü½«º¯Êı¶ÔÏóÈÓµ½¶ÓÁĞÖĞ
+		//å€Ÿé‰´pythonä¸‡ç‰©çš†å¯¹è±¡æ€æƒ³ï¼Œæ„é€ ä¼ªé—­åŒ…å°†å‡½æ•°å¯¹è±¡æ‰”åˆ°é˜Ÿåˆ—ä¸­
 		_task_que.push([task, this]() {
 			task_callback(task);
 			});
@@ -527,7 +527,7 @@ void DownloadWorker::PostTask(std::shared_ptr<DownloadTask> task)
 
 void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 {
-	// ½âÂë
+	// è§£ç 
 	auto file_path_str = task->_file_path;
 
 	//std::cout << "file_path_str is " << file_path_str << std::endl;
@@ -538,7 +538,7 @@ void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 	result["error"] = ErrorCodes::Success;
 
 	if (!boost::filesystem::exists(file_path)) {
-		std::cerr << "ÎÄ¼ş²»´æÔÚ: " << file_path_str << std::endl;
+		std::cerr << "æ–‡ä»¶ä¸å­˜åœ¨: " << file_path_str << std::endl;
 		result["error"] = ErrorCodes::FileNotExists;
 		task->_callback(result);
 		return;
@@ -546,7 +546,7 @@ void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 
 	std::ifstream infile(file_path_str, std::ios::binary);
 	if (!infile) {
-		std::cerr << "ÎŞ·¨´ò¿ªÎÄ¼ş½øĞĞ¶ÁÈ¡¡£" << std::endl;
+		std::cerr << "æ— æ³•æ‰“å¼€æ–‡ä»¶è¿›è¡Œè¯»å–ã€‚" << std::endl;
 		result["error"] = ErrorCodes::FileReadPermissionFailed;
 		task->_callback(result);
 		return;
@@ -555,11 +555,11 @@ void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 	std::shared_ptr<FileInfo> file_info = nullptr;
 
 	if (task->_seq == 1) {
-		// »ñÈ¡ÎÄ¼ş´óĞ¡
+		// è·å–æ–‡ä»¶å¤§å°
 		infile.seekg(0, std::ios::end);
 		std::streamsize file_size = infile.tellg();
 		infile.seekg(0, std::ios::beg);
-		//Èç¹ûÎª¿Õ£¬Ôò´´½¨FileInfo ¹¹ÔìÊı¾İ´æ´¢
+		//å¦‚æœä¸ºç©ºï¼Œåˆ™åˆ›å»ºFileInfo æ„é€ æ•°æ®å­˜å‚¨
 		file_info = std::make_shared<FileInfo>();
 		file_info->_file_path_str = file_path_str;
 		file_info->_name = task->_name;
@@ -567,74 +567,74 @@ void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 
 		file_info->_total_size = file_size;
 		file_info->_trans_size = 0;
-		// Á¢¼´±£´æµ½ Redis£¬¸²¸Ç¾ÉÊı¾İ£¬ÉèÖÃ¹ıÆÚÊ±¼ä
+		// ç«‹å³ä¿å­˜åˆ° Redisï¼Œè¦†ç›–æ—§æ•°æ®ï¼Œè®¾ç½®è¿‡æœŸæ—¶é—´
 		RedisMgr::GetInstance()->SetDownLoadInfo(task->_name, file_info);
-		std::cout << "[ĞÂÏÂÔØ] ÎÄ¼ş: " << task->_name
-			<< ", ´óĞ¡: " << file_size << " ×Ö½Ú" << std::endl;
+		std::cout << "[æ–°ä¸‹è½½] æ–‡ä»¶: " << task->_name
+			<< ", å¤§å°: " << file_size << " å­—èŠ‚" << std::endl;
 	}
 	else {
-		//¶ÏµãĞø´«£¬´Ó Redis »ñÈ¡ÀúÊ·ĞÅÏ¢
+		//æ–­ç‚¹ç»­ä¼ ï¼Œä» Redis è·å–å†å²ä¿¡æ¯
 		file_info = RedisMgr::GetInstance()->GetDownloadInfo(task->_name);
 		if (file_info == nullptr) {
-			// Redis ÖĞÃ»ÓĞĞÅÏ¢£¨¿ÉÄÜ¹ıÆÚÁË£©
-			std::cerr << "¶ÏµãĞø´«Ê§°Ü£¬Redis ÖĞÎŞÏÂÔØĞÅÏ¢: " << task->_name << std::endl;
+			// Redis ä¸­æ²¡æœ‰ä¿¡æ¯ï¼ˆå¯èƒ½è¿‡æœŸäº†ï¼‰
+			std::cerr << "æ–­ç‚¹ç»­ä¼ å¤±è´¥ï¼ŒRedis ä¸­æ— ä¸‹è½½ä¿¡æ¯: " << task->_name << std::endl;
 			result["error"] = ErrorCodes::RedisReadErr;
 			task->_callback(result);
 			infile.close();
 			return;
 		}
-		// ÑéÖ¤ĞòÁĞºÅÊÇ·ñÆ¥Åä
+		// éªŒè¯åºåˆ—å·æ˜¯å¦åŒ¹é…
 		if (task->_seq != file_info->_seq) {
-			std::cerr << "ĞòÁĞºÅ²»Æ¥Åä£¬ÆÚÍû: " << file_info->_seq
-				<< ", Êµ¼Ê: " << task->_seq << std::endl;
+			std::cerr << "åºåˆ—å·ä¸åŒ¹é…ï¼ŒæœŸæœ›: " << file_info->_seq
+				<< ", å®é™…: " << task->_seq << std::endl;
 			result["error"] = ErrorCodes::FileSeqInvalid;
 			task->_callback(result);
 			infile.close();
 			return;
 		}
 
-		std::cout << "[Ğø´«] ÎÄ¼ş: " << task->_name
+		std::cout << "[ç»­ä¼ ] æ–‡ä»¶: " << task->_name
 			<< ", seq: " << task->_seq
-			<< ", ½ø¶È: " << file_info->_trans_size
+			<< ", è¿›åº¦: " << file_info->_trans_size
 			<< "/" << file_info->_total_size << std::endl;
 	}
 
-	// ¼ÆËãµ±Ç°Æ«ÒÆÁ¿
+	// è®¡ç®—å½“å‰åç§»é‡
 	std::streamsize offset = ((std::streamsize)task->_seq - 1) * MAX_FILE_LEN;
 	if (offset >= file_info->_total_size) {
-		std::cerr << "Æ«ÒÆÁ¿³¬³öÎÄ¼ş´óĞ¡¡£" << std::endl;
+		std::cerr << "åç§»é‡è¶…å‡ºæ–‡ä»¶å¤§å°ã€‚" << std::endl;
 		result["error"] = ErrorCodes::FileOffsetInvalid;
 		task->_callback(result);
 		infile.close();
 		return;
 	}
 
-	// ¶¨Î»µ½Ö¸¶¨Æ«ÒÆÁ¿
+	// å®šä½åˆ°æŒ‡å®šåç§»é‡
 	infile.seekg(offset);
 
-	// ¶ÁÈ¡×î¶àMAX_FILE_LEN×Ö½Ú
+	// è¯»å–æœ€å¤šMAX_FILE_LENå­—èŠ‚
 	char buffer[MAX_FILE_LEN];
 	infile.read(buffer, MAX_FILE_LEN);
-	//»ñÈ¡readÊµ¼Ê¶ÁÈ¡¶àÉÙ×Ö½Ú
+	//è·å–readå®é™…è¯»å–å¤šå°‘å­—èŠ‚
 	std::streamsize bytes_read = infile.gcount();
 
 	if (bytes_read <= 0) {
-		std::cerr << "¶ÁÈ¡ÎÄ¼şÊ§°Ü¡£" << std::endl;
+		std::cerr << "è¯»å–æ–‡ä»¶å¤±è´¥ã€‚" << std::endl;
 		result["error"] = ErrorCodes::FileReadFailed;
 		task->_callback(result);
 		infile.close();
 		return;
 	}
 
-	// ½«¶ÁÈ¡µÄÊı¾İ½øĞĞbase64±àÂë
+	// å°†è¯»å–çš„æ•°æ®è¿›è¡Œbase64ç¼–ç 
 	std::string data_to_encode(buffer, bytes_read);
 	std::string encoded_data = base64_encode(data_to_encode);
 
-	// ¼ì²éÊÇ·ñÊÇ×îºóÒ»¸ö°ü
+	// æ£€æŸ¥æ˜¯å¦æ˜¯æœ€åä¸€ä¸ªåŒ…
 	std::streamsize current_pos = offset + bytes_read;
 	bool is_last = (current_pos >= file_info->_total_size);
 
-	// ÉèÖÃ·µ»Ø½á¹û
+	// è®¾ç½®è¿”å›ç»“æœ
 	result["data"] = encoded_data;
 	result["seq"] = task->_seq;
 	result["total_size"] = std::to_string(file_info->_total_size);
@@ -644,14 +644,14 @@ void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 	infile.close();
 
 	if (is_last) {
-		std::cout << "ÎÄ¼ş¶ÁÈ¡Íê³É: " << file_path_str << std::endl;
+		std::cout << "æ–‡ä»¶è¯»å–å®Œæˆ: " << file_path_str << std::endl;
 		RedisMgr::GetInstance()->DelDownLoadInfo(task->_name);
 	}
 	else {
-		//¸üĞÂĞÅÏ¢
+		//æ›´æ–°ä¿¡æ¯
 		file_info->_seq++;
 		file_info->_trans_size = offset + bytes_read;
-		//¸üĞÂredis
+		//æ›´æ–°redis
 		RedisMgr::GetInstance()->SetDownLoadInfo(task->_name, file_info);
 	}
 
