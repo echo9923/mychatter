@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: webrtc_demo
+title: WebRTC 1v1 视频通话演示
+scope:
+    - webrtc-demo/
+source_files: []
+depends_on: []
+related_to: []

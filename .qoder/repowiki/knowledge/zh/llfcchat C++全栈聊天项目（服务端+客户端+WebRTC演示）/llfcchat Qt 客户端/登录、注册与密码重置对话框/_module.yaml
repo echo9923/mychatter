@@ -1,0 +1,16 @@
+schema_version: 1
+module_path: client/auth_and_user_management
+title: 登录、注册与密码重置对话框
+scope:
+    - client/llfcchat/include/logindialog.h
+    - client/llfcchat/include/registerdialog.h
+    - client/llfcchat/include/resetdialog.h
+    - client/llfcchat/src/logindialog.cpp
+    - client/llfcchat/src/registerdialog.cpp
+    - client/llfcchat/src/resetdialog.cpp
+    - client/llfcchat/ui/logindialog.ui
+    - client/llfcchat/ui/registerdialog.ui
+    - client/llfcchat/ui/resetdialog.ui
+source_files: []
+depends_on: []
+related_to: []

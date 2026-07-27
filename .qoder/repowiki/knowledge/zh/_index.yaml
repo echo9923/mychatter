@@ -1,0 +1,91 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: Season_2
+nodes_managed: true
+exported_at: "2026-07-26T13:39:14Z"
+modules:
+    "":
+        dir_name: llfcchat C++全栈聊天项目（服务端+客户端+WebRTC演示）
+        title: llfcchat C++全栈聊天项目（服务端+客户端+WebRTC演示）
+        scope:
+            - README.md
+            - .gitignore
+            - CMakeLists.txt
+            - CMakePresets.json
+            - vcpkg.json
+            - 更新记录.md
+            - 第三季待做事件.md
+            - LICENSE
+        source_files: []
+        children:
+            - client
+            - development_docs
+            - server
+            - sql_backups
+            - webrtc_demo
+        depends_on: []
+        related_to: []
+    client:
+        dir_name: llfcchat Qt 客户端
+        title: llfcchat Qt 客户端
+        scope:
+            - client/
+        source_files: []
+        children:
+            - client/auth_and_user_management
+        depends_on: []
+        related_to: []
+    client/auth_and_user_management:
+        dir_name: 登录、注册与密码重置对话框
+        title: 登录、注册与密码重置对话框
+        scope:
+            - client/llfcchat/include/logindialog.h
+            - client/llfcchat/include/registerdialog.h
+            - client/llfcchat/include/resetdialog.h
+            - client/llfcchat/src/logindialog.cpp
+            - client/llfcchat/src/registerdialog.cpp
+            - client/llfcchat/src/resetdialog.cpp
+            - client/llfcchat/ui/logindialog.ui
+            - client/llfcchat/ui/registerdialog.ui
+            - client/llfcchat/ui/resetdialog.ui
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    development_docs:
+        dir_name: C++全栈聊天项目开发文档（44天教程）
+        title: C++全栈聊天项目开发文档（44天教程）
+        scope:
+            - 开发文档/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    server:
+        dir_name: 服务端多进程架构（聊天_网关_资源_状态_验证服务）
+        title: 服务端多进程架构（聊天/网关/资源/状态/验证服务）
+        scope:
+            - server/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    sql_backups:
+        dir_name: MySQL 数据库备份脚本集
+        title: MySQL 数据库备份脚本集
+        scope:
+            - sql备份/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    webrtc_demo:
+        dir_name: WebRTC 1v1 视频通话演示
+        title: WebRTC 1v1 视频通话演示
+        scope:
+            - webrtc-demo/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
