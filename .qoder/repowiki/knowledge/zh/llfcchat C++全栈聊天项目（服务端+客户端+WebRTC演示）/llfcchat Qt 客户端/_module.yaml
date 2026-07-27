@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: client
+title: llfcchat Qt 客户端
+scope:
+    - client/
+source_files: []
+depends_on: []
+related_to: []

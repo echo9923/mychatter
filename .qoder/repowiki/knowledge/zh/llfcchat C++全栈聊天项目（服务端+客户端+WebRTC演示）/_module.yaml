@@ -1,0 +1,15 @@
+schema_version: 1
+module_path: ""
+title: llfcchat C++全栈聊天项目（服务端+客户端+WebRTC演示）
+scope:
+    - README.md
+    - .gitignore
+    - CMakeLists.txt
+    - CMakePresets.json
+    - vcpkg.json
+    - 更新记录.md
+    - 第三季待做事件.md
+    - LICENSE
+source_files: []
+depends_on: []
+related_to: []

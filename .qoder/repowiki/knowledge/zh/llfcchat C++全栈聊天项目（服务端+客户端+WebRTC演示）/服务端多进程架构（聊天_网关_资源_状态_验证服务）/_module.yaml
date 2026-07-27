@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: server
+title: 服务端多进程架构（聊天/网关/资源/状态/验证服务）
+scope:
+    - server/
+source_files: []
+depends_on: []
+related_to: []
