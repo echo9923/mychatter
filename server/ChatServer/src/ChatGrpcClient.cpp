@@ -66,17 +66,15 @@ bool ChatGrpcClient::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<
 	std::string info_str = "";
 	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str);
 	if (b_base) {
-		Json::Reader reader;
-		Json::Value root;
-		reader.parse(info_str, root);
-		userinfo->uid = root["uid"].asInt();
-		userinfo->name = root["name"].asString();
-		userinfo->pwd = root["pwd"].asString();
-		userinfo->email = root["email"].asString();
-		userinfo->nick = root["nick"].asString();
-		userinfo->desc = root["desc"].asString();
-		userinfo->sex = root["sex"].asInt();
-		userinfo->icon = root["icon"].asString();
+		auto root = json::parse(info_str, nullptr, false);
+		userinfo->uid = root["uid"].get<int>();
+		userinfo->name = root["name"].get<std::string>();
+		userinfo->pwd = root["pwd"].get<std::string>();
+		userinfo->email = root["email"].get<std::string>();
+		userinfo->nick = root["nick"].get<std::string>();
+		userinfo->desc = root["desc"].get<std::string>();
+		userinfo->sex = root["sex"].get<int>();
+		userinfo->icon = root["icon"].get<std::string>();
 		std::cout << "user login uid is  " << userinfo->uid << " name  is "
 			<< userinfo->name << " pwd is " << userinfo->pwd << " email is " << userinfo->email << endl;
 	}
@@ -92,7 +90,7 @@ bool ChatGrpcClient::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<
 		userinfo = user_info;
 
 		//将数据库内容写入redis缓存
-		Json::Value redis_root;
+		json redis_root;
 		redis_root["uid"] = uid;
 		redis_root["pwd"] = userinfo->pwd;
 		redis_root["name"] = userinfo->name;
@@ -101,7 +99,7 @@ bool ChatGrpcClient::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<
 		redis_root["desc"] = userinfo->desc;
 		redis_root["sex"] = userinfo->sex;
 		redis_root["icon"] = userinfo->icon;
-		RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString());
+		RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 	}
 
 }
@@ -137,7 +135,7 @@ AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const Auth
 }
 
 TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip, 
-	const TextChatMsgReq& req, const Json::Value& rtvalue) {
+	const TextChatMsgReq& req, const json& rtvalue) {
 	
 	TextChatMsgRsp rsp;
 	rsp.set_error(ErrorCodes::Success);

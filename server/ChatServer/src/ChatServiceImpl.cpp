@@ -1,12 +1,12 @@
 ﻿#include "ChatServiceImpl.h"
 #include "UserMgr.h"
 #include "CSession.h"
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
+#include <nlohmann/json.hpp>
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
 #include "utils.h"
+
+using json = nlohmann::json;
 
 ChatServiceImpl::ChatServiceImpl()
 {
@@ -31,7 +31,7 @@ Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendR
 	}
 	
 	//在内存中则直接发送通知对方
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["applyuid"] = request->applyuid();
 	rtvalue["name"] = request->name();
@@ -40,7 +40,7 @@ Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendR
 	rtvalue["sex"] = request->sex();
 	rtvalue["nick"] = request->nick();
 
-	std::string return_str = rtvalue.toStyledString();
+	std::string return_str = rtvalue.dump(4);
 
 	session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
 	return Status::OK;
@@ -65,7 +65,7 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
 	}
 
 	//在内存中则直接发送通知对方
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
 	rtvalue["touid"] = request->touid();
@@ -85,7 +85,7 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
 
 	auto chat_time = getCurrentTimestamp();
 	for(auto& msg : request->textmsgs()) {
-		Json::Value  chat;
+		json  chat;
 		chat["sender"] = msg.sender_id();
 		chat["msg_id"] = msg.msg_id();
 		chat["thread_id"] = msg.thread_id();
@@ -93,10 +93,10 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
 		chat["msg_content"] = msg.msgcontent();
 		chat["chat_time"] = chat_time;
 		chat["status"] = msg.status();
-		rtvalue["chat_datas"].append(chat);
+		rtvalue["chat_datas"].push_back(chat);
 	}
 
-	std::string return_str = rtvalue.toStyledString();
+	std::string return_str = rtvalue.dump(4);
 
 	session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
 	return Status::OK;
@@ -115,24 +115,24 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 	}
 
 	//在内存中则直接发送通知对方
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
 	rtvalue["touid"] = request->touid();
 	rtvalue["thread_id"] = request->thread_id();
 	//将聊天数据组织为数组
-	Json::Value text_array;
+	json text_array;
 	for (auto& msg : request->textmsgs()) {
-		Json::Value element;
+		json element;
 		element["content"] = msg.msgcontent();
 		element["unique_id"] = msg.unique_id();
 		element["message_id"] = msg.msg_id();
 		element["chat_time"] = msg.chat_time();
-		text_array.append(element);
+		text_array.push_back(element);
 	}
 	rtvalue["chat_datas"] = text_array;
 
-	std::string return_str = rtvalue.toStyledString();
+	std::string return_str = rtvalue.dump(4);
 
 	session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
 	return Status::OK;
@@ -145,17 +145,15 @@ bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr
 	std::string info_str = "";
 	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str);
 	if (b_base) {
-		Json::Reader reader;
-		Json::Value root;
-		reader.parse(info_str, root);
-		userinfo->uid = root["uid"].asInt();
-		userinfo->name = root["name"].asString();
-		userinfo->pwd = root["pwd"].asString();
-		userinfo->email = root["email"].asString();
-		userinfo->nick = root["nick"].asString();
-		userinfo->desc = root["desc"].asString();
-		userinfo->sex = root["sex"].asInt();
-		userinfo->icon = root["icon"].asString();
+		auto root = json::parse(info_str, nullptr, false);
+		userinfo->uid = root["uid"].get<int>();
+		userinfo->name = root["name"].get<std::string>();
+		userinfo->pwd = root["pwd"].get<std::string>();
+		userinfo->email = root["email"].get<std::string>();
+		userinfo->nick = root["nick"].get<std::string>();
+		userinfo->desc = root["desc"].get<std::string>();
+		userinfo->sex = root["sex"].get<int>();
+		userinfo->icon = root["icon"].get<std::string>();
 		std::cout << "user login uid is  " << userinfo->uid << " name  is "
 			<< userinfo->name << " pwd is " << userinfo->pwd << " email is " << userinfo->email << endl;
 	}
@@ -171,7 +169,7 @@ bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr
 		userinfo = user_info;
 
 		//将数据库内容写入redis缓存
-		Json::Value redis_root;
+		json redis_root;
 		redis_root["uid"] = uid;
 		redis_root["pwd"] = userinfo->pwd;
 		redis_root["name"] = userinfo->name;
@@ -180,7 +178,7 @@ bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr
 		redis_root["desc"] = userinfo->desc;
 		redis_root["sex"] = userinfo->sex;
 		redis_root["icon"] = userinfo->icon;
-		RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString());
+		RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 	}
 	
 	return true;

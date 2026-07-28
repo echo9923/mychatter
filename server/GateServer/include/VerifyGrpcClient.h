@@ -3,7 +3,7 @@
 #include <iostream>
 #include <memory>
 #include <grpcpp/grpcpp.h>
-#include "message.grpc.pb.h"
+#include "verify.grpc.pb.h"
 #include "const.h"
 #include "Singleton.h"
 #include "ConfigMgr.h"

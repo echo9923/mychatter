@@ -1,8 +1,5 @@
 ﻿#include "FileWorker.h"
 #include "CSession.h"
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
 #include "base64.h"
 #include "ConfigMgr.h"
 #include "MysqlMgr.h"
@@ -60,7 +57,7 @@ void FileWorker::RegisterHandlers()
 		boost::filesystem::path dir_path = file_path.parent_path();
 		// 获取完整文件名（包含扩展名）
 		std::string filename = file_path.filename().string();
-		Json::Value result;
+		json result;
 		result["error"] = ErrorCodes::Success;
 
 		// Check if directory exists, if not, create it
@@ -124,7 +121,7 @@ void FileWorker::RegisterHandlers()
 		boost::filesystem::path dir_path = file_path.parent_path();
 		// 获取完整文件名（包含扩展名）
 		std::string filename = file_path.filename().string();
-		Json::Value result;
+		json result;
 		result["error"] = ErrorCodes::Success;
 
 		// Check if directory exists, if not, create it
@@ -177,7 +174,7 @@ void FileWorker::RegisterHandlers()
 			}
 
 			//将数据库内容写入redis缓存
-			Json::Value redis_root;
+			json redis_root;
 			redis_root["uid"] = task->_uid;
 			redis_root["pwd"] = user_info->pwd;
 			redis_root["name"] = user_info->name;
@@ -187,7 +184,7 @@ void FileWorker::RegisterHandlers()
 			redis_root["sex"] = user_info->sex;
 			redis_root["icon"] = user_info->icon;
 			std::string base_key = USER_BASE_INFO + std::to_string(task->_uid);
-			RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString());
+			RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 		}
 
 		if (task->_callback) {
@@ -208,7 +205,7 @@ void FileWorker::RegisterHandlers()
 		boost::filesystem::path dir_path = file_path.parent_path(); 
 		// 获取完整文件名（包含扩展名）
 		std::string filename = file_path.filename().string();
-		Json::Value result;
+		json result;
 		result["error"] = ErrorCodes::Success;
 
 		// Check if directory exists, if not, create it
@@ -295,7 +292,7 @@ void FileWorker::RegisterHandlers()
 		boost::filesystem::path dir_path = file_path.parent_path();
 		// 获取完整文件名（包含扩展名）
 		std::string filename = file_path.filename().string();
-		Json::Value result;
+		json result;
 		result["error"] = ErrorCodes::Success;
 
 		// Check if directory exists, if not, create it
@@ -381,7 +378,7 @@ void FileWorker::RegisterHandlers()
 		boost::filesystem::path dir_path = file_path.parent_path();
 		// 获取完整文件名（包含扩展名）
 		std::string filename = file_path.filename().string();
-		Json::Value result;
+		json result;
 		result["error"] = ErrorCodes::Success;
 
 		// Check if directory exists, if not, create it
@@ -534,7 +531,7 @@ void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 
 	boost::filesystem::path file_path(file_path_str);
 
-	Json::Value result;
+	json result;
 	result["error"] = ErrorCodes::Success;
 
 	if (!boost::filesystem::exists(file_path)) {

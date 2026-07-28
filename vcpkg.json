@@ -10,7 +10,7 @@
     "boost-filesystem",
     "boost-property-tree",
     "boost-uuid",
-    "jsoncpp",
+    "nlohmann-json",
     "grpc",
     "protobuf",
     "hiredis",

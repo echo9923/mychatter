@@ -5,9 +5,8 @@
 #include <memory>
 #include <iostream>
 #include <unordered_map>
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 #include "Singleton.h"
 #include <assert.h>
 #include <queue>

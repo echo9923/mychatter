@@ -31,7 +31,7 @@ if(NOT DEFINED LLFC_REPO_ROOT)
 endif()
 
 llfc_find_server_dependencies()
-llfc_ensure_resource_proto()
+llfc_ensure_chat_proto()
 
 add_executable(ResourceServer
   src/AsioIOServicePool.cpp
@@ -79,13 +79,13 @@ target_include_directories(ResourceServer PRIVATE
 )
 
 target_link_libraries(ResourceServer PRIVATE
-  llfc_resource_proto
+  llfc_chat_proto
   Boost::asio
   Boost::beast
   Boost::filesystem
   Boost::property_tree
   Boost::uuid
-  JsonCpp::JsonCpp
+  nlohmann_json::nlohmann_json
   hiredis::hiredis
   mysql::concpp-jdbc-static
 )

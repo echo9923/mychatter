@@ -32,6 +32,7 @@ endif()
 
 llfc_find_server_dependencies()
 llfc_ensure_chat_proto()
+llfc_ensure_status_proto()
 
 add_executable(ChatServer
   src/AsioIOServicePool.cpp
@@ -76,13 +77,14 @@ target_include_directories(ChatServer PRIVATE
 
 target_link_libraries(ChatServer PRIVATE
   llfc_chat_proto
+  llfc_status_proto
   Boost::asio
   Boost::beast
   Boost::date_time
   Boost::filesystem
   Boost::property_tree
   Boost::uuid
-  JsonCpp::JsonCpp
+  nlohmann_json::nlohmann_json
   hiredis::hiredis
   mysql::concpp-jdbc-static
 )

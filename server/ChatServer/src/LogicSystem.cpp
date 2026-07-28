@@ -114,17 +114,15 @@ void LogicSystem::RegisterCallBacks() {
 }
 
 void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
-	auto uid = root["uid"].asInt();
-	auto token = root["token"].asString();
+	auto root = json::parse(msg_data, nullptr, false);
+	auto uid = root["uid"].get<int>();
+	auto token = root["token"].get<std::string>();
 	std::cout << "user login uid is  " << uid << " user token  is "
 		<< token << endl;
 
-	Json::Value  rtvalue;
+	json  rtvalue;
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, MSG_CHAT_LOGIN_RSP);
 		});
 
@@ -169,7 +167,7 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 	auto b_apply = GetFriendApplyInfo(uid, apply_list);
 	if (b_apply) {
 		for (auto& apply : apply_list) {
-			Json::Value obj;
+			json obj;
 			obj["name"] = apply->_name;
 			obj["uid"] = apply->_uid;
 			obj["icon"] = apply->_icon;
@@ -177,7 +175,7 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 			obj["sex"] = apply->_sex;
 			obj["desc"] = apply->_desc;
 			obj["status"] = apply->_status;
-			rtvalue["apply_list"].append(obj);
+			rtvalue["apply_list"].push_back(obj);
 		}
 	}
 
@@ -185,7 +183,7 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 	std::vector<std::shared_ptr<UserInfo>> friend_list;
 	bool b_friend_list = GetFriendList(uid, friend_list);
 	for (auto& friend_ele : friend_list) {
-		Json::Value obj;
+		json obj;
 		obj["name"] = friend_ele->name;
 		obj["uid"] = friend_ele->uid;
 		obj["icon"] = friend_ele->icon;
@@ -193,7 +191,7 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 		obj["sex"] = friend_ele->sex;
 		obj["desc"] = friend_ele->desc;
 		obj["back"] = friend_ele->back;
-		rtvalue["friend_list"].append(obj);
+		rtvalue["friend_list"].push_back(obj);
 	}
 
 	auto server_name = ConfigMgr::Inst().GetValue("SelfServer", "Name");
@@ -255,16 +253,14 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 
 void LogicSystem::SearchInfo(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data)
 {
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
-	auto uid_str = root["uid"].asString();
+	auto root = json::parse(msg_data, nullptr, false);
+	auto uid_str = root["uid"].get<std::string>();
 	std::cout << "user SearchInfo uid is  " << uid_str << endl;
 
-	Json::Value  rtvalue;
+	json  rtvalue;
 
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_SEARCH_USER_RSP);
 		});
 
@@ -280,20 +276,18 @@ void LogicSystem::SearchInfo(std::shared_ptr<CSession> session, const short& msg
 
 void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data)
 {
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
-	auto uid = root["uid"].asInt();
-	auto desc = root["applyname"].asString();
-	auto bakname = root["bakname"].asString();
-	auto touid = root["touid"].asInt();
+	auto root = json::parse(msg_data, nullptr, false);
+	auto uid = root["uid"].get<int>();
+	auto desc = root["applyname"].get<std::string>();
+	auto bakname = root["bakname"].get<std::string>();
+	auto touid = root["touid"].get<int>();
 	std::cout << "user login uid is  " << uid << " applydesc  is "
 		<< desc << " bakname is " << bakname << " touid is " << touid << endl;
 
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_ADD_FRIEND_RSP);
 		});
 
@@ -323,7 +317,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short&
 		auto session = UserMgr::GetInstance()->GetSession(touid);
 		if (session) {
 			//在内存中则直接发送通知对方
-			Json::Value  notify;
+			json  notify;
 			notify["error"] = ErrorCodes::Success;
 			notify["applyuid"] = uid;
 			notify["name"] = apply_info->name;
@@ -333,7 +327,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short&
 				notify["sex"] = apply_info->sex;
 				notify["nick"] = apply_info->nick;
 			}
-			std::string return_str = notify.toStyledString();
+			std::string return_str = notify.dump(4);
 			session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
 		}
 
@@ -359,16 +353,14 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short&
 
 void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
 	
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
+	auto root = json::parse(msg_data, nullptr, false);
 
-	auto uid = root["fromuid"].asInt();
-	auto touid = root["touid"].asInt();
-	auto back_name = root["back"].asString();
+	auto uid = root["fromuid"].get<int>();
+	auto touid = root["touid"].get<int>();
+	auto back_name = root["back"].get<std::string>();
 	std::cout << "from " << uid << " auth friend to " << touid << std::endl;
 
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	auto user_info = std::make_shared<UserInfo>();
 
@@ -387,7 +379,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 
 
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_AUTH_FRIEND_RSP);
 		});
 
@@ -415,7 +407,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 		auto session = UserMgr::GetInstance()->GetSession(touid);
 		if (session) {
 			//在内存中则直接发送通知对方
-			Json::Value  notify;
+			json  notify;
 			notify["error"] = ErrorCodes::Success;
 			notify["fromuid"] = uid;
 			notify["touid"] = touid;
@@ -435,7 +427,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 			auto chat_time = getCurrentTimestamp();
 			for(auto & chat_data : chat_datas)
 			{
-				Json::Value  chat;
+				json  chat;
 				chat["sender"] = chat_data->sender_id();
 				chat["msg_id"] = chat_data->msg_id();
 				chat["thread_id"] = chat_data->thread_id();
@@ -443,11 +435,11 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 				chat["msg_content"] = chat_data->msgcontent();
 				chat["chat_time"] = chat_time;
 				chat["status"] = chat_data->status();
-				notify["chat_datas"].append(chat);
-				rtvalue["chat_datas"].append(chat);
+				notify["chat_datas"].push_back(chat);
+				rtvalue["chat_datas"].push_back(chat);
 			}
 
-			std::string return_str = notify.toStyledString();
+			std::string return_str = notify.dump(4);
 			session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
 		}
 
@@ -463,7 +455,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 	{
 		auto text_msg = auth_req.add_textmsgs();
 		text_msg->CopyFrom(*chat_data);
-		Json::Value  chat;
+		json  chat;
 		chat["sender"] = chat_data->sender_id();
 		chat["msg_id"] = chat_data->msg_id();
 		chat["thread_id"] = chat_data->thread_id();
@@ -471,34 +463,32 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 		chat["msg_content"] = chat_data->msgcontent();
 		chat["chat_time"] = chat_time;
 		chat["status"] = chat_data->status();
-		rtvalue["chat_datas"].append(chat);
+		rtvalue["chat_datas"].push_back(chat);
 	}
 	//发送通知
 	ChatGrpcClient::GetInstance()->NotifyAuthFriend(to_ip_value, auth_req);
 }
 
 void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
+	auto root = json::parse(msg_data, nullptr, false);
 
-	auto uid = root["fromuid"].asInt();
-	auto touid = root["touid"].asInt();
+	auto uid = root["fromuid"].get<int>();
+	auto touid = root["touid"].get<int>();
 
-	const Json::Value  arrays = root["text_array"];
+	const json  arrays = root["text_array"];
 	
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 
 	rtvalue["fromuid"] = uid;
 	rtvalue["touid"] = touid;
-	auto thread_id = root["thread_id"].asInt();
+	auto thread_id = root["thread_id"].get<int>();
 	rtvalue["thread_id"] = thread_id;
 	std::vector<std::shared_ptr<ChatMessage>> chat_datas;
 	auto timestamp = getCurrentTimestamp();
 	for (const auto& txt_obj : arrays) {
-		auto content = txt_obj["content"].asString();
-		auto unique_id = txt_obj["unique_id"].asString();
+		auto content = txt_obj["content"].get<std::string>();
+		auto unique_id = txt_obj["unique_id"].get<std::string>();
 		std::cout << "content is " << content << std::endl;
 		std::cout << "unique_id is " << unique_id << std::endl;
 		auto chat_msg = std::make_shared<ChatMessage>();
@@ -519,17 +509,17 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 
 
 	for (const auto& chat_data : chat_datas) {
-		Json::Value  chat_msg;
+		json  chat_msg;
 		chat_msg["message_id"] = chat_data->message_id;
 		chat_msg["unique_id"] = chat_data->unique_id;
 		chat_msg["content"] = chat_data->content;
 		chat_msg["status"] = chat_data->status;
 		chat_msg["chat_time"] = chat_data->chat_time;
-		rtvalue["chat_datas"].append(chat_msg);
+		rtvalue["chat_datas"].push_back(chat_msg);
 	}
 
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_TEXT_CHAT_MSG_RSP);
 		});
 
@@ -550,7 +540,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 		auto session = UserMgr::GetInstance()->GetSession(touid);
 		if (session) {
 			//在内存中则直接发送通知对方
-			std::string return_str = rtvalue.toStyledString();
+			std::string return_str = rtvalue.dump(4);
 			session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
 		}
 
@@ -576,14 +566,12 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 }
 
 void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
-	auto uid = root["fromuid"].asInt();
+	auto root = json::parse(msg_data, nullptr, false);
+	auto uid = root["fromuid"].get<int>();
 	std::cout << "receive heart beat msg, uid is " << uid << std::endl;
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
-	session->Send(rtvalue.toStyledString(), ID_HEARTBEAT_RSP);
+	session->Send(rtvalue.dump(4), ID_HEARTBEAT_RSP);
 }
 
 bool LogicSystem::isPureDigit(const std::string& str)
@@ -596,7 +584,7 @@ bool LogicSystem::isPureDigit(const std::string& str)
 	return true;
 }
 
-void LogicSystem::GetUserByUid(std::string uid_str, Json::Value& rtvalue)
+void LogicSystem::GetUserByUid(std::string uid_str, json& rtvalue)
 {
 	rtvalue["error"] = ErrorCodes::Success;
 
@@ -606,17 +594,15 @@ void LogicSystem::GetUserByUid(std::string uid_str, Json::Value& rtvalue)
 	std::string info_str = "";
 	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str);
 	if (b_base) {
-		Json::Reader reader;
-		Json::Value root;
-		reader.parse(info_str, root);
-		auto uid = root["uid"].asInt();
-		auto name = root["name"].asString();
-		auto pwd = root["pwd"].asString();
-		auto email = root["email"].asString();
-		auto nick = root["nick"].asString();
-		auto desc = root["desc"].asString();
-		auto sex = root["sex"].asInt();
-		auto icon = root["icon"].asString();
+		auto root = json::parse(info_str, nullptr, false);
+		auto uid = root["uid"].get<int>();
+		auto name = root["name"].get<std::string>();
+		auto pwd = root["pwd"].get<std::string>();
+		auto email = root["email"].get<std::string>();
+		auto nick = root["nick"].get<std::string>();
+		auto desc = root["desc"].get<std::string>();
+		auto sex = root["sex"].get<int>();
+		auto icon = root["icon"].get<std::string>();
 		std::cout << "user  uid is  " << uid << " name  is "
 			<< name << " pwd is " << pwd << " email is " << email <<" icon is " << icon << endl;
 
@@ -642,7 +628,7 @@ void LogicSystem::GetUserByUid(std::string uid_str, Json::Value& rtvalue)
 	}
 
 	//将数据库内容写入redis缓存
-	Json::Value redis_root;
+	json redis_root;
 	redis_root["uid"] = user_info->uid;
 	redis_root["pwd"] = user_info->pwd;
 	redis_root["name"] = user_info->name;
@@ -652,7 +638,7 @@ void LogicSystem::GetUserByUid(std::string uid_str, Json::Value& rtvalue)
 	redis_root["sex"] = user_info->sex;
 	redis_root["icon"] = user_info->icon;
 
-	RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString());
+	RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 
 	//返回数据
 	rtvalue["uid"] = user_info->uid;
@@ -665,7 +651,7 @@ void LogicSystem::GetUserByUid(std::string uid_str, Json::Value& rtvalue)
 	rtvalue["icon"] = user_info->icon;
 }
 
-void LogicSystem::GetUserByName(std::string name, Json::Value& rtvalue)
+void LogicSystem::GetUserByName(std::string name, json& rtvalue)
 {
 	rtvalue["error"] = ErrorCodes::Success;
 
@@ -675,17 +661,15 @@ void LogicSystem::GetUserByName(std::string name, Json::Value& rtvalue)
 	std::string info_str = "";
 	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str);
 	if (b_base) {
-		Json::Reader reader;
-		Json::Value root;
-		reader.parse(info_str, root);
-		auto uid = root["uid"].asInt();
-		auto name = root["name"].asString();
-		auto pwd = root["pwd"].asString();
-		auto email = root["email"].asString();
-		auto nick = root["nick"].asString();
-		auto desc = root["desc"].asString();
-		auto sex = root["sex"].asInt();
-		auto icon = root["icon"].asString();
+		auto root = json::parse(info_str, nullptr, false);
+		auto uid = root["uid"].get<int>();
+		auto name = root["name"].get<std::string>();
+		auto pwd = root["pwd"].get<std::string>();
+		auto email = root["email"].get<std::string>();
+		auto nick = root["nick"].get<std::string>();
+		auto desc = root["desc"].get<std::string>();
+		auto sex = root["sex"].get<int>();
+		auto icon = root["icon"].get<std::string>();
 		std::cout << "user  uid is  " << uid << " name  is "
 			<< name << " pwd is " << pwd << " email is " << email << endl;
 
@@ -710,7 +694,7 @@ void LogicSystem::GetUserByName(std::string name, Json::Value& rtvalue)
 	}
 
 	//将数据库内容写入redis缓存
-	Json::Value redis_root;
+	json redis_root;
 	redis_root["uid"] = user_info->uid;
 	redis_root["pwd"] = user_info->pwd;
 	redis_root["name"] = user_info->name;
@@ -720,7 +704,7 @@ void LogicSystem::GetUserByName(std::string name, Json::Value& rtvalue)
 	redis_root["sex"] = user_info->sex;
 	redis_root["icon"] = user_info->icon;
 
-	RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString());
+	RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 	
 	//返回数据
 	rtvalue["uid"] = user_info->uid;
@@ -739,17 +723,15 @@ bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<Use
 	std::string info_str = "";
 	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str);
 	if (b_base) {
-		Json::Reader reader;
-		Json::Value root;
-		reader.parse(info_str, root);
-		userinfo->uid = root["uid"].asInt();
-		userinfo->name = root["name"].asString();
-		userinfo->pwd = root["pwd"].asString();
-		userinfo->email = root["email"].asString();
-		userinfo->nick = root["nick"].asString();
-		userinfo->desc = root["desc"].asString();
-		userinfo->sex = root["sex"].asInt();
-		userinfo->icon = root["icon"].asString();
+		auto root = json::parse(info_str, nullptr, false);
+		userinfo->uid = root["uid"].get<int>();
+		userinfo->name = root["name"].get<std::string>();
+		userinfo->pwd = root["pwd"].get<std::string>();
+		userinfo->email = root["email"].get<std::string>();
+		userinfo->nick = root["nick"].get<std::string>();
+		userinfo->desc = root["desc"].get<std::string>();
+		userinfo->sex = root["sex"].get<int>();
+		userinfo->icon = root["icon"].get<std::string>();
 		std::cout << "user login uid is  " << userinfo->uid << " name  is "
 			<< userinfo->name << " pwd is " << userinfo->pwd << " email is " << userinfo->email << endl;
 	}
@@ -765,7 +747,7 @@ bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<Use
 		userinfo = user_info;
 
 		//将数据库内容写入redis缓存
-		Json::Value redis_root;
+		json redis_root;
 		redis_root["uid"] = uid;
 		redis_root["pwd"] = userinfo->pwd;
 		redis_root["name"] = userinfo->name;
@@ -774,7 +756,7 @@ bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<Use
 		redis_root["desc"] = userinfo->desc;
 		redis_root["sex"] = userinfo->sex;
 		redis_root["icon"] = userinfo->icon;
-		RedisMgr::GetInstance()->Set(base_key, redis_root.toStyledString());
+		RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 	}
 
 	return true;
@@ -794,18 +776,16 @@ void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session,
 	const short& msg_id, const string& msg_data)
 {
 	//从数据库加chat_threads记录
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
-	auto uid = root["uid"].asInt();
-	int last_id = root["thread_id"].asInt();
+	auto root = json::parse(msg_data, nullptr, false);
+	auto uid = root["uid"].get<int>();
+	int last_id = root["thread_id"].get<int>();
 	std::cout << "get uid  threads  " << uid << std::endl;
 
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["uid"] = uid;
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_LOAD_CHAT_THREAD_RSP);
 		});
 	
@@ -825,12 +805,12 @@ void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session,
 	rtvalue["next_last_id"] = (int)next_last_id;
 	//整理threads数据写入json返回
 	for (auto& thread : threads) {
-		Json::Value thread_value;
+		json thread_value;
 		thread_value["thread_id"] = int(thread->_thread_id);
 		thread_value["type"] = thread->_type;
 		thread_value["user1_id"] = thread->_user1_id;
 		thread_value["user2_id"] = thread->_user2_id;
-		rtvalue["threads"].append(thread_value);
+		rtvalue["threads"].push_back(thread_value);
 	}
 }
 
@@ -847,19 +827,17 @@ bool LogicSystem::GetUserThreads(int64_t userId,
 
 void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data)
 {
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
-	auto uid = root["uid"].asInt();
-	auto other_id = root["other_id"].asInt();
+	auto root = json::parse(msg_data, nullptr, false);
+	auto uid = root["uid"].get<int>();
+	auto other_id = root["other_id"].get<int>();
 	
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["uid"] = uid;
 	rtvalue["other_id"] = other_id;
 
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_CREATE_PRIVATE_CHAT_RSP);
 		});
 
@@ -876,19 +854,17 @@ void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const sho
 void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session, 
 	const short& msg_id, const string& msg_data) {
 
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
-	auto thread_id = root["thread_id"].asInt();
-	auto message_id = root["message_id"].asInt();
+	auto root = json::parse(msg_data, nullptr, false);
+	auto thread_id = root["thread_id"].get<int>();
+	auto message_id = root["message_id"].get<int>();
 
 
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["thread_id"] = thread_id;
 
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_LOAD_CHAT_MSG_RSP);
 		});
 
@@ -902,7 +878,7 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 	rtvalue["last_message_id"] = res->next_cursor;
 	rtvalue["load_more"] = res->load_more;
 	for (auto& chat : res->messages) {
-		Json::Value  chat_data;
+		json  chat_data;
 		chat_data["sender"] = chat.sender_id;
 		chat_data["msg_id"] = chat.message_id;
 		chat_data["thread_id"] = chat.thread_id;
@@ -912,33 +888,31 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 		chat_data["status"] = chat.status;
 		chat_data["msg_type"] = chat.msg_type;
 		chat_data["receiver"] = chat.recv_id;
-		rtvalue["chat_datas"].append(chat_data);
+		rtvalue["chat_datas"].push_back(chat_data);
 	}
 
 }
 
 void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session, 
 	const short& msg_id, const string& msg_data) {
-	Json::Reader reader;
-	Json::Value root;
-	reader.parse(msg_data, root);
+	auto root = json::parse(msg_data, nullptr, false);
 
-	auto uid = root["fromuid"].asInt();
-	auto touid = root["touid"].asInt();
+	auto uid = root["fromuid"].get<int>();
+	auto touid = root["touid"].get<int>();
 
-	auto md5 = root["md5"].asString();
-	auto unique_name = root["name"].asString();
-	auto token = root["token"].asString();
-	auto unique_id = root["unique_id"].asString();
-	auto chat_time = root["chat_time"].asString();
-	auto status = root["status"].asInt();
+	auto md5 = root["md5"].get<std::string>();
+	auto unique_name = root["name"].get<std::string>();
+	auto token = root["token"].get<std::string>();
+	auto unique_id = root["unique_id"].get<std::string>();
+	auto chat_time = root["chat_time"].get<std::string>();
+	auto status = root["status"].get<int>();
 
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 
 	rtvalue["fromuid"] = uid;
 	rtvalue["touid"] = touid;
-	auto thread_id = root["thread_id"].asInt();
+	auto thread_id = root["thread_id"].get<int>();
 	rtvalue["thread_id"] = thread_id;
 	rtvalue["md5"] = md5;
 	rtvalue["unique_name"] = unique_name;
@@ -962,7 +936,7 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 
 	rtvalue["message_id"] = chat_msg->message_id;
 	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.toStyledString();
+		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_IMG_CHAT_MSG_RSP);
 		});
 

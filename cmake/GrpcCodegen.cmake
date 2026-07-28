@@ -46,12 +46,20 @@ function(llfc_add_proto_library target_name proto_file)
   llfc_apply_msvc_defaults(${target_name})
 endfunction()
 
-function(llfc_ensure_control_proto)
+function(llfc_ensure_status_proto)
   if(NOT DEFINED LLFC_REPO_ROOT)
     message(FATAL_ERROR "LLFC_REPO_ROOT is not set")
   endif()
-  llfc_add_proto_library(llfc_control_proto
-    "${LLFC_REPO_ROOT}/server/proto/control/message.proto")
+  llfc_add_proto_library(llfc_status_proto
+    "${LLFC_REPO_ROOT}/proto/status_service/status.proto")
+endfunction()
+
+function(llfc_ensure_verify_proto)
+  if(NOT DEFINED LLFC_REPO_ROOT)
+    message(FATAL_ERROR "LLFC_REPO_ROOT is not set")
+  endif()
+  llfc_add_proto_library(llfc_verify_proto
+    "${LLFC_REPO_ROOT}/proto/verify_service/verify.proto")
 endfunction()
 
 function(llfc_ensure_chat_proto)
@@ -59,13 +67,5 @@ function(llfc_ensure_chat_proto)
     message(FATAL_ERROR "LLFC_REPO_ROOT is not set")
   endif()
   llfc_add_proto_library(llfc_chat_proto
-    "${LLFC_REPO_ROOT}/server/proto/chat/message.proto")
-endfunction()
-
-function(llfc_ensure_resource_proto)
-  if(NOT DEFINED LLFC_REPO_ROOT)
-    message(FATAL_ERROR "LLFC_REPO_ROOT is not set")
-  endif()
-  llfc_add_proto_library(llfc_resource_proto
-    "${LLFC_REPO_ROOT}/server/proto/resource/message.proto")
+    "${LLFC_REPO_ROOT}/proto/chat_service/chat.proto")
 endfunction()

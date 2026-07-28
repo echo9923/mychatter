@@ -63,31 +63,29 @@ LogicSystem::LogicSystem() {
 		std::cout << "receive body is " << body_str << std::endl;
 		// 设置响应Content-Type为JSON格式
 		connection->_response.set(http::field::content_type, "text/json");
-		Json::Value root;       // 用于构建响应JSON
-		Json::Reader reader;    // JSON解析器
-		Json::Value src_root;   // 用于存储解析后的请求JSON
+		json root;
 		// 解析请求体中的JSON字符串
-		bool parse_success = reader.parse(body_str, src_root);
-		if (!parse_success) {
+		auto src_root = json::parse(body_str, nullptr, false);
+		if (src_root.is_discarded()) {
 			// JSON解析失败，返回错误码
 			std::cout << "Failed to parse JSON data!" << std::endl;
 			root["error"] = ErrorCodes::Error_Json;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 检查请求JSON中是否包含必需的"email"字段
-		if (!src_root.isMember("email")) {
+		if (!src_root.contains("email")) {
 			std::cout << "Failed to parse JSON data!" << std::endl;
 			root["error"] = ErrorCodes::Error_Json;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 提取邮箱地址，调用MySQL存储过程查询用户信息
-		auto email = src_root["email"].asString();
+		auto email = src_root["email"].get<std::string>();
 		int uid = 0;            // 输出参数：用户ID
 		std::string name = "";  // 输出参数：用户名
 		// 调用存储过程，根据email查询对应的uid和name
@@ -98,7 +96,7 @@ LogicSystem::LogicSystem() {
 		root["email"] = src_root["email"];
 		root["name"] = name;
 		root["uid"] = uid;
-		std::string jsonstr = root.toStyledString();
+		std::string jsonstr = root.dump(4);
 		beast::ostream(connection->_response.body()) << jsonstr;
 		return true;
 		
@@ -115,37 +113,35 @@ LogicSystem::LogicSystem() {
 		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
 		std::cout << "receive body is " << body_str << std::endl;
 		connection->_response.set(http::field::content_type, "text/json");
-		Json::Value root;
-		Json::Reader reader;
-		Json::Value src_root;
+		json root;
 		// 解析请求体JSON
-		bool parse_success = reader.parse(body_str, src_root);
-		if (!parse_success) {
+		auto src_root = json::parse(body_str, nullptr, false);
+		if (src_root.is_discarded()) {
 			std::cout << "Failed to parse JSON data!" << std::endl;
 			root["error"] = ErrorCodes::Error_Json;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 校验email字段是否存在
-		if (!src_root.isMember("email")) {
+		if (!src_root.contains("email")) {
 			std::cout << "Failed to parse JSON data!" << std::endl;
 			root["error"] = ErrorCodes::Error_Json;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 提取邮箱，通过gRPC远程调用VarifyServer获取验证码
 		// VarifyServer会生成随机验证码，通过SMTP发送邮件，并将验证码存入Redis
-		auto email = src_root["email"].asString();
+		auto email = src_root["email"].get<std::string>();
 		GetVarifyRsp rsp = VerifyGrpcClient::GetInstance()->GetVarifyCode(email);
 		cout << "email is " << email << endl;
 		// 将VarifyServer返回的错误码和邮箱写入响应
 		root["error"] = rsp.error();
 		root["email"] = src_root["email"];
-		std::string jsonstr = root.toStyledString();
+		std::string jsonstr = root.dump(4);
 		beast::ostream(connection->_response.body()) << jsonstr;
 		return true;
 	});
@@ -163,31 +159,29 @@ LogicSystem::LogicSystem() {
 		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
 		std::cout << "receive body is " << body_str << std::endl;
 		connection->_response.set(http::field::content_type, "text/json");
-		Json::Value root;
-		Json::Reader reader;
-		Json::Value src_root;
+		json root;
 		// 解析请求体JSON数据
-		bool parse_success = reader.parse(body_str, src_root);
-		if (!parse_success) {
+		auto src_root = json::parse(body_str, nullptr, false);
+		if (src_root.is_discarded()) {
 			std::cout << "Failed to parse JSON data!" << std::endl;
 			root["error"] = ErrorCodes::Error_Json;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 从请求JSON中提取注册所需的各个字段
-		auto email = src_root["email"].asString();      // 用户邮箱
-		auto name = src_root["user"].asString();        // 用户名/昵称
-		auto pwd = src_root["passwd"].asString();       // 密码
-		auto confirm = src_root["confirm"].asString();  // 确认密码
-		auto icon = src_root["icon"].asString();        // 头像（base64编码或路径）
+		auto email = src_root["email"].get<std::string>();      // 用户邮箱
+		auto name = src_root["user"].get<std::string>();        // 用户名/昵称
+		auto pwd = src_root["passwd"].get<std::string>();       // 密码
+		auto confirm = src_root["confirm"].get<std::string>();  // 确认密码
+		auto icon = src_root["icon"].get<std::string>();        // 头像（base64编码或路径）
 
 		// 【校验1】检查两次输入的密码是否一致
 		if (pwd != confirm) {
 			std::cout << "password err " << std::endl;
 			root["error"] = ErrorCodes::PasswdErr;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -195,21 +189,21 @@ LogicSystem::LogicSystem() {
 		// 【校验2】从Redis中查找email对应的验证码是否过期
 		// Redis中验证码的key格式为: CODEPREFIX + email（如 "code_xxx@xxx.com"）
 		std::string  varify_code;
-		bool b_get_varify = RedisMgr::GetInstance()->Get(CODEPREFIX+src_root["email"].asString(), varify_code);
+		bool b_get_varify = RedisMgr::GetInstance()->Get(CODEPREFIX+src_root["email"].get<std::string>(), varify_code);
 		if (!b_get_varify) {
 			// Redis中找不到对应key，说明验证码已过期或从未发送
 			std::cout << " get varify code expired" << std::endl;
 			root["error"] = ErrorCodes::VarifyExpired;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 【校验3】比对用户输入的验证码与Redis中存储的验证码是否一致
-		if (varify_code != src_root["varifycode"].asString()) {
+		if (varify_code != src_root["varifycode"].get<std::string>()) {
 			std::cout << " varify code error" << std::endl;
 			root["error"] = ErrorCodes::VarifyCodeErr;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -220,7 +214,7 @@ LogicSystem::LogicSystem() {
 		if (uid == 0 || uid == -1) {
 			std::cout << " user or email exist" << std::endl;
 			root["error"] = ErrorCodes::UserExist;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -232,8 +226,8 @@ LogicSystem::LogicSystem() {
 		root["passwd"] = pwd;
 		root["confirm"] = confirm;
 		root["icon"] = icon;
-		root["varifycode"] = src_root["varifycode"].asString();
-		std::string jsonstr = root.toStyledString();
+		root["varifycode"] = src_root["varifycode"].get<std::string>();
+		std::string jsonstr = root.dump(4);
 		beast::ostream(connection->_response.body()) << jsonstr;
 		return true;
 		});
@@ -251,41 +245,39 @@ LogicSystem::LogicSystem() {
 		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
 		std::cout << "receive body is " << body_str << std::endl;
 		connection->_response.set(http::field::content_type, "text/json");
-		Json::Value root;
-		Json::Reader reader;
-		Json::Value src_root;
+		json root;
 		// 解析请求体JSON
-		bool parse_success = reader.parse(body_str, src_root);
-		if (!parse_success) {
+		auto src_root = json::parse(body_str, nullptr, false);
+		if (src_root.is_discarded()) {
 			std::cout << "Failed to parse JSON data!" << std::endl;
 			root["error"] = ErrorCodes::Error_Json;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 提取重置密码所需字段
-		auto email = src_root["email"].asString();  // 用户邮箱
-		auto name = src_root["user"].asString();    // 用户名
-		auto pwd = src_root["passwd"].asString();   // 新密码
+		auto email = src_root["email"].get<std::string>();  // 用户邮箱
+		auto name = src_root["user"].get<std::string>();    // 用户名
+		auto pwd = src_root["passwd"].get<std::string>();   // 新密码
 
 		// 【校验1】从Redis中查找email对应的验证码是否过期
 		std::string  varify_code;
-		bool b_get_varify = RedisMgr::GetInstance()->Get(CODEPREFIX + src_root["email"].asString(), varify_code);
+		bool b_get_varify = RedisMgr::GetInstance()->Get(CODEPREFIX + src_root["email"].get<std::string>(), varify_code);
 		if (!b_get_varify) {
 			// 验证码已过期或不存在
 			std::cout << " get varify code expired" << std::endl;
 			root["error"] = ErrorCodes::VarifyExpired;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 【校验2】比对用户输入的验证码是否正确
-		if (varify_code != src_root["varifycode"].asString()) {
+		if (varify_code != src_root["varifycode"].get<std::string>()) {
 			std::cout << " varify code error" << std::endl;
 			root["error"] = ErrorCodes::VarifyCodeErr;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -295,7 +287,7 @@ LogicSystem::LogicSystem() {
 		if (!email_valid) {
 			std::cout << " user email not match" << std::endl;
 			root["error"] = ErrorCodes::EmailNotMatch;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -306,7 +298,7 @@ LogicSystem::LogicSystem() {
 			// 数据库更新失败（可能是连接异常等原因）
 			std::cout << " update pwd failed" << std::endl;
 			root["error"] = ErrorCodes::PasswdUpFailed;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -317,8 +309,8 @@ LogicSystem::LogicSystem() {
 		root["email"] = email;
 		root["user"] = name;
 		root["passwd"] = pwd;
-		root["varifycode"] = src_root["varifycode"].asString();
-		std::string jsonstr = root.toStyledString();
+		root["varifycode"] = src_root["varifycode"].get<std::string>();
+		std::string jsonstr = root.dump(4);
 		beast::ostream(connection->_response.body()) << jsonstr;
 		return true;
 		});
@@ -340,22 +332,20 @@ LogicSystem::LogicSystem() {
 		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
 		std::cout << "receive body is " << body_str << std::endl;
 		connection->_response.set(http::field::content_type, "text/json");
-		Json::Value root;
-		Json::Reader reader;
-		Json::Value src_root;
+		json root;
 		// 解析请求体JSON
-		bool parse_success = reader.parse(body_str, src_root);
-		if (!parse_success) {
+		auto src_root = json::parse(body_str, nullptr, false);
+		if (src_root.is_discarded()) {
 			std::cout << "Failed to parse JSON data!" << std::endl;
 			root["error"] = ErrorCodes::Error_Json;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
 		// 提取登录凭证
-		auto email = src_root["email"].asString();  // 用户邮箱
-		auto pwd = src_root["passwd"].asString();   // 用户密码
+		auto email = src_root["email"].get<std::string>();  // 用户邮箱
+		auto pwd = src_root["passwd"].get<std::string>();   // 用户密码
 		UserInfo userInfo;  // 用于接收从数据库查询到的用户完整信息
 		// 【校验1】查询MySQL验证邮箱和密码是否匹配
 		// CheckPwd内部会根据email查询用户记录，比对密码，并将uid/name/icon等填入userInfo
@@ -364,7 +354,7 @@ LogicSystem::LogicSystem() {
 			// 密码错误或用户不存在
 			std::cout << " user pwd not match" << std::endl;
 			root["error"] = ErrorCodes::PasswdInvalid;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -377,7 +367,7 @@ LogicSystem::LogicSystem() {
 			// gRPC调用失败（可能是StatusServer不可用或无可用ChatServer）
 			std::cout << " grpc get chat server failed, error is " << reply.error()<< std::endl;
 			root["error"] = ErrorCodes::RPCFailed;
-			std::string jsonstr = root.toStyledString();
+			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
@@ -399,7 +389,7 @@ LogicSystem::LogicSystem() {
 		root["resport"] = res_port;          // 资源服务器端口
 
 		// 序列化JSON并写入HTTP响应体
-		std::string jsonstr = root.toStyledString();
+		std::string jsonstr = root.dump(4);
 		beast::ostream(connection->_response.body()) << jsonstr;
 		return true;
 		});

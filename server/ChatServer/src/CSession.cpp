@@ -2,9 +2,6 @@
 #include "CServer.h"
 #include <iostream>
 #include <sstream>
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
 #include "LogicSystem.h"
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
@@ -252,19 +249,19 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 
 void CSession::NotifyOffline(int uid) {
 
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["uid"] = uid;
 
 
-	std::string return_str = rtvalue.toStyledString();
+	std::string return_str = rtvalue.dump(4);
 
 	Send(return_str, ID_NOTIFY_OFF_LINE_REQ);
 	return;
 }
 
 void CSession::NotifyChatImgRecv(const ::message::NotifyChatImgReq* request) {
-	Json::Value  rtvalue;
+	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["message_id"] = request->message_id();
 	rtvalue["sender_id"] = request->from_uid();
@@ -273,7 +270,7 @@ void CSession::NotifyChatImgRecv(const ::message::NotifyChatImgReq* request) {
 	rtvalue["total_size"] = std::to_string(request->total_size());
 	rtvalue["thread_id"] = request->thread_id();
 
-	std::string return_str = rtvalue.toStyledString();
+	std::string return_str = rtvalue.dump(4);
 	//通知图片聊天信息
 	Send(return_str, ID_NOTIFY_IMG_CHAT_MSG_REQ);
 	return;

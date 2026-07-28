@@ -2,9 +2,8 @@
 #include "const.h"
 #include "ConfigMgr.h"
 #include "DistLock.h"
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 RedisMgr::RedisMgr() {
 	auto& gCfgMgr = ConfigMgr::Inst();
 	auto host = gCfgMgr["Redis"]["Host"];
@@ -498,28 +497,26 @@ void RedisMgr::DelCount(std::string server_name) {
 
 bool RedisMgr::SetFileInfo(const std::string& name, std::shared_ptr<FileInfo> file_info)
 {
-	Json::Reader reader;
-	Json::Value root;
+	json root;
 	root["file_path_str"] = file_info->_file_path_str;
 	root["name"] = file_info->_name;
 	root["seq"] = file_info->_seq;
 	root["total_size"] = std::to_string(file_info->_total_size);
 	root["trans_size"] = std::to_string(file_info->_trans_size);
-	auto file_info_str = root.toStyledString();
+	auto file_info_str = root.dump(4);
 	auto redis_key = "file_upload_" + name;
 	bool success = SetExp(redis_key, file_info_str, 3600);
 	return success;
 }
 
 bool RedisMgr::SetDownLoadInfo(const std::string& name, std::shared_ptr<FileInfo> file_info) {
-	Json::Reader reader;
-	Json::Value root;
+	json root;
 	root["file_path_str"] = file_info->_file_path_str;
 	root["name"] = file_info->_name;
 	root["seq"] = file_info->_seq;
 	root["total_size"] = std::to_string(file_info->_total_size);
 	root["trans_size"] = std::to_string(file_info->_trans_size);
-	auto file_info_str = root.toStyledString();
+	auto file_info_str = root.dump(4);
 	auto redis_key = "file_download_" + name;
 	bool success = SetExp(redis_key, file_info_str, 3600);
 	return success;
@@ -541,9 +538,8 @@ std::shared_ptr<FileInfo> RedisMgr::GetFileInfo(const std::string& name) {
 	}
 
 	// 解析 JSON
-	Json::Reader reader;
-	Json::Value root;
-	if (!reader.parse(file_info_str, root)) {
+	auto root = json::parse(file_info_str, nullptr, false);
+	if (root.is_discarded()) {
 		std::cout << "Failed to parse file info JSON for name: " << name << std::endl;
 		return nullptr;
 	}
@@ -551,11 +547,11 @@ std::shared_ptr<FileInfo> RedisMgr::GetFileInfo(const std::string& name) {
 	// 创建 FileInfo 对象并填充数据
 	auto file_info = std::make_shared<FileInfo>();
 	try {
-		file_info->_file_path_str = root["file_path_str"].asString();
-		file_info->_name = root["name"].asString();
-		file_info->_seq = root["seq"].asInt();
-		file_info->_total_size = std::stoll(root["total_size"].asString());
-		file_info->_trans_size = std::stoll(root["trans_size"].asString());
+		file_info->_file_path_str = root["file_path_str"].get<std::string>();
+		file_info->_name = root["name"].get<std::string>();
+		file_info->_seq = root["seq"].get<int>();
+		file_info->_total_size = std::stoll(root["total_size"].get<std::string>());
+		file_info->_trans_size = std::stoll(root["trans_size"].get<std::string>());
 	}
 	catch (const std::exception& e) {
 		std::cout << "Error parsing file info fields for name " << name << ": " << e.what() << std::endl;
@@ -577,9 +573,8 @@ std::shared_ptr<FileInfo> RedisMgr::GetDownloadInfo(const std::string& name) {
 	}
 
 	// 解析 JSON
-	Json::Reader reader;
-	Json::Value root;
-	if (!reader.parse(file_info_str, root)) {
+	auto root = json::parse(file_info_str, nullptr, false);
+	if (root.is_discarded()) {
 		std::cout << "Failed to parse file info JSON for name: " << name << std::endl;
 		return nullptr;
 	}
@@ -587,11 +582,11 @@ std::shared_ptr<FileInfo> RedisMgr::GetDownloadInfo(const std::string& name) {
 	// 创建 FileInfo 对象并填充数据
 	auto file_info = std::make_shared<FileInfo>();
 	try {
-		file_info->_file_path_str = root["file_path_str"].asString();
-		file_info->_name = root["name"].asString();
-		file_info->_seq = root["seq"].asInt();
-		file_info->_total_size = std::stoll(root["total_size"].asString());
-		file_info->_trans_size = std::stoll(root["trans_size"].asString());
+		file_info->_file_path_str = root["file_path_str"].get<std::string>();
+		file_info->_name = root["name"].get<std::string>();
+		file_info->_seq = root["seq"].get<int>();
+		file_info->_total_size = std::stoll(root["total_size"].get<std::string>());
+		file_info->_trans_size = std::stoll(root["trans_size"].get<std::string>());
 	}
 	catch (const std::exception& e) {
 		std::cout << "Error parsing file info fields for name " << name << ": " << e.what() << std::endl;

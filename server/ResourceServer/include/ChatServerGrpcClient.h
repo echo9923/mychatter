@@ -2,8 +2,8 @@
 #include "const.h"
 #include "Singleton.h"
 #include "ConfigMgr.h"
-#include "message.grpc.pb.h"
-#include "message.pb.h"
+#include "chat.grpc.pb.h"
+#include "chat.pb.h"
 #include <grpcpp/grpcpp.h>
 #include <queue>
 #include <condition_variable>
