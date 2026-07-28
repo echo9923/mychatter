@@ -1,5 +1,5 @@
 #pragma once
-#include <hiredis.h>
+#include <hiredis/hiredis.h>
 #include <string>
 class DistLock
 {

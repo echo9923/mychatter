@@ -32,7 +32,8 @@ if(NOT DEFINED LLFC_REPO_ROOT)
 endif()
 
 llfc_find_server_dependencies()
-llfc_ensure_control_proto()
+llfc_ensure_status_proto()
+llfc_ensure_verify_proto()
 
 add_executable(GateServer
   src/AsioIOServicePool.cpp
@@ -65,13 +66,14 @@ target_include_directories(GateServer PRIVATE
 )
 
 target_link_libraries(GateServer PRIVATE
-  llfc_control_proto
+  llfc_status_proto
+  llfc_verify_proto
   Boost::asio
   Boost::beast
   Boost::filesystem
   Boost::property_tree
   Boost::uuid
-  JsonCpp::JsonCpp
+  nlohmann_json::nlohmann_json
   hiredis::hiredis
   mysql::concpp-jdbc-static
 )

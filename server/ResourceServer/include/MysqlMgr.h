@@ -3,7 +3,7 @@
 #include "MysqlDao.h"
 #include "Singleton.h"
 #include <vector>
-#include "message.pb.h"
+#include "chat.pb.h"
 #include "FileInfo.h"
 
 class MysqlMgr: public Singleton<MysqlMgr>

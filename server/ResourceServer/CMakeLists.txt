@@ -14,7 +14,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(VCPKG_INSTALLED_DIR "${_llfc_repo_root}/vcpkg_installed" CACHE PATH "vcpkg installed directory" FORCE)
   set(LLFC_REPO_ROOT "${_llfc_repo_root}" CACHE PATH "llfcchat repository root" FORCE)
 
-  project(ChatServer LANGUAGES CXX)
+  project(ResourceServer LANGUAGES CXX)
 
   list(APPEND CMAKE_MODULE_PATH "${LLFC_REPO_ROOT}/cmake")
   include(Dependencies)
@@ -32,55 +32,56 @@ endif()
 
 llfc_find_server_dependencies()
 llfc_ensure_chat_proto()
-llfc_ensure_status_proto()
 
-add_executable(ChatServer
+add_executable(ResourceServer
   src/AsioIOServicePool.cpp
-  src/ChatGrpcClient.cpp
-  src/ChatServer.cpp
-  src/ChatServiceImpl.cpp
+  src/base64.cpp
+  src/ChatServerGrpcClient.cpp
   src/ConfigMgr.cpp
   src/CServer.cpp
   src/CSession.cpp
   src/DistLock.cpp
+  src/FileInfo.cpp
+  src/FileSystem.cpp
+  src/FileWorker.cpp
   src/LogicSystem.cpp
+  src/LogicWorker.cpp
   src/MsgNode.cpp
   src/MysqlDao.cpp
   src/MysqlMgr.cpp
   src/RedisMgr.cpp
-  src/StatusGrpcClient.cpp
+  src/ResourceServer.cpp
   src/UserMgr.cpp
-  src/utils.cpp
   include/AsioIOServicePool.h
-  include/ChatGrpcClient.h
-  include/ChatServiceImpl.h
+  include/base64.h
+  include/ChatServerGrpcClient.h
   include/ConfigMgr.h
   include/const.h
   include/CServer.h
   include/CSession.h
   include/data.h
   include/DistLock.h
+  include/FileInfo.h
+  include/FileSystem.h
+  include/FileWorker.h
   include/LogicSystem.h
+  include/LogicWorker.h
   include/MsgNode.h
   include/MysqlDao.h
   include/MysqlMgr.h
   include/RedisMgr.h
   include/Singleton.h
-  include/StatusGrpcClient.h
   include/UserMgr.h
-  include/utils.h
 )
 
-target_include_directories(ChatServer PRIVATE
+target_include_directories(ResourceServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
-target_link_libraries(ChatServer PRIVATE
+target_link_libraries(ResourceServer PRIVATE
   llfc_chat_proto
-  llfc_status_proto
   Boost::asio
   Boost::beast
-  Boost::date_time
   Boost::filesystem
   Boost::property_tree
   Boost::uuid
@@ -89,22 +90,14 @@ target_link_libraries(ChatServer PRIVATE
   mysql::concpp-jdbc-static
 )
 
-target_compile_features(ChatServer PRIVATE cxx_std_17)
-llfc_apply_msvc_defaults(ChatServer)
-llfc_set_runtime_outdir(ChatServer chatserver1)
+target_compile_features(ResourceServer PRIVATE cxx_std_17)
+llfc_apply_msvc_defaults(ResourceServer)
+llfc_set_runtime_outdir(ResourceServer ResourceServer)
 
-add_custom_command(TARGET ChatServer POST_BUILD
+add_custom_command(TARGET ResourceServer POST_BUILD
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-    "${CMAKE_CURRENT_SOURCE_DIR}/config/chatserver1.ini"
-    "$<TARGET_FILE_DIR:ChatServer>/config.ini"
-  COMMAND "${CMAKE_COMMAND}" -E make_directory
-    "$<TARGET_FILE_DIR:ChatServer>/../chatserver2"
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-    "$<TARGET_FILE:ChatServer>"
-    "$<TARGET_FILE_DIR:ChatServer>/../chatserver2/$<TARGET_FILE_NAME:ChatServer>"
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-    "${CMAKE_CURRENT_SOURCE_DIR}/config/chatserver2.ini"
-    "$<TARGET_FILE_DIR:ChatServer>/../chatserver2/config.ini"
-  COMMENT "Deploy ChatServer configs and chatserver2 instance"
+    "${CMAKE_CURRENT_SOURCE_DIR}/config/config.ini"
+    "$<TARGET_FILE_DIR:ResourceServer>/config.ini"
+  COMMENT "Deploy ResourceServer config.ini"
   VERBATIM
 )

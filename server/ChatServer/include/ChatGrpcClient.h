@@ -3,14 +3,13 @@
 #include "Singleton.h"
 #include "ConfigMgr.h"
 #include <grpcpp/grpcpp.h> 
-#include "message.grpc.pb.h"
-#include "message.pb.h"
+#include "chat.grpc.pb.h"
+#include "chat.pb.h"
 #include <queue>
 #include "const.h"
 #include "data.h"
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 
 using grpc::Channel;
 using grpc::Status;
@@ -22,9 +21,6 @@ using message::AddFriendRsp;
 using message::AuthFriendReq;
 using message::AuthFriendRsp;
 
-using message::GetChatServerRsp;
-using message::LoginRsp;
-using message::LoginReq;
 using message::ChatService;
 
 using message::TextChatMsgReq;
@@ -108,7 +104,7 @@ public:
 	AddFriendRsp NotifyAddFriend(std::string server_ip, const AddFriendReq& req);
 	AuthFriendRsp NotifyAuthFriend(std::string server_ip, const AuthFriendReq& req);
 	bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
-	TextChatMsgRsp NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& req, const Json::Value& rtvalue);
+	TextChatMsgRsp NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& req, const json& rtvalue);
 	KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& req);
 private:
 	ChatGrpcClient();

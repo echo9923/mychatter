@@ -37,6 +37,7 @@ set(LLFCCHAT_SOURCES
   src/BubbleFrame.cpp
   src/ChatItemBase.cpp
   src/ChatView.cpp
+  src/ClickableLabel.cpp
   src/MessageTextEdit.cpp
   src/PictureBubble.cpp
   src/TextBubble.cpp
@@ -57,6 +58,7 @@ set(LLFCCHAT_SOURCES
   src/conuseritem.cpp
   src/customizeedit.cpp
   src/customizetextedit.cpp
+  src/filetcpmgr.cpp
   src/findfaildlg.cpp
   src/findsuccessdlg.cpp
   src/friendinfopage.cpp
@@ -89,6 +91,7 @@ set(LLFCCHAT_HEADERS
   include/ChatItemBase.h
   include/ChatView.h
   include/MessageTextEdit.h
+  include/ClickableLabel.h
   include/PictureBubble.h
   include/TextBubble.h
   include/adduseritem.h
@@ -109,6 +112,7 @@ set(LLFCCHAT_HEADERS
   include/customizeedit.h
   include/customizetextedit.h
   include/findfaildlg.h
+  include/filetcpmgr.h
   include/findsuccessdlg.h
   include/friendinfopage.h
   include/friendlabel.h

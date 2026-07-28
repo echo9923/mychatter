@@ -7,9 +7,8 @@
 #include <map>
 #include <functional>
 #include "const.h"
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 #include <unordered_map>
 #include "data.h"
 
@@ -33,8 +32,8 @@ private:
 	void DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
 	void HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
 	bool isPureDigit(const std::string& str);
-	void GetUserByUid(std::string uid_str, Json::Value& rtvalue);
-	void GetUserByName(std::string name, Json::Value& rtvalue);
+	void GetUserByUid(std::string uid_str, json& rtvalue);
+	void GetUserByName(std::string name, json& rtvalue);
 	bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo> &userinfo);
 	bool GetFriendApplyInfo(int to_uid, std::vector<std::shared_ptr<ApplyInfo>>& list);
 	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo>> & user_list);

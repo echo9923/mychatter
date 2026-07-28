@@ -12,7 +12,7 @@ function(llfc_find_server_dependencies)
     property_tree
     uuid
   )
-  find_package(jsoncpp CONFIG REQUIRED)
+  find_package(nlohmann_json CONFIG REQUIRED)
   find_package(gRPC CONFIG REQUIRED)
   find_package(Protobuf CONFIG REQUIRED)
   find_package(hiredis CONFIG REQUIRED)

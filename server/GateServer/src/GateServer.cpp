@@ -2,9 +2,6 @@
 //
 
 #include <iostream>
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
 #include "const.h"
 #include "CServer.h"
 #include "ConfigMgr.h"

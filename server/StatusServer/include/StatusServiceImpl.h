@@ -1,6 +1,6 @@
 #pragma once
 #include <grpcpp/grpcpp.h>
-#include "message.grpc.pb.h"
+#include "status.grpc.pb.h"
 #include <mutex>
 
 using grpc::Server;

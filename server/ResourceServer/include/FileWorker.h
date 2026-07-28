@@ -3,7 +3,8 @@
 #include <mutex>
 #include <queue>
 #include <condition_variable>
-#include <json/value.h>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 #include <functional>
 #include "const.h"
 #include <functional>
@@ -15,7 +16,7 @@ struct FileTask {
 	FileTask(std::shared_ptr<CSession> session,  MSG_IDS msg_id, int uid, std::string path, std::string name,
 		int seq, int total_size, int trans_size, int last, 
 		std::string file_data,
-		std::function<void(const Json::Value&)> callback,int chat_msg_id=0,
+		std::function<void(const json&)> callback,int chat_msg_id=0,
 		int sender = 0, int receiver = 0) :_session(session), _msg_id(msg_id),_uid(uid),
 		_seq(seq), _path(path), _name(name), _total_size(total_size),
 		_trans_size(trans_size), _last(last), _file_data(file_data), _callback(callback), _chat_msg_id(chat_msg_id),
@@ -32,7 +33,7 @@ struct FileTask {
 	int _trans_size ;
 	int _last ;
 	std::string _file_data;
-	std::function<void(const Json::Value&)>  _callback;  //添加回调函数
+	std::function<void(const json&)>  _callback;  //添加回调函数
 	int _chat_msg_id;
 	int _sender;
 	int _receiver;
@@ -43,7 +44,7 @@ struct FileTask {
 struct DownloadTask {
 	DownloadTask(std::shared_ptr<CSession> session, int uid, std::string name,
 		int seq, std::string file_path,
-		std::function<void(const Json::Value&)> callback) :_session(session), _uid(uid),
+		std::function<void(const json&)> callback) :_session(session), _uid(uid),
 		_seq(seq), _name(name), _file_path(file_path), _callback(callback)
 	{}
 	~DownloadTask() {}
@@ -52,7 +53,7 @@ struct DownloadTask {
 	int _seq;
 	std::string _name;
 	std::string _file_path;
-	std::function<void(const Json::Value&)>  _callback;  //添加回调函数
+	std::function<void(const json&)>  _callback;  //添加回调函数
 };
 
 class FileWorker

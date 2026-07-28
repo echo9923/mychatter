@@ -2,9 +2,6 @@
 #include "CServer.h"
 #include <iostream>
 #include <sstream>
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
 #include "LogicSystem.h"
 
 

@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package message;
+
+// VarifyServer (Node.js) 实现，GateServer 作为客户端调用
+service VarifyService {
+  rpc GetVarifyCode (GetVarifyReq) returns (GetVarifyRsp) {}
+}
+
+message GetVarifyReq {
+  string email = 1;
+}
+
+message GetVarifyRsp {
+  int32 error = 1;
+  string email = 2;
+  string code = 3;
+}

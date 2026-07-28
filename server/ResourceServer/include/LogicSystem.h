@@ -7,9 +7,8 @@
 #include <map>
 #include <functional>
 #include "const.h"
-#include <json/json.h>
-#include <json/value.h>
-#include <json/reader.h>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 #include <unordered_map>
 #include "LogicWorker.h"
 #include "FileInfo.h"

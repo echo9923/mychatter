@@ -3,8 +3,8 @@
 #include "Singleton.h"
 #include "ConfigMgr.h"
 #include <grpcpp/grpcpp.h> 
-#include "message.grpc.pb.h"
-#include "message.pb.h"
+#include "chat.grpc.pb.h"
+#include "chat.pb.h"
 
 using grpc::Channel;
 using grpc::Status;
@@ -13,9 +13,6 @@ using grpc::ClientContext;
 using message::AddFriendReq;
 using message::AddFriendRsp;
 
-using message::GetChatServerRsp;
-using message::LoginRsp;
-using message::LoginReq;
 using message::ChatService;
 
 class ChatConPool {
