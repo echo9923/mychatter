@@ -1,4 +1,4 @@
-﻿// GateServer.cpp : 此文件包含 "main" 函数。程序执行将在此处开始并结束。
+// GateServer.cpp : 此文件包含 "main" 函数。程序执行将在此处开始并结束。
 //
 
 #include <iostream>
@@ -9,6 +9,7 @@
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
 #include "AsioIOServicePool.h"
+#include "LogicSystem.h"
 
 void TestRedis() {
 	//连接redis 需要启动才可以进行连接
@@ -141,6 +142,10 @@ int main()
 			if (error) {
 				return;
 			}
+			// 计划2.5：先让 worker 池拒绝并排空 handler（排空期间仍可 post-back
+			// 到连接 executor 完成响应），再停连接 IO 线程池，最后停 accept ioc
+			LogicSystem::GetInstance()->Stop();
+			AsioIOServicePool::GetInstance()->Stop();
 			ioc.stop();
 			});
 		std::make_shared<CServer>(ioc, gate_port)->Start();
