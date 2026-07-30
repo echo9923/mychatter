@@ -29,19 +29,25 @@ CREATE TABLE `chat_message`  (
   `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=未读 1=已读 2=撤回',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=未读 1=发送失败 2=已读 3=资源未上传完成',
+  `msg_type` tinyint NOT NULL DEFAULT 0 COMMENT '0=文本 1=图片 2=视频 3=文件',
+  `unique_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '客户端去重标识，历史/系统消息为NULL',
+  `content_size` bigint UNSIGNED NOT NULL DEFAULT 0 COMMENT '文本为0，图片为字节数',
+  `delivery_status` tinyint NOT NULL DEFAULT 0 COMMENT '0=待投递 1=已投递(ACK)',
   PRIMARY KEY (`message_id`) USING BTREE,
+  UNIQUE INDEX `uk_chat_message_sender_unique`(`sender_id` ASC, `unique_id` ASC) USING BTREE,
   INDEX `idx_thread_created`(`thread_id` ASC, `created_at` ASC) USING BTREE,
-  INDEX `idx_thread_message`(`thread_id` ASC, `message_id` ASC) USING BTREE
+  INDEX `idx_thread_message`(`thread_id` ASC, `message_id` ASC) USING BTREE,
+  INDEX `idx_chat_message_pending`(`recv_id` ASC, `delivery_status` ASC, `message_id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 37 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Records of chat_message
 -- ----------------------------
-INSERT INTO `chat_message` VALUES (33, 35, 1002, 1019, '您好,我是llfc', '2025-07-02 06:41:08', '2025-07-24 08:27:45', 2);
-INSERT INTO `chat_message` VALUES (34, 35, 1019, 1002, 'We are friends now!', '2025-07-02 06:41:08', '2025-07-24 08:27:39', 2);
-INSERT INTO `chat_message` VALUES (35, 35, 1002, 1019, '你好，很高兴认识你', '2025-07-24 21:36:30', '2025-07-24 21:36:30', 2);
-INSERT INTO `chat_message` VALUES (36, 35, 1019, 1002, '我也是，很高兴认识你', '2025-07-24 21:36:43', '2025-07-24 21:36:43', 2);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (33, 35, 1002, 1019, '您好,我是llfc', '2025-07-02 06:41:08', '2025-07-24 08:27:45', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (34, 35, 1019, 1002, 'We are friends now!', '2025-07-02 06:41:08', '2025-07-24 08:27:39', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (35, 35, 1002, 1019, '你好，很高兴认识你', '2025-07-24 21:36:30', '2025-07-24 21:36:30', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (36, 35, 1019, 1002, '我也是，很高兴认识你', '2025-07-24 21:36:43', '2025-07-24 21:36:43', 2, 0, NULL, 0, 1);
 
 -- ----------------------------
 -- Table structure for chat_thread
