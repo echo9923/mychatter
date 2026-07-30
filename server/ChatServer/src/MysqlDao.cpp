@@ -984,11 +984,12 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 	}
 	msg->message_id = static_cast<int>(rs->getUInt64(1));
 
-	// 无条件按 canonical message_id 回读核对五字段；不区分是否新插入，也不覆盖原行。
-	// 行不存在→Failed；五字段全等→affected==1 ? Stored : Duplicate；不等→Conflict。
+	// 无条件按 canonical message_id 回读核对冲突字段，并恢复持久化状态。
+	// 行不存在→Failed；五个业务字段全等才是同一消息；否则→Conflict。
 	auto readStmt = std::unique_ptr<sql::PreparedStatement>(
 		conn->prepareStatement(
-			"SELECT thread_id, recv_id, content, msg_type, content_size "
+			"SELECT thread_id, recv_id, content, msg_type, content_size, "
+			"status, created_at, delivery_status "
 			"FROM chat_message WHERE message_id = ?"
 		)
 	);
@@ -1006,6 +1007,10 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 		rr->getUInt64("content_size") == msg->content_size;
 
 	if (same) {
+		// Duplicate 必须带回数据库真值：已 ACK 的消息不能因默认 Pending 被重新激活。
+		msg->status = rr->getInt("status");
+		msg->chat_time = rr->getString("created_at");
+		msg->delivery_status = static_cast<DeliveryStatus>(rr->getInt("delivery_status"));
 		return affected == 1 ? SaveMessageResult::Stored : SaveMessageResult::Duplicate;
 	}
 	out_conflict_uid = msg->unique_id;
