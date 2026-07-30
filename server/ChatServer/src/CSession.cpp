@@ -58,6 +58,10 @@ void CSession::Start(){
 
 void CSession::Send(std::string msg, short msgid) {
 	std::lock_guard<std::mutex> lock(_send_lock);
+	if (_close_after_send) {
+		//已安排写完即关的终帧，后续发送一律拒绝
+		return;
+	}
 	int send_que_size = _send_que.size();
 	if (send_que_size > MAX_SENDQUE) {
 		std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
@@ -75,6 +79,10 @@ void CSession::Send(std::string msg, short msgid) {
 
 void CSession::Send(char* msg, short max_length, short msgid) {
 	std::lock_guard<std::mutex> lock(_send_lock);
+	if (_close_after_send) {
+		//已安排写完即关的终帧，后续发送一律拒绝
+		return;
+	}
 	int send_que_size = _send_que.size();
 	if (send_que_size > MAX_SENDQUE) {
 		std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
@@ -87,6 +95,24 @@ void CSession::Send(char* msg, short max_length, short msgid) {
 	}
 	auto& msgnode = _send_que.front();
 	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len), 
+		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
+}
+
+void CSession::SendAndClose(std::string msg, short msgid) {
+	std::lock_guard<std::mutex> lock(_send_lock);
+	if (_close_after_send) {
+		//已经安排过终帧，忽略重复调用
+		return;
+	}
+	//先置标志再入队：同一把锁内拒绝后续一切 Send，保证该帧是最后一帧
+	_close_after_send = true;
+	_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msgid));
+	if (_send_que.size() > 1) {
+		//已有写在飞，HandleWrite 会依次写完并在排空后关闭
+		return;
+	}
+	auto& msgnode = _send_que.front();
+	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
 		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
 }
 
@@ -150,11 +176,10 @@ void CSession::AsyncReadBody(int total_len)
 				}
 
 				if (login_uid <= 0 || !BindRoutingUid(login_uid)) {
-					//uid 非正整数或同连接声明了不同 uid：回送错误并关闭，不进入任何 handler
+					//uid 非正整数或同连接声明了不同 uid：原子发送错误终帧，写完后关闭，不进入任何 handler
 					json err;
 					err["error"] = ErrorCodes::UidInvalid;
-					Send(err.dump(4), MSG_CHAT_LOGIN_RSP);
-					Close();
+					SendAndClose(err.dump(4), MSG_CHAT_LOGIN_RSP);
 					return;
 				}
 				routing_key = std::hash<int>{}(GetRoutingUid());
@@ -173,14 +198,17 @@ void CSession::AsyncReadBody(int total_len)
 			bool posted = LogicSystem::GetInstance()->PostMsgToQue(routing_key,
 				make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
 			if (!posted) {
-				//服务端停机/队列拒绝：回送 SERVER_BUSY 再关闭，该消息绝不入队、绝不持久化
+				//服务端停机/队列拒绝：该消息绝不入队、绝不持久化
 				short rsp_id = ReqToRspId(msg_id);
 				if (rsp_id != 0) {
 					json busy;
 					busy["error"] = ErrorCodes::SERVER_BUSY;
-					Send(busy.dump(4), rsp_id);
+					//原子发送 SERVER_BUSY 终帧，写完后关闭
+					SendAndClose(busy.dump(4), rsp_id);
 				}
-				Close();
+				else {
+					Close();
+				}
 				return;
 			}
 
@@ -261,13 +289,23 @@ void CSession::HandleWrite(const boost::system::error_code& error, std::shared_p
 	try {
 		auto self = shared_from_this();
 		if (!error) {
-			std::lock_guard<std::mutex> lock(_send_lock);
-			//cout << "send data " << _send_que.front()->_data+HEAD_LENGTH << endl;
-			_send_que.pop();
-			if (!_send_que.empty()) {
-				auto& msgnode = _send_que.front();
-				boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-					std::bind(&CSession::HandleWrite, this, std::placeholders::_1, shared_self));
+			bool drain_close = false;
+			{
+				std::lock_guard<std::mutex> lock(_send_lock);
+				//cout << "send data " << _send_que.front()->_data+HEAD_LENGTH << endl;
+				_send_que.pop();
+				if (!_send_que.empty()) {
+					auto& msgnode = _send_que.front();
+					boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+						std::bind(&CSession::HandleWrite, this, std::placeholders::_1, shared_self));
+				}
+				else {
+					//队列已排空：若是 SendAndClose 安排的终帧，现在才真正关闭
+					drain_close = _close_after_send;
+				}
+			}
+			if (drain_close) {
+				Close();
 			}
 		}
 		else {

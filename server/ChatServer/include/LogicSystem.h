@@ -214,8 +214,10 @@ private:
 	 */
 	void DealChatImgMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
 	
-	/// 停机标志：置 true 后 PostMsgToQue/PostToUser/PostDelivery 立即拒绝新投递
-	std::atomic<bool> _stopping{false};
+	/// client/gRPC 入口停机标志：置 true 后 PostMsgToQue/PostToUser 拒绝新投递
+	std::atomic<bool> _ingress_stopping{false};
+	/// 跨服投递停机标志：logic workers 全部排空/join 后才置 true，此后 PostDelivery 拒绝
+	std::atomic<bool> _delivery_stopping{false};
 	/// 保护 Stop() 幂等执行（只一次排空/join）的互斥锁
 	std::mutex _stop_mutex;
 	/// 按 uid 分片的逻辑处理 worker 池（客户端消息 + 面向 uid 的入站通知）
