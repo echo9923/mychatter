@@ -380,22 +380,24 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short&
 
 	//直接通知对方有申请消息
 	if (to_ip_value == self_name) {
-		auto session = UserMgr::GetInstance()->GetSession(touid);
-		if (session) {
-			//在内存中则直接发送通知对方
-			json  notify;
-			notify["error"] = ErrorCodes::Success;
-			notify["applyuid"] = uid;
-			notify["name"] = apply_info->name;
-			notify["desc"] = desc;
-			if (b_info) {
-				notify["icon"] = apply_info->icon;
-				notify["sex"] = apply_info->sex;
-				notify["nick"] = apply_info->nick;
-			}
-			std::string return_str = notify.dump(4);
-			session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
+		//计划1.5：本机 recipient 分支也纳入其 uid 分片，闭包内重新查 session 存在才发送
+		json  notify;
+		notify["error"] = ErrorCodes::Success;
+		notify["applyuid"] = uid;
+		notify["name"] = apply_info->name;
+		notify["desc"] = desc;
+		if (b_info) {
+			notify["icon"] = apply_info->icon;
+			notify["sex"] = apply_info->sex;
+			notify["nick"] = apply_info->nick;
 		}
+		std::string return_str = notify.dump(4);
+		PostToUser(touid, [touid, return_str]() {
+			auto session = UserMgr::GetInstance()->GetSession(touid);
+			if (session) {
+				session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
+			}
+		});
 
 		return ;
 	}
@@ -470,44 +472,46 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 	auto self_name = cfg["SelfServer"]["Name"];
 	//直接通知对方有认证通过消息
 	if (to_ip_value == self_name) {
-		auto session = UserMgr::GetInstance()->GetSession(touid);
-		if (session) {
-			//在内存中则直接发送通知对方
-			json  notify;
-			notify["error"] = ErrorCodes::Success;
-			notify["fromuid"] = uid;
-			notify["touid"] = touid;
-			std::string base_key = USER_BASE_INFO + std::to_string(uid);
-			auto user_info = std::make_shared<UserInfo>();
-			bool b_info = GetBaseInfo(base_key, uid, user_info);
-			if (b_info) {
-				notify["name"] = user_info->name;
-				notify["nick"] = user_info->nick;
-				notify["icon"] = user_info->icon;
-				notify["sex"] = user_info->sex;
-			}
-			else {
-				notify["error"] = ErrorCodes::UidInvalid;
-			}
-
-			auto chat_time = getCurrentTimestamp();
-			for(auto & chat_data : chat_datas)
-			{
-				json  chat;
-				chat["sender"] = chat_data->sender_id();
-				chat["msg_id"] = chat_data->msg_id();
-				chat["thread_id"] = chat_data->thread_id();
-				chat["unique_id"] = chat_data->unique_id();
-				chat["msg_content"] = chat_data->msgcontent();
-				chat["chat_time"] = chat_time;
-				chat["status"] = chat_data->status();
-				notify["chat_datas"].push_back(chat);
-				rtvalue["chat_datas"].push_back(chat);
-			}
-
-			std::string return_str = notify.dump(4);
-			session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
+		//计划1.5：本机 recipient 分支也纳入其 uid 分片，闭包内重新查 session 存在才发送
+		json  notify;
+		notify["error"] = ErrorCodes::Success;
+		notify["fromuid"] = uid;
+		notify["touid"] = touid;
+		std::string base_key = USER_BASE_INFO + std::to_string(uid);
+		auto user_info = std::make_shared<UserInfo>();
+		bool b_info = GetBaseInfo(base_key, uid, user_info);
+		if (b_info) {
+			notify["name"] = user_info->name;
+			notify["nick"] = user_info->nick;
+			notify["icon"] = user_info->icon;
+			notify["sex"] = user_info->sex;
 		}
+		else {
+			notify["error"] = ErrorCodes::UidInvalid;
+		}
+
+		auto chat_time = getCurrentTimestamp();
+		for(auto & chat_data : chat_datas)
+		{
+			json  chat;
+			chat["sender"] = chat_data->sender_id();
+			chat["msg_id"] = chat_data->msg_id();
+			chat["thread_id"] = chat_data->thread_id();
+			chat["unique_id"] = chat_data->unique_id();
+			chat["msg_content"] = chat_data->msgcontent();
+			chat["chat_time"] = chat_time;
+			chat["status"] = chat_data->status();
+			notify["chat_datas"].push_back(chat);
+			rtvalue["chat_datas"].push_back(chat);
+		}
+
+		std::string return_str = notify.dump(4);
+		PostToUser(touid, [touid, return_str]() {
+			auto session = UserMgr::GetInstance()->GetSession(touid);
+			if (session) {
+				session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
+			}
+		});
 
 		return ;
 	}
@@ -601,14 +605,16 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 
 	auto& cfg = ConfigMgr::Inst();
 	auto self_name = cfg["SelfServer"]["Name"];
-	//直接通知对方有认证通过消息
+	//直接通知对方有文本消息
 	if (to_ip_value == self_name) {
-		auto session = UserMgr::GetInstance()->GetSession(touid);
-		if (session) {
-			//在内存中则直接发送通知对方
-			std::string return_str = rtvalue.dump(4);
-			session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
-		}
+		//计划1.5：本机 recipient 分支也纳入其 uid 分片，闭包内重新查 session 存在才发送
+		std::string return_str = rtvalue.dump(4);
+		PostToUser(touid, [touid, return_str]() {
+			auto session = UserMgr::GetInstance()->GetSession(touid);
+			if (session) {
+				session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
+			}
+		});
 
 		return ;
 	}
