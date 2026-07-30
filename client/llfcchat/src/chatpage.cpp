@@ -428,6 +428,7 @@ void ChatPage::on_send_btn_clicked() {
     const QVector<std::shared_ptr<MsgInfo>>& msgList = pTextEdit->getMsgList();
     QJsonObject textObj;
     QJsonArray textArray;
+    QStringList textUniqueIds; //与 textArray 同步维护，随 batch 一起清空
     int txt_size = 0;
     auto thread_id = _chat_data->GetThreadId();
     for (int i = 0; i < msgList.size(); ++i)
@@ -456,12 +457,13 @@ void ChatPage::on_send_btn_clicked() {
                 textObj["text_array"] = textArray;
                 QJsonDocument doc(textObj);
                 QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
+                //可靠发送（持久重传）
+                TcpMgr::GetInstance()->SendReliableChat(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData, textUniqueIds);
                 //发送并清空之前累计的文本列表
                 txt_size = 0;
                 textArray = QJsonArray();
                 textObj = QJsonObject();
-                //发送tcp请求给chat server
-                emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData);
+                textUniqueIds.clear();
             }
 
             //将bubble和uid绑定，以后可以等网络返回消息后设置是否送达
@@ -473,6 +475,7 @@ void ChatPage::on_send_btn_clicked() {
             obj["content"] = content;
             obj["unique_id"] = uuidString;
             textArray.append(obj);
+            textUniqueIds.append(uuidString);
             //注意，此处先按私聊处理
             auto txt_msg = std::make_shared<TextChatData>(uuidString, thread_id, ChatFormType::PRIVATE,
                 ChatMsgType::TEXT, content, user_info->_uid, 0);
@@ -489,12 +492,13 @@ void ChatPage::on_send_btn_clicked() {
                 textObj["text_array"] = textArray;
                 QJsonDocument doc(textObj);
                 QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
+                //可靠发送（持久重传）
+                TcpMgr::GetInstance()->SendReliableChat(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData, textUniqueIds);
                 //发送并清空之前累计的文本列表
                 txt_size = 0;
                 textArray = QJsonArray();
                 textObj = QJsonObject();
-                //发送tcp请求给chat server
-                emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData);
+                textUniqueIds.clear();
             }
 
             pBubble = new PictureBubble(QPixmap(msgList[i]->_text_or_url), role, msgList[i]->_total_size);
@@ -511,13 +515,16 @@ void ChatPage::on_send_btn_clicked() {
             textObj["token"] = UserMgr::GetInstance()->GetToken();
             textObj["unique_id"] = uuidString;
             textObj["text_or_url"] = msgList[i]->_text_or_url;
+            textObj["content_size"] = QString::number(msgList[i]->_total_size);
 
             //文件信息加入管理
             UserMgr::GetInstance()->AddTransFile(msgList[i]->_unique_name, msgList[i]);
             QJsonDocument doc(textObj);
             QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-            //发送tcp请求给chat server
-            emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_IMG_CHAT_MSG_REQ, jsonData);
+            //可靠发送（持久重传）
+            QStringList img_unique_ids;
+            img_unique_ids.append(uuidString);
+            TcpMgr::GetInstance()->SendReliableChat(ReqId::ID_IMG_CHAT_MSG_REQ, jsonData, img_unique_ids);
             //链接暂停信号
             connect(dynamic_cast<PictureBubble*>(pBubble), &PictureBubble::pauseRequested,
                 this, &ChatPage::on_clicked_paused);
@@ -550,12 +557,13 @@ void ChatPage::on_send_btn_clicked() {
         textObj["thread_id"] = thread_id;
         QJsonDocument doc(textObj);
         QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
+        //可靠发送（持久重传）
+        TcpMgr::GetInstance()->SendReliableChat(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData, textUniqueIds);
         //发送并清空之前累计的文本列表
         txt_size = 0;
         textArray = QJsonArray();
         textObj = QJsonObject();
-        //发送tcp请求给chat server
-        emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData);
+        textUniqueIds.clear();
     }
 }
 
