@@ -1,4 +1,4 @@
-﻿#include "CSession.h"
+#include "CSession.h"
 #include "CServer.h"
 #include <iostream>
 #include <sstream>
@@ -31,9 +31,25 @@ void CSession::SetUserId(int uid)
 	_user_uid = uid;
 }
 
-int CSession::GetUserId()
+int CSession::GetUserId() const
 {
-	return _user_uid;
+	return _user_uid.load();
+}
+
+bool CSession::BindRoutingUid(int uid)
+{
+	//首 comparing-exchange：从 0 固定为 uid
+	int expected = 0;
+	if (_routing_uid.compare_exchange_strong(expected, uid)) {
+		return true;
+	}
+	//已绑定：只有声明同一 uid 才允许（token 失败后用原 routing uid 重试登录）
+	return expected == uid;
+}
+
+int CSession::GetRoutingUid() const
+{
+	return _routing_uid.load();
 }
 
 void CSession::Start(){
@@ -116,8 +132,58 @@ void CSession::AsyncReadBody(int total_len)
 			cout << "receive data is " << _recv_msg_node->_data << endl;
 			//更新session心跳时间
 			UpdateHeartbeat();
-			//此处将消息投递到逻辑队列中
-			LogicSystem::GetInstance()->PostMsgToQue(make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
+
+			const short msg_id = _recv_msg_node->GetMsgId();
+			std::size_t routing_key = 0;
+
+			if (msg_id == MSG_CHAT_LOGIN) {
+				//登录包：仅解析正整数 uid 以固定路由分片，不在 IO 线程处理登录业务
+				int login_uid = 0;
+				try {
+					auto root = json::parse(std::string(_recv_msg_node->_data, _recv_msg_node->_cur_len), nullptr, false);
+					if (root.is_object() && root.contains("uid") && root["uid"].is_number_integer()) {
+						login_uid = root["uid"].get<int>();
+					}
+				}
+				catch (std::exception& e) {
+					std::cout << "parse login routing uid failed, " << e.what() << endl;
+				}
+
+				if (login_uid <= 0 || !BindRoutingUid(login_uid)) {
+					//uid 非正整数或同连接声明了不同 uid：回送错误并关闭，不进入任何 handler
+					json err;
+					err["error"] = ErrorCodes::UidInvalid;
+					Send(err.dump(4), MSG_CHAT_LOGIN_RSP);
+					Close();
+					return;
+				}
+				routing_key = std::hash<int>{}(GetRoutingUid());
+			}
+			else {
+				int routing_uid = GetRoutingUid();
+				if (routing_uid == 0) {
+					//未绑定 uid 时收到非登录消息：直接关闭，不进入 handler
+					Close();
+					return;
+				}
+				routing_key = std::hash<int>{}(routing_uid);
+			}
+
+			//按路由 uid 的 hash 固定投递到某个 logic worker 分片（计划1.2）
+			bool posted = LogicSystem::GetInstance()->PostMsgToQue(routing_key,
+				make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
+			if (!posted) {
+				//服务端停机/队列拒绝：回送 SERVER_BUSY 再关闭，该消息绝不入队、绝不持久化
+				short rsp_id = ReqToRspId(msg_id);
+				if (rsp_id != 0) {
+					json busy;
+					busy["error"] = ErrorCodes::SERVER_BUSY;
+					Send(busy.dump(4), rsp_id);
+				}
+				Close();
+				return;
+			}
+
 			//继续监听头部接受事件
 			AsyncReadHead(HEAD_TOTAL_LEN);
 		}
@@ -302,7 +368,7 @@ void CSession::DealExceptionSession()
 {
 	auto self = shared_from_this();
 	//加锁清除session
-	auto uid_str = std::to_string(_user_uid);
+	auto uid_str = std::to_string(_user_uid.load());
 	auto lock_key = LOCK_PREFIX + uid_str;
 	auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
 	Defer defer([identifier, lock_key, self, this]() {

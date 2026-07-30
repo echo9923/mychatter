@@ -1,4 +1,4 @@
-﻿#include "LogicSystem.h"
+#include "LogicSystem.h"
 #include "StatusGrpcClient.h"
 #include "MysqlMgr.h"
 #include "const.h"
@@ -8,76 +8,138 @@
 #include "DistLock.h"
 #include <string>
 #include "CServer.h"
+#include "ConfigMgr.h"
 #include "utils.h"
 #include <vector>
 
 using namespace std;
 
-LogicSystem::LogicSystem():_b_stop(false), _p_server(nullptr){
-	RegisterCallBacks();
-	_worker_thread = std::thread (&LogicSystem::DealMsg, this);
-}
-
-LogicSystem::~LogicSystem(){
-	_b_stop = true;
-	_consume.notify_one();
-	_worker_thread.join();
-}
-
-void LogicSystem::PostMsgToQue(shared_ptr < LogicNode> msg) {
-	std::unique_lock<std::mutex> unique_lk(_mutex);
-	_msg_que.push(msg);
-	//由0变为1则发送通知信号
-	if (_msg_que.size() == 1) {
-		unique_lk.unlock();
-		_consume.notify_one();
+namespace {
+/// 从 [Concurrency] 读取 worker 数量；缺失/非数字/0/>64 一律回退 4（计划1.2）
+std::size_t ReadWorkerCount(const std::string& key) {
+	const std::size_t fallback = 4;
+	try {
+		auto val = ConfigMgr::Inst().GetValue("Concurrency", key);
+		if (!val.empty()) {
+			int n = std::stoi(val);
+			if (n > 0 && n <= 64) {
+				return static_cast<std::size_t>(n);
+			}
+		}
 	}
+	catch (...) {
+		//配置缺失/非数字，回退默认值
+	}
+	return fallback;
+}
+} // namespace
+
+LogicSystem::LogicSystem() : _p_server(nullptr) {
+	RegisterCallBacks();
+	const std::size_t logic_count = ReadWorkerCount("LogicWorkers");
+	const std::size_t delivery_count = ReadWorkerCount("DeliveryWorkers");
+	_logic_workers.reserve(logic_count);
+	for (std::size_t i = 0; i < logic_count; ++i) {
+		_logic_workers.emplace_back(std::make_unique<LogicWorker>());
+	}
+	_delivery_workers.reserve(delivery_count);
+	for (std::size_t i = 0; i < delivery_count; ++i) {
+		_delivery_workers.emplace_back(std::make_unique<LogicWorker>());
+	}
+	std::cout << "LogicSystem started, logic_workers=" << logic_count
+		<< " delivery_workers=" << delivery_count << std::endl;
 }
 
+LogicSystem::~LogicSystem() {
+	Stop();
+}
 
 void LogicSystem::SetServer(std::shared_ptr<CServer> pserver) {
 	_p_server = pserver;
 }
 
-
-void LogicSystem::DealMsg() {
-	for (;;) {
-		std::unique_lock<std::mutex> unique_lk(_mutex);
-		//判断队列为空则用条件变量阻塞等待，并释放锁
-		while (_msg_que.empty() && !_b_stop) {
-			_consume.wait(unique_lk);
-		}
-
-		//判断是否为关闭状态，把所有逻辑执行完后则退出循环
-		if (_b_stop ) {
-			while (!_msg_que.empty()) {
-				auto msg_node = _msg_que.front();
-				cout << "recv_msg id  is " << msg_node->_recvnode->_msg_id << endl;
-				auto call_back_iter = _fun_callbacks.find(msg_node->_recvnode->_msg_id);
-				if (call_back_iter == _fun_callbacks.end()) {
-					_msg_que.pop();
-					continue;
-				}
-				call_back_iter->second(msg_node->_session, msg_node->_recvnode->_msg_id,
-					std::string(msg_node->_recvnode->_data, msg_node->_recvnode->_cur_len));
-				_msg_que.pop();
-			}
-			break;
-		}
-
-		//如果没有停服，且说明队列中有数据
-		auto msg_node = _msg_que.front();
-		cout << "recv_msg id  is " << msg_node->_recvnode->_msg_id << endl;
-		auto call_back_iter = _fun_callbacks.find(msg_node->_recvnode->_msg_id);
-		if (call_back_iter == _fun_callbacks.end()) {
-			_msg_que.pop();
-			std::cout << "msg id [" << msg_node->_recvnode->_msg_id << "] handler not found" << std::endl;
-			continue;
-		}
-		call_back_iter->second(msg_node->_session, msg_node->_recvnode->_msg_id, 
-			std::string(msg_node->_recvnode->_data, msg_node->_recvnode->_cur_len));
-		_msg_que.pop();
+bool LogicSystem::PostMsgToQue(std::size_t routing_key, std::shared_ptr<LogicNode> msg) {
+	//停机中或未初始化分片：拒绝，消息不持久化、不重传
+	if (_stopping.load() || _logic_workers.empty()) {
+		return false;
 	}
+	auto& worker = _logic_workers[routing_key % _logic_workers.size()];
+	return worker->Post([this, msg]() { DispatchClientMessage(msg); });
+}
+
+bool LogicSystem::PostToUser(int uid, LogicWorker::Task task) {
+	if (_stopping.load() || _logic_workers.empty()) {
+		return false;
+	}
+	std::size_t idx = std::hash<int>{}(uid) % _logic_workers.size();
+	return _logic_workers[idx]->Post(std::move(task));
+}
+
+bool LogicSystem::PostDelivery(int sender_uid, LogicWorker::Task task) {
+	if (_stopping.load() || _delivery_workers.empty()) {
+		return false;
+	}
+	std::size_t idx = std::hash<int>{}(sender_uid) % _delivery_workers.size();
+	return _delivery_workers[idx]->Post(std::move(task));
+}
+
+void LogicSystem::Stop() {
+	//幂等：只允许一次排空/join，静态析构重复调用安全
+	std::lock_guard<std::mutex> lk(_stop_mutex);
+	if (_stopping.load()) {
+		return;
+	}
+	_stopping.store(true);
+
+	//先拒绝新投递（_stopping=true），再排空/join logic workers（它们仍可产生 outbound 任务）
+	for (auto& w : _logic_workers) {
+		if (w) w->Stop();
+	}
+	//最后排空/join delivery workers
+	for (auto& w : _delivery_workers) {
+		if (w) w->Stop();
+	}
+}
+
+void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
+	short msg_id = msg->_recvnode->_msg_id;
+	std::string msg_data(msg->_recvnode->_data, msg->_recvnode->_cur_len);
+	auto session = msg->_session;
+
+	cout << "recv_msg id  is " << msg_id << endl;
+
+	if (msg_id == MSG_CHAT_LOGIN) {
+		//登录一次性：已认证后再收登录包一律拒绝并关闭，避免 LoginHandler 踢掉本连接的自毁路径
+		if (session->GetUserId() != 0) {
+			json err;
+			err["error"] = ErrorCodes::UidInvalid;
+			session->Send(err.dump(4), MSG_CHAT_LOGIN_RSP);
+			session->Close();
+			return;
+		}
+		//token 失败后 _user_uid 仍为 0，允许用原 routing uid 重试登录，正常进入 LoginHandler
+	}
+	else {
+		//非登录包必须已认证且与路由 uid 一致；登录失败后排队的业务包回 UidInvalid 而不执行
+		int user_uid = session->GetUserId();
+		int routing_uid = session->GetRoutingUid();
+		if (user_uid == 0 || user_uid != routing_uid) {
+			json err;
+			err["error"] = ErrorCodes::UidInvalid;
+			short rsp_id = ReqToRspId(msg_id);
+			if (rsp_id != 0) {
+				session->Send(err.dump(4), rsp_id);
+			}
+			return;
+		}
+	}
+
+	auto call_back_iter = _fun_callbacks.find(msg_id);
+	if (call_back_iter == _fun_callbacks.end()) {
+		std::cout << "msg id [" << msg_id << "] handler not found" << std::endl;
+		return;
+	}
+	call_back_iter->second(session, msg_id, msg_data);
 }
 
 void LogicSystem::RegisterCallBacks() {

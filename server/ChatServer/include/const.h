@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <functional>
 
 /**
@@ -22,6 +22,10 @@ enum ErrorCodes {
 	UidInvalid = 1011,      ///< 用户ID无效
 	CREATE_CHAT_FAILED = 1012, ///< 创建聊天会话失败
 	LOAD_CHAT_FAILED = 1013,   ///< 加载聊天记录失败
+	MESSAGE_STORE_FAILED = 1014, ///< 消息持久化失败（MySQL 写失败）
+	RECIPIENT_OFFLINE = 1015,    ///< 目标用户当前不在线（无可用 session）
+	SERVER_BUSY = 1016,          ///< 服务端停机/队列拒绝，消息未入队未持久化
+	MESSAGE_CONFLICT = 1017,     ///< unique-id 相同但内容冲突，原消息不变
 };
 
 
@@ -99,6 +103,33 @@ enum MSG_IDS {
 	ID_FILE_INFO_SYNC_REQ = 1041,   ///< 文件信息同步请求（断点续传）
 	ID_FILE_INFO_SYNC_RSP = 1042    ///< 文件信息同步响应
 };
+
+/**
+ * @brief 客户端请求消息ID到响应消息ID的映射
+ *
+ * 用于在无法正常进入 handler（如服务端停机/队列拒绝）时，仍能向客户端
+ * 回送对应类型的错误响应。显式映射表比依赖“req+1”约定更安全，
+ * 服务端通知类消息（1011/1015/1019/1021/1039）没有对应响应，返回 0
+ * 表示无法回送，调用方应直接关闭连接。
+ * @param req_id 客户端请求消息ID
+ * @return 对应的响应消息ID；无映射时返回 0
+ */
+inline short ReqToRspId(short req_id) {
+	switch (req_id) {
+	case MSG_CHAT_LOGIN:               return MSG_CHAT_LOGIN_RSP;          // 1005 -> 1006
+	case ID_SEARCH_USER_REQ:           return ID_SEARCH_USER_RSP;          // 1007 -> 1008
+	case ID_ADD_FRIEND_REQ:            return ID_ADD_FRIEND_RSP;           // 1009 -> 1010
+	case ID_AUTH_FRIEND_REQ:           return ID_AUTH_FRIEND_RSP;          // 1013 -> 1014
+	case ID_TEXT_CHAT_MSG_REQ:         return ID_TEXT_CHAT_MSG_RSP;        // 1017 -> 1018
+	case ID_HEART_BEAT_REQ:            return ID_HEARTBEAT_RSP;            // 1023 -> 1024
+	case ID_LOAD_CHAT_THREAD_REQ:      return ID_LOAD_CHAT_THREAD_RSP;     // 1025 -> 1026
+	case ID_CREATE_PRIVATE_CHAT_REQ:   return ID_CREATE_PRIVATE_CHAT_RSP;  // 1027 -> 1028
+	case ID_LOAD_CHAT_MSG_REQ:         return ID_LOAD_CHAT_MSG_RSP;        // 1029 -> 1030
+	case ID_IMG_CHAT_MSG_REQ:          return ID_IMG_CHAT_MSG_RSP;         // 1035 -> 1036
+	case ID_FILE_INFO_SYNC_REQ:        return ID_FILE_INFO_SYNC_RSP;       // 1041 -> 1042
+	default:                           return 0;
+	}
+}
 
 /// Redis中存储用户IP地址的键前缀，完整键为 "uip_" + uid
 #define USERIPPREFIX  "uip_"
