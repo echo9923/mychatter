@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file LogicSystem.cpp
  * @brief 网关服务器(GateServer)的业务逻辑处理系统实现
  * 
@@ -21,10 +21,36 @@
 
 #include "LogicSystem.h"       // 逻辑系统头文件，定义了路由注册和请求分发接口
 #include "HttpConnection.h"    // HTTP连接封装，包含请求和响应对象
+#include "HandlerExecutor.h"   // 有界 handler worker 池（计划2.1）
 #include "VerifyGrpcClient.h"  // 验证码服务的gRPC客户端（调用VarifyServer）
 #include "RedisMgr.h"          // Redis管理器，用于验证码的缓存与校验
 #include "MysqlMgr.h"          // MySQL管理器，用于用户数据的持久化操作
 #include "StatusGrpcClient.h"  // 状态服务的gRPC客户端（调用StatusServer分配ChatServer）
+#include "ConfigMgr.h"         // 配置读取，用于解析 [Concurrency] worker 数与队列容量
+
+/**
+ * @brief 从 [Concurrency] 读取一个正整数配置项，缺失/非数字/<=0 时回退
+ * @param key      配置键名（如 "HandlerWorkers"）
+ * @param fallback 回退默认值
+ * @return 解析到的正整数，或 fallback
+ */
+static std::size_t ReadConcurrencySize(const std::string& key, std::size_t fallback) {
+	auto& cfg = ConfigMgr::Inst();
+	std::string val = cfg.GetValue("Concurrency", key);
+	if (val.empty()) {
+		return fallback;
+	}
+	try {
+		long long n = std::stoll(val);
+		if (n <= 0) {
+			return fallback;
+		}
+		return static_cast<std::size_t>(n);
+	}
+	catch (...) {
+		return fallback;
+	}
+}
 
 /**
  * @brief LogicSystem构造函数 —— 注册所有HTTP路由及对应的处理逻辑
@@ -393,6 +419,12 @@ LogicSystem::LogicSystem() {
 		beast::ostream(connection->_response.body()) << jsonstr;
 		return true;
 		});
+
+	// ==================== 构建有界 worker 池（计划2.2/2.5） ====================
+	// 读取 [Concurrency] 配置，缺失/非数字/<=0 时分别回退 4 / 1024
+	std::size_t workers = ReadConcurrencySize("HandlerWorkers", 4);
+	std::size_t capacity = ReadConcurrencySize("HandlerQueueCapacity", 1024);
+	_executor = std::make_unique<HandlerExecutor>(workers, capacity);
 }
 
 /**
@@ -420,48 +452,103 @@ void LogicSystem::RegPost(std::string url, HttpHandler handler) {
 }
 
 /**
- * @brief 析构函数（当前无需释放资源，handler随map自动销毁）
+ * @brief 析构函数：回收 worker 线程
+ *
+ * _executor 为 unique_ptr，其析构会调用 HandlerExecutor::Stop 排空并 join，
+ * 这里显式调用一次 Stop() 以便在静态析构序里更早地拒绝新投递。
  */
 LogicSystem::~LogicSystem() {
-
+	Stop();
 }
 
 /**
- * @brief 处理GET请求的入口方法
- * @param path 请求的URL路径
- * @param con  HTTP连接的共享指针，包含请求和响应对象
- * @return true 表示找到并处理了该请求；false 表示没有匹配的路由
- * 
- * 工作流程：在_get_handlers中查找path对应的handler，
- * 如果找到则调用该handler处理请求，否则返回false（上层会返回404）。
+ * @brief 幂等停止：拒绝新任务、排空既有 handler、回收 worker 线程
+ *
+ * 供 GateServer 关停信号回调在 AsioIOServicePool::Stop()/ioc.stop() 前调用。
+ * 排空期间 worker 仍可向连接的 socket executor post-back 完成响应。
  */
-bool LogicSystem::HandleGet(std::string path, std::shared_ptr<HttpConnection> con) {
-	// 在路由表中查找是否存在该path的GET处理函数
-	if (_get_handlers.find(path) == _get_handlers.end()) {
-		return false;  // 未注册的路由，返回false
+void LogicSystem::Stop() {
+	if (_executor) {
+		_executor->Stop();
 	}
-
-	// 找到对应的handler并执行
-	_get_handlers[path](con);
-	return true;
 }
 
 /**
- * @brief 处理POST请求的入口方法
- * @param path 请求的URL路径
- * @param con  HTTP连接的共享指针，包含请求和响应对象
- * @return true 表示找到并处理了该请求；false 表示没有匹配的路由
- * 
- * 工作流程：在_post_handlers中查找path对应的handler，
- * 如果找到则调用该handler处理请求，否则返回false（上层会返回404）。
+ * @brief 唯一请求入口：查路由表并把命中的 handler 投递到有界 worker 池（计划2.2）
+ *
+ * 路由查找使用构造后只读的 _get_handlers/_post_handlers；命中后只把现有
+ * handler 投递到执行器。worker 上继续使用当前同步 mysql-concpp、hiredis
+ * 和同步 gRPC 客户端。handler 完成或抛异常后必须
+ * boost::asio::post(connection->GetExecutor(), ...) 回到 _socket.get_executor()，
+ * 再设置最终状态并调用 WriteResponse()；worker 线程不得直接触碰 socket/timer。
+ *
+ * _request/_response 修改保持“读完成 → 单个 worker → executor 完成”
+ * 这条单所有者链：读在 socket executor 完成、handler 在 worker 上写 body、
+ * post-back 回到 socket executor 设置状态并发送，三者不重叠。
  */
-bool LogicSystem::HandlePost(std::string path, std::shared_ptr<HttpConnection> con) {
-	// 在路由表中查找是否存在该path的POST处理函数
-	if (_post_handlers.find(path) == _post_handlers.end()) {
-		return false;  // 未注册的路由，返回false
+LogicSystem::DispatchResult LogicSystem::Dispatch(http::verb method, std::string path,
+	std::shared_ptr<HttpConnection> connection) {
+	// 选择构造后只读的路由表
+	const std::map<std::string, HttpHandler>* table = nullptr;
+	if (method == http::verb::get) {
+		table = &_get_handlers;
+	}
+	else if (method == http::verb::post) {
+		table = &_post_handlers;
+	}
+	else {
+		return DispatchResult::NotFound;
 	}
 
-	// 找到对应的handler并执行
-	_post_handlers[path](con);
-	return true;
+	// 路由查找
+	auto it = table->find(path);
+	if (it == table->end()) {
+		return DispatchResult::NotFound;
+	}
+
+	// 停机中：不再接收新 handler
+	if (_executor->IsStopping()) {
+		return DispatchResult::Stopping;
+	}
+
+	// 拷贝一份 handler 闭包与连接指针，避免引用 map 内节点及裸指针
+	HttpHandler handler = it->second;
+	auto con = connection;
+
+	// 把现有 handler 投递到执行器；worker 完成或抛异常后 post-back 回 socket executor
+	bool ok = _executor->Post([con, handler]() {
+		try {
+			handler(con);
+		}
+		catch (...) {
+			// handler 异常：回到 socket executor 写 HTTP 500 + 同一 JSON
+			boost::asio::post(con->GetExecutor(), [con]() {
+				// deadline 可能已关闭 socket，此时只结束生命周期，不再写响应
+				if (!con->GetSocket().is_open()) {
+					return;
+				}
+				con->_response.result(http::status::internal_server_error);
+				con->_response.set(http::field::content_type, "text/json");
+				boost::beast::ostream(con->_response.body()) << R"({"error":1002})";
+				con->WriteResponse();
+			});
+			return;
+		}
+		// 成功：回到 socket executor 设置最终状态并写响应（200 + Server 头）
+		boost::asio::post(con->GetExecutor(), [con]() {
+			// deadline 可能已关闭 socket，此时只结束生命周期，不再写响应
+			if (!con->GetSocket().is_open()) {
+				return;
+			}
+			con->_response.result(http::status::ok);
+			con->_response.set(http::field::server, "GateServer");
+			con->WriteResponse();
+		});
+	});
+
+	if (!ok) {
+		// Post 失败：再次确认是否因停机（区分 Stopping 与 Overloaded）
+		return _executor->IsStopping() ? DispatchResult::Stopping : DispatchResult::Overloaded;
+	}
+	return DispatchResult::Accepted;
 }

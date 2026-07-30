@@ -11,6 +11,16 @@ public:
 	tcp::socket& GetSocket() {
 		return _socket;
 	}
+	/**
+	 * @brief 返回连接 socket 所属的 executor（计划2.2/2.3）
+	 *
+	 * 供 worker 线程在 handler 完成后 boost::asio::post 回连接的 socket
+	 * executor，再设置最终状态并 WriteResponse()，从而避免 worker 线程
+	 * 直接跨线程触碰 socket/timer。
+	 */
+	tcp::socket::executor_type GetExecutor() noexcept {
+		return _socket.get_executor();
+	}
 private:
 	void CheckDeadline();
 	void WriteResponse();

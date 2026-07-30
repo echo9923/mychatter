@@ -1,4 +1,4 @@
-﻿#include "HttpConnection.h"
+#include "HttpConnection.h"
 #include "LogicSystem.h"
 HttpConnection::HttpConnection(boost::asio::io_context& ioc)
 	: _socket(ioc) {
@@ -8,6 +8,10 @@ HttpConnection::HttpConnection(boost::asio::io_context& ioc)
 void HttpConnection::Start()
 {
 	auto self = shared_from_this();
+	// 先启动 60 秒连接 deadline（计划2.4）：覆盖读阶段与业务 worker 阻塞阶段，
+	// 使业务 worker 阻塞时仍可由连接 executor 关闭 socket；post-back 发现
+	// socket 已关闭时只结束生命周期，不再写响应。
+	CheckDeadline();
 	http::async_read(_socket, _buffer, _request, [self](beast::error_code ec,
 		std::size_t bytes_transferred) {
 			try {
@@ -20,7 +24,7 @@ void HttpConnection::Start()
 
 				boost::ignore_unused(bytes_transferred);
 				self->HandleReq();
-				self->CheckDeadline();
+				// CheckDeadline 已在 Start() 开头启动，此处不再重复启动
 			}
 			catch (std::exception& exp) {
 				std::cout << "exception is " << exp.what() << std::endl;
@@ -131,65 +135,48 @@ void HttpConnection::PreParseGetParam() {
 
 //处理http请求
 void HttpConnection::HandleReq() {
-	// 设置HTTP响应版本，与请求版本保持一致
+	// 初始化通用响应头：版本对齐请求、短连接、CORS（计划2.3）
 	_response.version(_request.version());
-	// 设置为短连接（不保持连接）
 	_response.keep_alive(false);
-	// 允许所有来源访问（CORS跨域设置，实际生产环境中应限制具体的来源以保证安全）
 	_response.set(boost::beast::http::field::access_control_allow_origin, "*");
-	
-	// 处理 GET 请求
-	if (_request.method() == http::verb::get) {
-		// 解析 GET 请求的 URL 路径和查询参数
-		PreParseGetParam();
-		// 调用逻辑系统处理 GET 请求，传入解析后的 URL 和当前连接对象的共享指针
-		bool success = LogicSystem::GetInstance()->HandleGet(_get_url, shared_from_this());
-		// 如果逻辑系统处理失败（例如未找到对应的路由）
-		if (!success) {
-			// 设置 HTTP 状态码为 404 Not Found
-			_response.result(http::status::not_found);
-			// 设置响应内容类型为纯文本
-			_response.set(http::field::content_type, "text/plain");
-			// 将错误信息写入响应体
-			beast::ostream(_response.body()) << "url not found\r\n";
-			// 异步发送响应给客户端
-			WriteResponse();
-			return;
-		}
 
-		// 处理成功，设置 HTTP 状态码为 200 OK
-		_response.result(http::status::ok);
-		// 设置响应头中的 Server 字段
-		_response.set(http::field::server, "GateServer");
-		// 异步发送响应给客户端
-		WriteResponse();
-		return;
+	// 解析路径：GET 需先分离查询参数得到 _get_url，POST 直接取 target
+	std::string path;
+	if (_request.method() == http::verb::get) {
+		PreParseGetParam();
+		path = _get_url;
+	}
+	else {
+		path = std::string(_request.target());
 	}
 
-	// 处理 POST 请求
-	if (_request.method() == http::verb::post) {
-		// 调用逻辑系统处理 POST 请求，传入请求的目标路径（target）和当前连接对象的共享指针
-		bool success = LogicSystem::GetInstance()->HandlePost(_request.target(), shared_from_this());
-		// 如果逻辑系统处理失败（例如未找到对应的路由）
-		if (!success) {
-			// 设置 HTTP 状态码为 404 Not Found
-			_response.result(http::status::not_found);
-			// 设置响应内容类型为纯文本
-			_response.set(http::field::content_type, "text/plain");
-			// 将错误信息写入响应体
-			beast::ostream(_response.body()) << "url not found\r\n";
-			// 异步发送响应给客户端
-			WriteResponse();
-			return;
-		}
+	// 唯一入口：查路由并把命中的 handler 投递到有界 worker 池
+	auto result = LogicSystem::GetInstance()->Dispatch(
+		_request.method(), std::move(path), shared_from_this());
 
-		// 处理成功，设置 HTTP 状态码为 200 OK
-		_response.result(http::status::ok);
-		// 设置响应头中的 Server 字段
-		_response.set(http::field::server, "GateServer");
-		// 异步发送响应给客户端
+	switch (result) {
+	case LogicSystem::DispatchResult::NotFound: {
+		// 现有 404 行为
+		_response.result(http::status::not_found);
+		_response.set(http::field::content_type, "text/plain");
+		beast::ostream(_response.body()) << "url not found\r\n";
 		WriteResponse();
-		return;
+		break;
+	}
+	case LogicSystem::DispatchResult::Overloaded:
+	case LogicSystem::DispatchResult::Stopping: {
+		// HTTP 503 + Retry-After: 1 + {"error":1002}（计划2.3）
+		_response.result(http::status::service_unavailable);
+		_response.set(http::field::retry_after, "1");
+		_response.set(http::field::content_type, "text/json");
+		beast::ostream(_response.body()) << R"({"error":1002})";
+		WriteResponse();
+		break;
+	}
+	case LogicSystem::DispatchResult::Accepted:
+		// handler 已投递到 worker 池，最终响应（200/500）由 post-back 完成，
+		// 此处不提前写响应
+		break;
 	}
 }
 
