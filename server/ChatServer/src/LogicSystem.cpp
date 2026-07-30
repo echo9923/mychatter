@@ -11,6 +11,8 @@
 #include "ConfigMgr.h"
 #include "utils.h"
 #include <vector>
+#include <set>
+#include <algorithm>
 
 using namespace std;
 
@@ -26,6 +28,24 @@ std::size_t ReadWorkerCount(const std::string& key) {
 			//必须整串消费（允许前导空白），否则视为非法值回退 4（计划1.2）
 			if (pos == val.size() && n > 0 && n <= 64) {
 				return static_cast<std::size_t>(n);
+			}
+		}
+	}
+	catch (...) {
+		//配置缺失/非数字，回退默认值
+	}
+	return fallback;
+}
+
+/// 从 [Delivery] 读取整数配置；非法/缺失时回退 fallback（计划4.2/5.3）
+int ReadDeliveryInt(const std::string& key, int fallback) {
+	try {
+		auto val = ConfigMgr::Inst().GetValue("Delivery", key);
+		if (!val.empty()) {
+			std::size_t pos = 0;
+			int n = std::stoi(val, &pos);
+			if (pos == val.size() && n > 0) {
+				return n;
 			}
 		}
 	}
@@ -175,6 +195,12 @@ void LogicSystem::RegisterCallBacks() {
 		placeholders::_1, placeholders::_2, placeholders::_3);
 
 	_fun_callbacks[ID_IMG_CHAT_MSG_REQ] = std::bind(&LogicSystem::DealChatImgMsg, this,
+		placeholders::_1, placeholders::_2, placeholders::_3);
+
+	_fun_callbacks[ID_CHAT_DELIVERY_ACK_REQ] = std::bind(&LogicSystem::DealDeliveryAck, this,
+		placeholders::_1, placeholders::_2, placeholders::_3);
+
+	_fun_callbacks[ID_PULL_OFFLINE_MSG_REQ] = std::bind(&LogicSystem::PullOfflineMsg, this,
 		placeholders::_1, placeholders::_2, placeholders::_3);
 
 }
@@ -1040,5 +1066,283 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 		session->Send(return_str, ID_IMG_CHAT_MSG_RSP);
 		});
 
+}
+
+json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) {
+	json env;
+	env["message_id"] = msg->message_id;
+	env["unique_id"] = msg->unique_id;
+	env["thread_id"] = msg->thread_id;
+	env["fromuid"] = msg->sender_id;
+	env["touid"] = msg->recv_id;
+	env["msg_type"] = msg->msg_type;
+	env["content"] = msg->content;
+	//content_size 一律十进制字符串，避免 Qt JSON number 对 64 位文件大小丢精度（计划5.3）
+	env["content_size"] = std::to_string(msg->content_size);
+	env["chat_time"] = msg->chat_time;
+	env["status"] = msg->status;
+	return env;
+}
+
+void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+	//1049 {"uid":<receiver>,"message_ids":[...]} -> 1050 {"error":0,"message_ids":[...]}
+	//严格校验：JSON 对象、uid 正整数且 == session->GetUserId()、message_ids 非空数组且每项正 int
+	auto root = json::parse(msg_data, nullptr, false);
+
+	auto reject = [&session](ErrorCodes code) {
+		json rsp;
+		rsp["error"] = code;
+		session->Send(rsp.dump(4), ID_CHAT_DELIVERY_ACK_RSP);
+	};
+
+	if (!root.is_object()) {
+		reject(ErrorCodes::Error_Json);
+		return;
+	}
+	if (!root.contains("uid") || !root["uid"].is_number_integer()) {
+		reject(ErrorCodes::Error_Json);
+		return;
+	}
+	int uid = root["uid"].get<int>();
+	//uid 必须等于本连接已认证用户，否则防越权
+	if (uid != session->GetUserId()) {
+		reject(ErrorCodes::UidInvalid);
+		return;
+	}
+	if (!root.contains("message_ids") || !root["message_ids"].is_array()) {
+		reject(ErrorCodes::Error_Json);
+		return;
+	}
+	const auto& ids_json = root["message_ids"];
+	if (ids_json.empty()) {
+		reject(ErrorCodes::Error_Json);
+		return;
+	}
+	//每项必须正 int，用 std::set 去重并升序
+	std::set<int> id_set;
+	for (const auto& e : ids_json) {
+		if (!e.is_number_integer()) {
+			reject(ErrorCodes::Error_Json);
+			return;
+		}
+		int v = e.get<int>();
+		if (v <= 0) {
+			reject(ErrorCodes::Error_Json);
+			return;
+		}
+		id_set.insert(v);
+	}
+	std::vector<int> ids(id_set.begin(), id_set.end());
+
+	//GetMessagesByIds 带 recv_id 防越权：返回行数必须与请求完全吻合，未知/不属于本 receiver 的 id 不会被返回
+	auto msgs = MysqlMgr::GetInstance()->GetMessagesByIds(uid, ids);
+	if (msgs.size() != ids.size()) {
+		reject(ErrorCodes::Error_Json);
+		return;
+	}
+
+	//只有 DB 更新成功后才回 ACK response 并清 Redis（计划4.3/5.2）
+	bool ok = MysqlMgr::GetInstance()->MarkMessagesDelivered(uid, ids);
+	if (!ok) {
+		reject(ErrorCodes::MESSAGE_STORE_FAILED);
+		return;
+	}
+
+	//先回 Success + 原（去重升序）ids，让客户端尽快确认；重复 ACK 因 DAO 幂等仍 success
+	json rsp;
+	rsp["error"] = ErrorCodes::Success;
+	json ids_arr = json::array();
+	for (int id : ids) {
+		ids_arr.push_back(id);
+	}
+	rsp["message_ids"] = ids_arr;
+	session->Send(rsp.dump(4), ID_CHAT_DELIVERY_ACK_RSP);
+
+	//DB 成功后逐个 ZREM offline_msg:<uid>；Redis 删除失败只记录，不影响 success
+	std::string zkey = OFFLINE_MSG_PREFIX + std::to_string(uid);
+	auto redis = RedisMgr::GetInstance();
+	for (int id : ids) {
+		if (!redis->ZRem(zkey, std::to_string(id))) {
+			std::cout << "ACK ZRem failed, key=" << zkey << " id=" << id << std::endl;
+		}
+	}
+}
+
+void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+	//1051 {"uid":<receiver>,"after_message_id":<id>,"limit":<n>} -> 1052 {"error":0,"messages":[...],"next_message_id":<id>,"has_more":<bool>}
+	//配置：非法一律回退默认（计划4.2/5.3）
+	int pull_batch = ReadDeliveryInt("OfflinePullBatch", 100);
+	if (pull_batch < 1) pull_batch = 100;
+	int pull_max_bytes = ReadDeliveryInt("PullMaxBytes", 30000);
+	if (pull_max_bytes < 1) pull_max_bytes = 30000;
+	int ttl = ReadDeliveryInt("OfflineTtlSeconds", 604800);
+	if (ttl < 1) ttl = 604800;
+
+	auto root = json::parse(msg_data, nullptr, false);
+
+	auto reject = [&session](ErrorCodes code) {
+		json rsp;
+		rsp["error"] = code;
+		session->Send(rsp.dump(), ID_PULL_OFFLINE_MSG_RSP);
+	};
+
+	if (!root.is_object()) {
+		reject(ErrorCodes::Error_Json);
+		return;
+	}
+	if (!root.contains("uid") || !root["uid"].is_number_integer()) {
+		reject(ErrorCodes::Error_Json);
+		return;
+	}
+	int uid = root["uid"].get<int>();
+	//uid 必须匹配本连接已认证用户
+	if (uid != session->GetUserId()) {
+		reject(ErrorCodes::UidInvalid);
+		return;
+	}
+
+	int after_message_id = 0;
+	if (root.contains("after_message_id")) {
+		if (!root["after_message_id"].is_number_integer()) {
+			reject(ErrorCodes::Error_Json);
+			return;
+		}
+		after_message_id = root["after_message_id"].get<int>();
+		if (after_message_id < 0) {
+			reject(ErrorCodes::Error_Json);
+			return;
+		}
+	}
+
+	//limit 缺失用配置 OfflinePullBatch；请求 limit clamp 1-100
+	int limit = pull_batch;
+	if (root.contains("limit")) {
+		if (!root["limit"].is_number_integer()) {
+			reject(ErrorCodes::Error_Json);
+			return;
+		}
+		limit = root["limit"].get<int>();
+	}
+	if (limit < 1) limit = 1;
+	if (limit > 100) limit = 100;
+
+	std::string zkey = OFFLINE_MSG_PREFIX + std::to_string(uid);
+	auto redis = RedisMgr::GetInstance();
+	auto mysql = MysqlMgr::GetInstance();
+
+	//1) Redis ZRangeByScore(cursor, limit+1) 得候选 IDs
+	std::vector<std::string> redis_members;
+	redis->ZRangeByScore(zkey, after_message_id, limit + 1, redis_members);
+	std::vector<int> redis_id_ints;
+	std::set<int> redis_all_ids;
+	for (const auto& m : redis_members) {
+		try {
+			int v = std::stoi(m);
+			redis_id_ints.push_back(v);
+			redis_all_ids.insert(v);
+		}
+		catch (...) {
+			//非数字 member 视为陈旧，直接清理
+			redis->ZRem(zkey, m);
+		}
+	}
+
+	//2) GetMessagesByIds(redis_ids)；Redis 命中行仅 delivery_status==Pending 且排除 PIC/UN_UPLOAD 才参与 pull；
+	//   ACK/缺失/不可投递的陈旧 member 顺手 ZREM（best effort，失败不挤占 pending 页）
+	std::vector<std::shared_ptr<ChatMessage>> redis_msgs;
+	if (!redis_id_ints.empty()) {
+		redis_msgs = mysql->GetMessagesByIds(uid, redis_id_ints);
+	}
+	std::map<int, std::shared_ptr<ChatMessage>> redis_by_id;
+	for (auto& m : redis_msgs) {
+		redis_by_id[m->message_id] = m;
+	}
+	std::vector<std::shared_ptr<ChatMessage>> deliverable_from_redis;
+	for (int rid : redis_id_ints) {
+		auto it = redis_by_id.find(rid);
+		if (it == redis_by_id.end()) {
+			//DB 已无此行（已删除）→ 陈旧 member，ZREM
+			redis->ZRem(zkey, std::to_string(rid));
+			continue;
+		}
+		auto& m = it->second;
+		bool undeliverable = (m->delivery_status != DeliveryStatus::Pending)
+			|| (m->msg_type == static_cast<int>(ChatMsgType::PIC) && m->status == MsgStatus::UN_UPLOAD);
+		if (undeliverable) {
+			redis->ZRem(zkey, std::to_string(rid));
+			continue;
+		}
+		deliverable_from_redis.push_back(m);
+	}
+
+	//3) MySQL GetPendingMessages(uid, cursor, limit)：DAO 内部多取 1 条供 has_more
+	//   MySQL 是完整真值：delivery_status=0 且排除 PIC/UN_UPLOAD
+	auto mysql_msgs = mysql->GetPendingMessages(uid, after_message_id, limit);
+
+	//4) 并集 deliverable_from_redis + mysql_msgs，按 message_id 去重升序
+	std::map<int, std::shared_ptr<ChatMessage>> union_map;
+	for (auto& m : deliverable_from_redis) {
+		union_map[m->message_id] = m;
+	}
+	for (auto& m : mysql_msgs) {
+		union_map[m->message_id] = m;
+	}
+	std::vector<std::shared_ptr<ChatMessage>> candidates;
+	candidates.reserve(union_map.size());
+	for (auto& kv : union_map) {
+		candidates.push_back(kv.second);
+	}
+
+	//5) 缺失 Redis ID 的 DB pending → ZAdd+Expire 回填（失败不影响响应）
+	bool backfilled = false;
+	for (auto& m : mysql_msgs) {
+		if (redis_all_ids.find(m->message_id) == redis_all_ids.end()) {
+			std::string mid = std::to_string(m->message_id);
+			if (redis->ZAdd(zkey, m->message_id, mid)) {
+				backfilled = true;
+			}
+		}
+	}
+	if (backfilled) {
+		redis->Expire(zkey, ttl);
+	}
+
+	//6) 序列化：以 dump() 后 UTF-8 byte 数为准受 PullMaxBytes 上限，条数 limit 也是上限。
+	//   逐条构造候选 response，超过上限前停止；始终至少包含第一条以推进 cursor。
+	json rsp;
+	rsp["error"] = ErrorCodes::Success;
+	rsp["messages"] = json::array();
+	rsp["next_message_id"] = after_message_id;
+	rsp["has_more"] = true;
+
+	std::vector<int> included_ids;
+	bool byte_stopped = false;
+	for (auto& m : candidates) {
+		if (static_cast<int>(included_ids.size()) >= limit) {
+			break; //count limit reached
+		}
+		json env = BuildMessageEnvelope(m);
+		//tentative 测量：has_more 取最长 true 以留余量
+		json tent = rsp;
+		tent["messages"].push_back(env);
+		tent["next_message_id"] = m->message_id;
+		tent["has_more"] = true;
+		if (tent.dump().size() > static_cast<std::size_t>(pull_max_bytes) && !included_ids.empty()) {
+			//加入本条会超限，且已有至少一条 → 停止
+			byte_stopped = true;
+			break;
+		}
+		//commit
+		rsp["messages"].push_back(env);
+		included_ids.push_back(m->message_id);
+	}
+
+	//has_more 覆盖：byte 提前停止、count 上限、DB/Redis 多取 1 条后仍有剩余候选
+	bool has_more = byte_stopped || (candidates.size() > included_ids.size());
+	int next_message_id = included_ids.empty() ? after_message_id : included_ids.back();
+	rsp["next_message_id"] = next_message_id;
+	rsp["has_more"] = has_more;
+
+	session->Send(rsp.dump(), ID_PULL_OFFLINE_MSG_RSP);
 }
 
