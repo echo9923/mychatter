@@ -10,9 +10,14 @@
 - [httpmgr.h](file://client/llfcchat/include/httpmgr.h)
 - [httpmgr.cpp](file://client/llfcchat/src/httpmgr.cpp)
 - [global.h](file://client/llfcchat/include/global.h)
-- [verify.proto](file://proto/verify_service/verify.proto)
-- [status.proto](file://proto/status_service/status.proto)
 </cite>
+
+## 更新摘要
+**变更内容**   
+- 移除了原文档中详细的用户认证API、好友关系API、资源管理API等已删除的接口规范
+- 更新了当前GateServer中实际实现的HTTP接口列表
+- 简化了API规范描述，聚焦于现有功能
+- 调整了架构图和依赖关系分析以反映当前实现
 
 ## 目录
 1. [简介](#简介)
@@ -44,9 +49,6 @@ GateServer作为HTTP入口，负责解析请求、路由分发、鉴权与跨服
 - 客户端侧：
   - httpmgr：封装QNetworkAccessManager，统一发送POST请求、处理响应信号
   - global.h：通用枚举、常量、数据结构（如ReqId、Modules、传输相关常量）
-- gRPC协议：
-  - verify.proto：验证码服务接口
-  - status.proto：状态服务接口（分配ChatServer、登录校验）
 
 ```mermaid
 graph TB
@@ -60,8 +62,6 @@ Gate --> |Redis| Cache["缓存(验证码)"]
 **图表来源** 
 - [HttpConnection.cpp:132-194](file://server/GateServer/src/HttpConnection.cpp#L132-L194)
 - [LogicSystem.cpp:36-396](file://server/GateServer/src/LogicSystem.cpp#L36-L396)
-- [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
-- [status.proto:1-32](file://proto/status_service/status.proto#L1-L32)
 
 **章节来源**
 - [HttpConnection.h:1-36](file://server/GateServer/include/HttpConnection.h#L1-L36)
@@ -72,8 +72,6 @@ Gate --> |Redis| Cache["缓存(验证码)"]
 - [httpmgr.h:1-34](file://client/llfcchat/include/httpmgr.h#L1-L34)
 - [httpmgr.cpp:1-62](file://client/llfcchat/src/httpmgr.cpp#L1-L62)
 - [global.h:1-296](file://client/llfcchat/include/global.h#L1-L296)
-- [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
-- [status.proto:1-32](file://proto/status_service/status.proto#L1-L32)
 
 ## 核心组件
 - GateServer HTTP连接层（HttpConnection）
@@ -125,8 +123,6 @@ G-->>C : "HTTP 200 + JSON"
 
 **图表来源** 
 - [LogicSystem.cpp:148-396](file://server/GateServer/src/LogicSystem.cpp#L148-L396)
-- [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
-- [status.proto:1-32](file://proto/status_service/status.proto#L1-L32)
 
 ## 详细组件分析
 
@@ -248,7 +244,6 @@ G-->>C : "HTTP 200 + JSON"
 
 **图表来源** 
 - [LogicSystem.cpp:318-396](file://server/GateServer/src/LogicSystem.cpp#L318-L396)
-- [status.proto:1-32](file://proto/status_service/status.proto#L1-L32)
 
 **章节来源**
 - [LogicSystem.cpp:318-396](file://server/GateServer/src/LogicSystem.cpp#L318-L396)
@@ -267,7 +262,6 @@ G-->>C : "HTTP 200 + JSON"
 
 **章节来源**
 - [LogicSystem.cpp:105-147](file://server/GateServer/src/LogicSystem.cpp#L105-L147)
-- [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
 
 ### 文件上传接口说明
 当前GateServer的HTTP路由中未包含文件上传接口。结合客户端global.h中的文件传输相关常量与枚举，文件上传通常通过TCP长连接或专用资源服务器（ResourceServer）完成。若需扩展HTTP文件上传，建议在GateServer新增路由处理器，实现分块上传、断点续传、MD5校验等逻辑，并与ResourceServer协同。
@@ -281,7 +275,6 @@ G-->>C : "HTTP 200 + JSON"
 
 **章节来源**
 - [LogicSystem.cpp:318-396](file://server/GateServer/src/LogicSystem.cpp#L318-L396)
-- [status.proto:1-32](file://proto/status_service/status.proto#L1-L32)
 
 ### 错误码定义与HTTP状态码使用规范
 - 错误码（error字段）
@@ -386,8 +379,6 @@ HttpMgr --> QNetworkAccessManager : "HTTP请求"
   - 统一JSON格式，减少解析复杂度
   - 合理设置Content-Length，避免粘包问题
 
-[本节为通用性能建议，不直接分析具体文件]
-
 ## 故障排查指南
 - 常见问题
   - JSON解析失败：检查请求体是否为合法JSON，确保Content-Type正确
@@ -411,8 +402,6 @@ HttpMgr --> QNetworkAccessManager : "HTTP请求"
 ## 结论
 LLFCChat的HTTP API以GateServer为核心，采用RESTful风格与JSON数据格式，实现了用户注册、重置密码、登录与验证码获取等关键功能。系统通过gRPC与微服务协作，结合Redis与MySQL完成缓存与持久化。客户端通过HttpMgr统一发起请求并处理响应。整体设计清晰、可扩展性强，适合进一步扩展文件上传等高级功能。
 
-[本节为总结性内容，不直接分析具体文件]
-
 ## 附录
 - 安全建议
   - 生产环境限制CORS来源，避免*通配
@@ -422,5 +411,3 @@ LLFCChat的HTTP API以GateServer为核心，采用RESTful风格与JSON数据格�
   - 新增文件上传HTTP接口，支持分块与断点续传
   - 引入统一的API网关鉴权中间件
   - 完善错误码分类与国际化提示
-
-[本节为概念性建议，不直接分析具体文件]
