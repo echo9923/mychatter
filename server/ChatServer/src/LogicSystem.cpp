@@ -1308,7 +1308,9 @@ void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short&
 	}
 
 	//6) 序列化：以 dump() 后 UTF-8 byte 数为准受 PullMaxBytes 上限，条数 limit 也是上限。
-	//   逐条构造候选 response，超过上限前停止；始终至少包含第一条以推进 cursor。
+	//   逐条构造候选 response；任何候选（含第一条）只要令 tentative response 超 PullMaxBytes
+	//   就永不 append，byte_stopped=true 并 break。绝不“始终至少包含第一条以推进 cursor”——
+	//   那会让单条超限消息越过上限、response 被 CSession::Send 的 short 长度截断后客户端卡死。
 	json rsp;
 	rsp["error"] = ErrorCodes::Success;
 	rsp["messages"] = json::array();
@@ -1317,6 +1319,8 @@ void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short&
 
 	std::vector<int> included_ids;
 	bool byte_stopped = false;
+	int oversized_message_id = 0;
+	std::size_t oversized_bytes = 0;
 	for (auto& m : candidates) {
 		if (static_cast<int>(included_ids.size()) >= limit) {
 			break; //count limit reached
@@ -1327,14 +1331,33 @@ void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short&
 		tent["messages"].push_back(env);
 		tent["next_message_id"] = m->message_id;
 		tent["has_more"] = true;
-		if (tent.dump().size() > static_cast<std::size_t>(pull_max_bytes) && !included_ids.empty()) {
-			//加入本条会超限，且已有至少一条 → 停止
+		std::size_t tent_bytes = tent.dump().size();
+		if (tent_bytes > static_cast<std::size_t>(pull_max_bytes)) {
+			//加入本条会超限 → 永不 append（含第一条），记录后停止
 			byte_stopped = true;
+			oversized_message_id = m->message_id;
+			oversized_bytes = tent_bytes;
 			break;
 		}
 		//commit
 		rsp["messages"].push_back(env);
 		included_ids.push_back(m->message_id);
+	}
+
+	//病态情形：候选非空但首条即超 PullMaxBytes（included_ids 仍为空）。
+	//不得推进 cursor 却不投递任何消息：返回显式非循环错误 RPCFailed，cursor 不动、不 ACK、has_more=false。
+	if (included_ids.empty() && !candidates.empty()) {
+		std::cout << "PullOfflineMsg oversized first message, uid=" << uid
+			<< " message_id=" << oversized_message_id
+			<< " bytes=" << oversized_bytes
+			<< " pull_max_bytes=" << pull_max_bytes << std::endl;
+		json err_rsp;
+		err_rsp["error"] = ErrorCodes::RPCFailed;
+		err_rsp["messages"] = json::array();
+		err_rsp["next_message_id"] = after_message_id;
+		err_rsp["has_more"] = false;
+		session->Send(err_rsp.dump(), ID_PULL_OFFLINE_MSG_RSP);
+		return;
 	}
 
 	//has_more 覆盖：byte 提前停止、count 上限、DB/Redis 多取 1 条后仍有剩余候选
