@@ -1,4 +1,4 @@
-﻿// ChatServer.cpp : 此文件包含 "main" 函数。程序执行将在此处开始并结束。
+// ChatServer.cpp : 此文件包含 "main" 函数。程序执行将在此处开始并结束。
 //
 
 #include "LogicSystem.h"
@@ -57,10 +57,13 @@ int main()
 
 	
 		boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
+		//计划1.6 优雅停机顺序：停止新 gRPC 投递 → 停止新 accept/read → 排空 logic worker → 停止 IO 池。
+		//LogicSystem::Stop 幂等：静态析构再次调用不会重复 join。
 		signals.async_wait([&io_context, pool, &server](auto, auto) {
-			io_context.stop();
-			pool->Stop();
 			server->Shutdown();
+			io_context.stop();
+			LogicSystem::GetInstance()->Stop();
+			pool->Stop();
 			});
 		
 	

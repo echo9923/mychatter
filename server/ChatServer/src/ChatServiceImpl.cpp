@@ -1,6 +1,7 @@
-﻿#include "ChatServiceImpl.h"
+#include "ChatServiceImpl.h"
 #include "UserMgr.h"
 #include "CSession.h"
+#include "LogicSystem.h"
 #include <nlohmann/json.hpp>
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
@@ -15,22 +16,25 @@ ChatServiceImpl::ChatServiceImpl()
 
 Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendReq* request, AddFriendRsp* reply)
 {
-	//查找用户是否在本服务器
-	auto touid = request->touid();
-	auto session = UserMgr::GetInstance()->GetSession(touid);
-
-	Defer defer([request, reply]() {
-		reply->set_error(ErrorCodes::Success);
+	//计划1.5：面向 recipient 的写入必须纳入其 uid 分片，gRPC 线程只复制数据 + 投递闭包
+	int err = ErrorCodes::Success;
+	Defer defer([request, reply, &err]() {
+		reply->set_error(err);
 		reply->set_applyuid(request->applyuid());
 		reply->set_touid(request->touid());
 		});
 
-	//用户不在内存中则直接返回
+	//查找用户是否在本服务器
+	auto touid = request->touid();
+	auto session = UserMgr::GetInstance()->GetSession(touid);
+
+	//无 session 表示目标用户不在线
 	if (session == nullptr) {
+		err = ErrorCodes::RECIPIENT_OFFLINE;
 		return Status::OK;
 	}
-	
-	//在内存中则直接发送通知对方
+
+	//在内存中则先构建通知（gRPC 线程不直接写 session），再投递到 recipient 分片
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["applyuid"] = request->applyuid();
@@ -42,29 +46,43 @@ Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendR
 
 	std::string return_str = rtvalue.dump(4);
 
-	session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
+	//闭包在 recipient shard 上重新查 session，存在才发送；队列停止则返回 SERVER_BUSY
+	if (!LogicSystem::GetInstance()->PostToUser(touid,
+		[touid, return_str]() {
+			auto session = UserMgr::GetInstance()->GetSession(touid);
+			if (session) {
+				session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
+			}
+		})) {
+		err = ErrorCodes::SERVER_BUSY;
+		return Status::OK;
+	}
+
 	return Status::OK;
 }
 
 Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFriendReq* request,
 	AuthFriendRsp* reply) {
+	//计划1.5：面向 recipient 的写入必须纳入其 uid 分片，gRPC 线程只复制数据 + 投递闭包
+	int err = ErrorCodes::Success;
+	Defer defer([request, reply, &err]() {
+		reply->set_error(err);
+		reply->set_fromuid(request->fromuid());
+		reply->set_touid(request->touid());
+		});
+
 	//查找用户是否在本服务器
 	auto touid = request->touid();
 	auto fromuid = request->fromuid();
 	auto session = UserMgr::GetInstance()->GetSession(touid);
 
-	Defer defer([request, reply]() {
-		reply->set_error(ErrorCodes::Success);
-		reply->set_fromuid(request->fromuid());
-		reply->set_touid(request->touid());
-		});
-
-	//用户不在内存中则直接返回
+	//无 session 表示目标用户不在线
 	if (session == nullptr) {
+		err = ErrorCodes::RECIPIENT_OFFLINE;
 		return Status::OK;
 	}
 
-	//在内存中则直接发送通知对方
+	//在内存中则先构建通知（gRPC 线程不直接写 session）
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
@@ -98,23 +116,40 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
 
 	std::string return_str = rtvalue.dump(4);
 
-	session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
+	//闭包在 recipient shard 上重新查 session，存在才发送；队列停止则返回 SERVER_BUSY
+	if (!LogicSystem::GetInstance()->PostToUser(touid,
+		[touid, return_str]() {
+			auto session = UserMgr::GetInstance()->GetSession(touid);
+			if (session) {
+				session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
+			}
+		})) {
+		err = ErrorCodes::SERVER_BUSY;
+		return Status::OK;
+	}
+
 	return Status::OK;
 }
 
 Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 	const TextChatMsgReq* request, TextChatMsgRsp* reply) {
+	//计划1.5：面向 recipient 的写入必须纳入其 uid 分片，gRPC 线程只复制数据 + 投递闭包
+	int err = ErrorCodes::Success;
+	Defer defer([reply, &err]() {
+		reply->set_error(err);
+		});
+
 	//查找用户是否在本服务器
 	auto touid = request->touid();
 	auto session = UserMgr::GetInstance()->GetSession(touid);
-	reply->set_error(ErrorCodes::Success);
 
-	//用户不在内存中则直接返回
+	//无 session 表示目标用户不在线
 	if (session == nullptr) {
+		err = ErrorCodes::RECIPIENT_OFFLINE;
 		return Status::OK;
 	}
 
-	//在内存中则直接发送通知对方
+	//在内存中则先构建通知（gRPC 线程不直接写 session）
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
@@ -134,7 +169,18 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 
 	std::string return_str = rtvalue.dump(4);
 
-	session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
+	//闭包在 recipient shard 上重新查 session，存在才发送；队列停止则返回 SERVER_BUSY
+	if (!LogicSystem::GetInstance()->PostToUser(touid,
+		[touid, return_str]() {
+			auto session = UserMgr::GetInstance()->GetSession(touid);
+			if (session) {
+				session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
+			}
+		})) {
+		err = ErrorCodes::SERVER_BUSY;
+		return Status::OK;
+	}
+
 	return Status::OK;
 }
 
@@ -187,24 +233,38 @@ bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr
 Status ChatServiceImpl::NotifyKickUser(::grpc::ServerContext* context, 
 	const KickUserReq* request, KickUserRsp* reply)
 {
+	//计划1.5：面向被踢用户的写入必须纳入其 uid 分片，gRPC 线程只复制数据 + 投递闭包
+	int err = ErrorCodes::Success;
+	Defer defer([request, reply, &err]() {
+		reply->set_error(err);
+		reply->set_uid(request->uid());
+		});
+
 	//查找用户是否在本服务器
 	auto uid = request->uid();
 	auto session = UserMgr::GetInstance()->GetSession(uid);
 
-	Defer defer([request, reply]() {
-		reply->set_error(ErrorCodes::Success);
-		reply->set_uid(request->uid());
-		});
-
-	//用户不在内存中则直接返回
+	//无 session 表示目标用户不在线
 	if (session == nullptr) {
+		err = ErrorCodes::RECIPIENT_OFFLINE;
 		return Status::OK;
 	}
 
-	//在内存中则直接发送通知对方
-	session->NotifyOffline(uid);
-	//清除旧的连接
-	_p_server->ClearSession(session->GetSessionId());
+	//复制 CServer 共享指针（闭包可能晚于 gRPC 调用执行），闭包在 uid shard 上重新查
+	//session 后踢下线并清除旧连接；队列停止则返回 SERVER_BUSY
+	auto p_server = _p_server;
+	if (!LogicSystem::GetInstance()->PostToUser(uid,
+		[uid, p_server]() {
+			auto session = UserMgr::GetInstance()->GetSession(uid);
+			if (session) {
+				session->NotifyOffline(uid);
+				//清除旧的连接
+				p_server->ClearSession(session->GetSessionId());
+			}
+		})) {
+		err = ErrorCodes::SERVER_BUSY;
+		return Status::OK;
+	}
 
 	return Status::OK;
 }
@@ -216,24 +276,37 @@ void ChatServiceImpl::RegisterServer(std::shared_ptr<CServer> pServer)
 
 Status ChatServiceImpl::NotifyChatImgMsg(::grpc::ServerContext* context, const ::message::NotifyChatImgReq* request, ::message::NotifyChatImgRsp* response)
 {
+	//计划1.5：面向 recipient 的写入必须纳入其 uid 分片，gRPC 线程只复制数据 + 投递闭包
+	int err = ErrorCodes::Success;
+	Defer defer([request, response, &err]() {
+		//设置具体的回包信息
+		response->set_error(err);
+		response->set_message_id(request->message_id());
+		});
+
 	//查找用户是否在本服务器
 	auto uid = request->to_uid();
 	auto session = UserMgr::GetInstance()->GetSession(uid);
 
-	Defer defer([request, response]() {
-		//设置具体的回包信息
-		response->set_error(ErrorCodes::Success);
-		response->set_message_id(request->message_id());
-		});
-
-	//用户不在内存中则直接返回
+	//无 session 表示目标用户不在线
 	if (session == nullptr) {
-		//这里只是返回1个状态
+		err = ErrorCodes::RECIPIENT_OFFLINE;
 		return Status::OK;
 	}
 
-	//在内存中则直接发送通知对方
-	session->NotifyChatImgRecv(request);
-	//这里只是返回1个状态
+	//复制 proto 请求为值（闭包可能晚于 gRPC 调用执行，不可持有 request 指针），闭包在
+	//recipient shard 上重新查 session 后通知图片消息；队列停止则返回 SERVER_BUSY
+	::message::NotifyChatImgReq req_copy = *request;
+	if (!LogicSystem::GetInstance()->PostToUser(uid,
+		[uid, req_copy]() {
+			auto session = UserMgr::GetInstance()->GetSession(uid);
+			if (session) {
+				session->NotifyChatImgRecv(&req_copy);
+			}
+		})) {
+		err = ErrorCodes::SERVER_BUSY;
+		return Status::OK;
+	}
+
 	return Status::OK;
 }
