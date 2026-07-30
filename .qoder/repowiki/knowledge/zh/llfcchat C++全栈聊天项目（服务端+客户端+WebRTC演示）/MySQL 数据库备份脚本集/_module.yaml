@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: sql_backups
-title: MySQL 数据库备份脚本集
-scope:
-    - sql备份/
-source_files: []
-depends_on: []
-related_to: []
