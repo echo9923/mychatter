@@ -58,6 +58,12 @@ public:
 	 * @param msg_id 消息类型ID（用于业务分发）
 	 */
 	RecvNode(short max_len, short msg_id);
+
+	/**
+	 * @brief 获取消息类型ID（供 IO 线程做路由分片绑定，计划1.3）
+	 * @return 消息类型ID
+	 */
+	short GetMsgId() const { return _msg_id; }
 private:
 	short _msg_id;  ///< 消息类型ID，用于确定业务处理逻辑
 };

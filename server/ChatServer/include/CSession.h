@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <boost/asio.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <boost/uuid/uuid_generators.hpp>
@@ -69,7 +69,23 @@ public:
 	 * @brief 获取该会话对应的用户ID
 	 * @return 用户ID，未登录时为0
 	 */
-	int GetUserId();
+	int GetUserId() const;
+
+	/**
+	 * @brief 绑定路由分片用的用户ID（计划1.3）
+	 *
+	 * 仅在第一条合法 MSG_CHAT_LOGIN 包上用 compare-exchange 从 0 固定为 uid，
+	 * 保证同一连接的登录与紧随其后的业务包从第一包起进入同一 worker 分片。
+	 * @param uid 登录请求中解析出的正整数 uid
+	 * @return 首次绑定成功、或已绑定到同一 uid 时返回 true；已绑定到不同 uid 时返回 false
+	 */
+	bool BindRoutingUid(int uid);
+
+	/**
+	 * @brief 获取路由分片绑定的用户ID
+	 * @return 路由 uid，未绑定时为0
+	 */
+	int GetRoutingUid() const;
 
 	/// 启动会话，开始异步读取客户端数据
 	void Start();
@@ -179,8 +195,10 @@ private:
 	bool _b_head_parse;
 	/// 当前接收到的消息头部节点（包含消息ID和数据长度）
 	std::shared_ptr<MsgNode> _recv_head_node;
-	/// 该会话对应的用户ID（登录成功后设置）
-	int _user_uid;
+	/// 该会话对应的用户ID（登录成功后设置，原子变量保证 worker/IO 线程安全读取）
+	std::atomic<int> _user_uid{0};
+	/// 路由分片绑定的用户ID（第一条合法登录包 compare-exchange 固定，0 表示未绑定）
+	std::atomic<int> _routing_uid{0};
 	/// 最后一次收到心跳/数据的时间戳（原子变量，线程安全）
 	std::atomic<time_t> _last_heartbeat;
 	/// 会话级别的互斥锁，保护会话状态的并发访问
