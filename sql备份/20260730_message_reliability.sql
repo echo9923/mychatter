@@ -45,6 +45,8 @@ USE `llfc`;
 DROP PROCEDURE IF EXISTS `_mr_add_column_if_absent`;
 DROP PROCEDURE IF EXISTS `_mr_modify_column`;
 DROP PROCEDURE IF EXISTS `_mr_add_index_if_absent`;
+DROP PROCEDURE IF EXISTS `_mr_verify_column`;
+DROP PROCEDURE IF EXISTS `_mr_verify_index`;
 DROP PROCEDURE IF EXISTS `_mr_drop_helper_procs`;
 
 DELIMITER $$
@@ -102,6 +104,59 @@ BEGIN
   END IF;
 END$$
 
+-- 核对既有列形状：精确 COLUMN_TYPE（含长度与符号）、可空性、默认值；任一不一致立即中止迁移
+-- （计划应急条款：禁止第二组兼容列）。p_default 支持多值，用 '|' 分隔（如 '0|1'），任一匹配即通过。
+CREATE PROCEDURE `_mr_verify_column`(
+  IN p_table VARCHAR(64),
+  IN p_column VARCHAR(64),
+  IN p_column_type VARCHAR(64),
+  IN p_nullable VARCHAR(3),
+  IN p_default TEXT
+)
+BEGIN
+  DECLARE cnt INT DEFAULT 0;
+  SELECT COUNT(*) INTO cnt
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name   = p_table
+      AND column_name  = p_column
+      AND column_type  = p_column_type
+      AND is_nullable  = p_nullable
+      AND IFNULL(column_default, 'NULL') REGEXP CONCAT('^(', p_default, ')$');
+  IF cnt = 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'chat_message 迁移中止：既有列形状与本计划定义不一致，禁止建立第二组兼容列';
+  END IF;
+END$$
+
+-- 核对既有索引的列顺序完全一致；不一致立即中止迁移
+CREATE PROCEDURE `_mr_verify_index`(
+  IN p_table VARCHAR(64),
+  IN p_index VARCHAR(64),
+  IN p_columns VARCHAR(255),
+  IN p_non_unique INT
+)
+BEGIN
+  DECLARE cnt INT DEFAULT 0;
+  SELECT COUNT(*) INTO cnt
+    FROM (
+      SELECT index_name,
+             GROUP_CONCAT(column_name ORDER BY seq_in_index) AS cols,
+             MAX(non_unique) AS non_uniq
+        FROM information_schema.statistics
+       WHERE table_schema = DATABASE()
+         AND table_name   = p_table
+         AND index_name   = p_index
+       GROUP BY index_name
+    ) t
+   WHERE t.cols = p_columns
+     AND t.non_uniq = p_non_unique;
+  IF cnt = 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'chat_message 迁移中止：既有索引列与本计划定义不一致，禁止建立第二组兼容索引';
+  END IF;
+END$$
+
 DELIMITER ;
 
 -- ----------------------------------------------------------------------
@@ -110,14 +165,18 @@ DELIMITER ;
 -- unique_id：历史/系统消息保持 NULL，禁止空串
 CALL `_mr_add_column_if_absent`('chat_message', 'unique_id',
   '`unique_id` VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT ''客户端去重标识，历史/系统消息为NULL''');
+CALL `_mr_verify_column`('chat_message', 'unique_id', 'varchar(64)', 'YES', 'NULL');
 
 -- content_size：文本为 0，图片为字节数
 CALL `_mr_add_column_if_absent`('chat_message', 'content_size',
   '`content_size` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT ''文本为0，图片为字节数''');
+CALL `_mr_verify_column`('chat_message', 'content_size', 'bigint unsigned', 'NO', '0');
 
 -- delivery_status：新增时默认 1，使历史行立即被标记为已投递，避免升级后重推
 CALL `_mr_add_column_if_absent`('chat_message', 'delivery_status',
   '`delivery_status` TINYINT NOT NULL DEFAULT 1 COMMENT ''0=待投递 1=已投递(ACK)''');
+-- 重复执行时列已存在且默认值可能是 1（首次 ADD）或 0（MODIFY 后），两者皆合法
+CALL `_mr_verify_column`('chat_message', 'delivery_status', 'tinyint', 'NO', '0|1');
 
 -- ----------------------------------------------------------------------
 -- 2. 历史行已因 DEFAULT 1 被标记为已投递；新行默认改为待投递(0)
@@ -125,6 +184,7 @@ CALL `_mr_add_column_if_absent`('chat_message', 'delivery_status',
 -- ----------------------------------------------------------------------
 CALL `_mr_modify_column`('chat_message', 'delivery_status',
   'TINYINT NOT NULL DEFAULT 0 COMMENT ''0=待投递 1=已投递(ACK)''');
+CALL `_mr_verify_column`('chat_message', 'delivery_status', 'tinyint', 'NO', '0');
 
 -- ----------------------------------------------------------------------
 -- 3. 唯一键与待投递查询索引
@@ -132,10 +192,12 @@ CALL `_mr_modify_column`('chat_message', 'delivery_status',
 -- 同一 sender 下 unique_id 唯一；多个 NULL 互不冲突，故历史/系统消息安全
 CALL `_mr_add_index_if_absent`('chat_message', 'uk_chat_message_sender_unique',
   'UNIQUE KEY `uk_chat_message_sender_unique`(`sender_id`, `unique_id`)');
+CALL `_mr_verify_index`('chat_message', 'uk_chat_message_sender_unique', 'sender_id,unique_id', 0);
 
 -- 支撑按 recv_uid 分页拉取待投递消息
 CALL `_mr_add_index_if_absent`('chat_message', 'idx_chat_message_pending',
   'INDEX `idx_chat_message_pending`(`recv_id`, `delivery_status`, `message_id`)');
+CALL `_mr_verify_index`('chat_message', 'idx_chat_message_pending', 'recv_id,delivery_status,message_id', 1);
 
 -- ----------------------------------------------------------------------
 -- 4. 清理辅助存储过程
@@ -143,3 +205,5 @@ CALL `_mr_add_index_if_absent`('chat_message', 'idx_chat_message_pending',
 DROP PROCEDURE IF EXISTS `_mr_add_column_if_absent`;
 DROP PROCEDURE IF EXISTS `_mr_modify_column`;
 DROP PROCEDURE IF EXISTS `_mr_add_index_if_absent`;
+DROP PROCEDURE IF EXISTS `_mr_verify_column`;
+DROP PROCEDURE IF EXISTS `_mr_verify_index`;
