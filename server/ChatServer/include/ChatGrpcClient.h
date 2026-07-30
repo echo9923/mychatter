@@ -31,6 +31,20 @@ using message::KickUserRsp;
 
 
 /**
+ * @brief 跨服文本通知的最终结果（计划5.6）
+ *
+ * 同时携带 gRPC transport 状态码与对端应用层 error，供调用方记录日志。
+ * 重试决策完全封装在 ChatGrpcClient 内部（每次尝试新 ClientContext+deadline，
+ * 按 [Delivery] 配置最多 RpcMaxAttempts 次），调用方只关心最终结果：
+ * pending 已在 RPC 前建立，重试耗尽不撤销 sender ACK、不改 DB。
+ */
+struct NotifyResult {
+	grpc::StatusCode grpc_code;   ///< 最后一次尝试的 gRPC transport 状态码
+	int app_error;                ///< 对端应用层 error（rsp.error()）；无有效响应/未知 server 时为 RPCFailed
+};
+
+
+/**
  * @brief ChatServer gRPC 客户端（单例）
  * 
  * 用于向其他 ChatServer 节点发送跨服 gRPC 请求。
@@ -72,13 +86,18 @@ public:
 	bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 
 	/**
-	 * @brief 向目标ChatServer转发文本聊天消息
-	 * @param server_ip 目标ChatServer的IP地址
-	 * @param req 文本聊天消息请求
-	 * @param rtvalue 原始JSON数据，用于日志或额外处理
-	 * @return 文本聊天消息响应
+	 * @brief 向目标ChatServer转发文本聊天消息（带 deadline + 有界重试，计划5.6）
+	 *
+	 * 每次尝试创建新的 ClientContext，deadline = [Delivery] RpcDeadlineMs（回退 3000）；
+	 * 最多 [Delivery] RpcMaxAttempts 次（回退 3，至少 1）。只对 gRPC
+	 * UNAVAILABLE/DEADLINE_EXCEEDED/RESOURCE_EXHAUSTED 或对端应用层 SERVER_BUSY(1016)
+	 * 重试，间隔 RpcBackoffMs、2×RpcBackoffMs（回退 100/200ms）；RECIPIENT_OFFLINE(1015)/
+	 * 未知 server/参数类错误立即停止。重试耗尽不撤销 sender ACK（pending 已在 RPC 前建立）。
+	 * @param server_ip 目标ChatServer的节点名（_channels 键）
+	 * @param req 文本聊天消息请求（携带 unique_id/msg_id/content/chat_time）
+	 * @return 同时含 grpc 状态码与对端应用层 error 的 NotifyResult
 	 */
-	TextChatMsgRsp NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& req, const json& rtvalue);
+	NotifyResult NotifyTextChatMsg(const std::string& server_ip, const TextChatMsgReq& req);
 
 	/**
 	 * @brief 通知目标ChatServer踢出指定用户（用于跨服踢人/多端登录冲突）

@@ -690,22 +690,43 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 		return;
 	}
 
-	//远端：TextChatMsgReq 已携带 unique_id/msg_id/content/chat_time；对端
-	//NotifyTextChatMsg 补 msg_type=TEXT,status=UN_READ,content_size="0"（计划5.5）。
-	//§5.6 会把此处改为 PostDelivery + retry；当前保持同步调用
+	//远端：TextChatMsgReq 携带 unique_id/msg_id/content/chat_time。投递经 sender uid
+	//固定的 delivery shard，避免 3s deadline 阻塞 logic shard，且同一 sender 的多次跨服
+	//调用在 delivery worker 上保持顺序（计划5.6）。带重试的 NotifyTextChatMsg 内部按
+	//[Delivery] 配置 deadline/最多尝试次数/退避，重试耗尽只日志：pending 已在 RPC 前
+	//建立，receiver 后续 pull 兜底；不撤销 sender ACK、不改 DB。
 	TextChatMsgReq text_msg_req;
 	text_msg_req.set_fromuid(uid);
 	text_msg_req.set_touid(touid);
 	text_msg_req.set_thread_id(thread_id);
 	for (const auto& chat_data : pending_rows) {
-		auto *text_msg = text_msg_req.add_textmsgs();
+		auto* text_msg = text_msg_req.add_textmsgs();
 		text_msg->set_unique_id(chat_data->unique_id);
 		text_msg->set_msgcontent(chat_data->content);
 		text_msg->set_msg_id(chat_data->message_id);
 		text_msg->set_chat_time(chat_data->chat_time);
 	}
 
-	ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, text_msg_req, rtvalue);
+	//拷贝 server_ip / proto req 进闭包（按值捕获），闭包在 sender 固定的 delivery worker 上执行
+	std::string server_ip = to_ip_value;
+	auto posted = PostDelivery(uid, [server_ip, text_msg_req]() {
+		auto res = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(server_ip, text_msg_req);
+		if (res.grpc_code == grpc::StatusCode::OK && res.app_error == ErrorCodes::Success) {
+			std::cout << "DealChatTextMsg cross-server delivered, server=" << server_ip << std::endl;
+		}
+		else {
+			//重试耗尽 / 不可重试 / 未知 server：只日志。pending 已在 RPC 前建立，receiver 后续 pull 兜底（计划5.6）
+			std::cout << "DealChatTextMsg cross-server delivery final result server=" << server_ip
+				<< " grpc_code=" << static_cast<int>(res.grpc_code)
+				<< " app_error=" << res.app_error
+				<< " (pending already established, receiver will pull)" << std::endl;
+		}
+	});
+	if (!posted) {
+		//停机：delivery worker 已拒绝投递。pending 已建立，receiver 后续 pull 兜底（计划5.6）
+		std::cout << "DealChatTextMsg PostDelivery rejected (stopping), server=" << server_ip
+			<< " (pending already established, receiver will pull)" << std::endl;
+	}
 }
 
 void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
