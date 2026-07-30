@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "const.h"
 #include <thread>
 #include <jdbc/mysql_driver.h>
@@ -7,6 +7,7 @@
 #include <jdbc/cppconn/resultset.h>
 #include <jdbc/cppconn/statement.h>
 #include <jdbc/cppconn/exception.h>
+#include <jdbc/cppconn/datatype.h>
 #include "data.h"
 #include <memory>
 #include <queue>
@@ -277,6 +278,22 @@ private:
 
 
 /**
+ * @brief 聊天消息持久化结果枚举
+ *
+ * 表示一次 AddChatMsg 写入的幂等结果，供上层决定是否向 sender 返回成功/冲突/失败。
+ * - Stored:   新行写入成功
+ * - Duplicate:同 (sender_id, unique_id) 已存在且内容完全一致，返回同一 message_id，不重复插入
+ * - Conflict: 同 (sender_id, unique_id) 已存在但内容不一致，原行不变（永久冲突）
+ * - Failed:   SQL 错误或连接失败，本批新行已回滚
+ */
+enum class SaveMessageResult {
+	Stored,    ///< 新消息已持久化
+	Duplicate, ///< 幂等重复，返回已有 canonical message_id
+	Conflict,  ///< unique-id 相同但内容冲突，原消息不变
+	Failed     ///< 持久化失败（SQL 错误/连接失败，已回滚）
+};
+
+/**
  * @brief MySQL数据访问对象(DAO)
  * 
  * 封装所有数据库操作，包括用户管理、好友关系、聊天会话、聊天消息等。
@@ -422,18 +439,26 @@ public:
 	std::shared_ptr<PageResult> LoadChatMsg(int threadId, int lastId, int pageSize);
 
 	/**
-	 * @brief 批量插入聊天消息到数据库
-	 * @param chat_datas 消息列表
-	 * @return 是否成功
+	 * @brief 批量插入聊天消息到数据库（幂等）
+	 *
+	 * 在同一事务内逐条 UPSERT：对 (sender_id, unique_id) 命中唯一键时按 canonical
+	 * message_id 读回并核对 thread_id/recv_id/content/msg_type/content_size，完全一致
+	 * 视为 Duplicate（返回同一 id），不一致视为 Conflict（不覆盖）。
+	 *
+	 * @param chat_datas 消息列表；成功/重复时会回写 canonical message_id
+	 * @param conflict_unique_ids [out] 发生内容冲突的 unique_id 列表（供上层组装冲突响应）
+	 * @return 本批整体结果：任一 Conflict/SQL错误回滚本批新行并返回 Conflict/Failed；
+	 *         全部 Stored/Duplicate 则提交，返回 Stored 或（全部为重复时）Duplicate
 	 */
-	bool AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas);
+	SaveMessageResult AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas,
+		std::vector<std::string>& conflict_unique_ids);
 
 	/**
-	 * @brief 插入单条聊天消息到数据库
-	 * @param chat_data 消息智能指针
-	 * @return 是否成功
+	 * @brief 插入单条聊天消息到数据库（幂等）
+	 * @param chat_data 消息智能指针；成功/重复时会回写 canonical message_id
+	 * @return 持久化结果
 	 */
-	bool AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
+	SaveMessageResult AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
 
 	/**
 	 * @brief 根据消息ID获取单条聊天消息
@@ -442,9 +467,59 @@ public:
 	 */
 	std::shared_ptr<ChatMessage> GetChatMsg(int message_id);
 
+	/**
+	 * @brief 拉取接收者的待投递消息（delivery_status=0），排除尚未上传完成的图片
+	 *
+	 * 按 message_id 升序返回，实际多取一条供调用方判断 has_more。
+	 *
+	 * @param recv_uid 接收者用户ID
+	 * @param after_message_id 游标（仅返回 message_id 大于该值的消息，0 表示从头）
+	 * @param limit 期望条数上限（实际最多返回 limit+1 条）
+	 * @return 待投递消息列表（升序）
+	 */
+	std::vector<std::shared_ptr<ChatMessage>> GetPendingMessages(int recv_uid,
+		int after_message_id, int limit);
+
+	/**
+	 * @brief 按消息ID批量取回指定接收者的消息
+	 *
+	 * @param recv_uid 接收者用户ID（过滤，防越权）
+	 * @param ids 消息ID列表
+	 * @return 命中且属于该接收者的消息列表
+	 */
+	std::vector<std::shared_ptr<ChatMessage>> GetMessagesByIds(int recv_uid,
+		const std::vector<int>& ids);
+
+	/**
+	 * @brief 将指定接收者的一批消息标记为已投递（ACK）
+	 *
+	 * UPDATE 带 recv_id 过滤防越权；已是 delivery_status=1 的行仍返回成功（重复 ACK 幂等）。
+	 *
+	 * @param recv_uid 接收者用户ID
+	 * @param ids 消息ID列表
+	 * @return 是否执行成功（无行受影响也返回 true）
+	 */
+	bool MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids);
+
 private:
 	/// MySQL连接池实例，管理数据库连接的复用和保活
 	std::unique_ptr<MySqlPool> pool_;
+
+	/**
+	 * @brief 单条消息幂等 UPSERT + 回读核对（内部复用）
+	 *
+	 * 执行 INSERT ... ON DUPLICATE KEY UPDATE message_id=LAST_INSERT_ID(message_id)，
+	 * 随后按 canonical message_id 回读并核对 thread_id/recv_id/content/msg_type/content_size：
+	 * 完全一致返回 Duplicate（同一 message_id），不一致返回 Conflict（不覆盖原消息）。
+	 *
+	 * @param conn 已处于事务中的连接（调用方管理 commit/rollback）
+	 * @param msg 待写入消息；成功/重复时回写 canonical message_id
+	 * @param out_conflict_uid [out] 冲突时写入该消息的 unique_id
+	 * @return Stored/Duplicate/Conflict/Failed
+	 */
+	SaveMessageResult UpsertChatMessage(sql::Connection* conn,
+		const std::shared_ptr<ChatMessage>& msg,
+		std::string& out_conflict_uid);
 };
 
 

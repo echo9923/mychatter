@@ -52,12 +52,21 @@ public:
 	bool CreatePrivateChat(int user1_id, int user2_id, int &thread_id);
 	/// 分页加载历史聊天消息
 	std::shared_ptr<PageResult> LoadChatMsg(int threadId, int lastId, int pageSize);
-	/// 批量插入聊天消息
-	bool AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas);
-	/// 插入单条聊天消息
-	bool AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
+	/// 批量插入聊天消息（幂等），返回持久化结果并填充冲突 unique_id 列表
+	SaveMessageResult AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas,
+		std::vector<std::string>& conflict_unique_ids);
+	/// 插入单条聊天消息（幂等），返回持久化结果
+	SaveMessageResult AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
 	/// 根据消息ID获取单条消息
 	std::shared_ptr<ChatMessage> GetChatMsg(int message_id);
+	/// 拉取接收者的待投递消息（delivery_status=0，排除未上传完成的图片），多取一条供 has_more
+	std::vector<std::shared_ptr<ChatMessage>> GetPendingMessages(int recv_uid,
+		int after_message_id, int limit);
+	/// 按 recv_uid+ids 批量取回消息（防越权）
+	std::vector<std::shared_ptr<ChatMessage>> GetMessagesByIds(int recv_uid,
+		const std::vector<int>& ids);
+	/// 将指定接收者的一批消息标记为已投递（ACK，带 recv_id 防越权，幂等）
+	bool MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids);
 
 private:
 	/// 私有构造函数，初始化MysqlDao
