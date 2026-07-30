@@ -84,7 +84,11 @@ enum ReqId{
     ID_IMG_CHAT_DOWN_INFO_SYNC_REQ  = 1045,  //获取图片下载信息同步请求
     ID_IMG_CHAT_DOWN_INFO_SYNC_RSP  = 1046,  //获取图片下载信息同步回复
     ID_IMG_CHAT_DOWN_REQ          =  1047,    //聊天图片下载请求
-    ID_IMG_CHAT_DOWN_RSP          =  1048     //聊天图片下载回复
+    ID_IMG_CHAT_DOWN_RSP          =  1048,    //聊天图片下载回复
+    ID_CHAT_DELIVERY_ACK_REQ      =  1049,    //聊天消息投递ACK请求
+    ID_CHAT_DELIVERY_ACK_RSP      =  1050,    //聊天消息投递ACK回复
+    ID_PULL_OFFLINE_MSG_REQ       =  1051,    //拉取离线消息请求
+    ID_PULL_OFFLINE_MSG_RSP       =  1052     //拉取离线消息回复
 };
 Q_DECLARE_METATYPE(ReqId)
 
@@ -92,6 +96,11 @@ enum ErrorCodes{
     SUCCESS = 0,
     ERR_JSON = 1, //Json解析失败
     ERR_NETWORK = 2,
+    //服务端投递错误码（镜像 ChatServer const.h）
+    MESSAGE_STORE_FAILED = 1014, //消息存储失败（transient，继续重传）
+    RECIPIENT_OFFLINE    = 1015, //接收方离线
+    SERVER_BUSY          = 1016, //服务器繁忙（transient，继续重传）
+    MESSAGE_CONFLICT     = 1017  //消息冲突（permanent，停止重传标 SEND_FAILED）
 };
 
 enum Modules{

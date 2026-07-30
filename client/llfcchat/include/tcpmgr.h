@@ -1,4 +1,4 @@
-﻿#ifndef TCPMGR_H
+#ifndef TCPMGR_H
 #define TCPMGR_H
 #include <QTcpSocket>
 #include "singleton.h"
@@ -10,6 +10,8 @@
 #include <memory>
 #include <QThread>
 #include <QQueue>
+#include <QTimer>
+#include <QDateTime>
 
 class TcpThread:public std::enable_shared_from_this<TcpThread> {
 public:
@@ -17,6 +19,15 @@ public:
     ~TcpThread();
 private:
     QThread* _tcp_thread;
+};
+
+//持久化待重传请求（§6.1）
+struct PendingRequest {
+    ReqId id;                  // 1017 文本 / 1035 图片
+    QByteArray payload;        // 原始 JSON payload
+    QStringList unique_ids;    // 本批次客户端唯一标识
+    qint64 retry_delay_ms;     // 当前退避间隔（倍增上限 30s）
+    qint64 next_send_epoch_ms; // 下次发送时刻（epoch ms）
 };
 
 class TcpMgr:public QObject, public Singleton<TcpMgr>,
@@ -27,6 +38,8 @@ public:
    ~ TcpMgr();
     void CloseConnection();
     void SendData(ReqId reqId, QByteArray data);
+    //可靠发送：payload + unique_ids 进入持久 pending，按退避无限重传直到 1018/1036 或冲突（§6.1）
+    void SendReliableChat(ReqId id, QByteArray payload, const QStringList& unique_ids);
 
 private:
     friend class Singleton<TcpMgr>;
@@ -53,10 +66,28 @@ private:
     qint64        _bytes_sent;
     //是否正在发送
     bool _pending;
+    //—— 可靠重传状态（全部只在 TCP 线程访问）——
+    QTimer* _retry_timer;                 // 250ms 扫描定时器，parent 到 this
+    QList<PendingRequest> _pending_requests;
+    int _delivery_uid;                    // 当前加载 pending 的 uid（0=未加载）
+    qint64 _retry_initial_ms;             // 初始退避（配置 RequestRetryInitialMs）
+    qint64 _retry_max_ms;                 // 退避上限（配置 RequestRetryMaxMs）
+    //可靠重传内部方法（均在 TCP 线程执行）
+    void loadDeliveryConfig();
+    void addPendingRequest(ReqId id, QByteArray payload, QStringList unique_ids);
+    void persistPendingRequests();
+    void restorePendingRequests(int uid);
+    void removePendingByUniqueId(const QString& unique_id);
+    void handleTextConflict(int thread_id, int fromuid, const QStringList& conflict_ids);
+    void handleImageConflict(const QString& conflict_id);
+    bool rebuildImagePending(PendingRequest& req);
+    void rebuildTextPending(const PendingRequest& req);
 public slots:
     void slot_tcp_close();
     void slot_tcp_connect(std::shared_ptr<ServerInfo> si);
     void slot_send_data(ReqId reqId, QByteArray data);
+    void slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
+    void slot_retry_timeout();
     void slot_test() {
         qDebug() << "receve thread is " << QThread::currentThread();
         qDebug() << "slot test......";
@@ -65,6 +96,8 @@ signals:
     void sig_close();
     void sig_con_success(bool bsuccess);
     void sig_send_data(ReqId reqId, QByteArray data);
+    //线程边界信号：公有 API 只 emit 此信号，slot_send_reliable_chat 在 TCP 线程执行
+    void sig_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
     void sig_swich_chatdlg();
     void sig_load_apply_list(QJsonArray json_array);
     void sig_login_failed(int);
