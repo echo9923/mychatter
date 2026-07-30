@@ -21,8 +21,10 @@ std::size_t ReadWorkerCount(const std::string& key) {
 	try {
 		auto val = ConfigMgr::Inst().GetValue("Concurrency", key);
 		if (!val.empty()) {
-			int n = std::stoi(val);
-			if (n > 0 && n <= 64) {
+			std::size_t pos = 0;
+			int n = std::stoi(val, &pos);
+			//必须整串消费（允许前导空白），否则视为非法值回退 4（计划1.2）
+			if (pos == val.size() && n > 0 && n <= 64) {
 				return static_cast<std::size_t>(n);
 			}
 		}
@@ -60,7 +62,7 @@ void LogicSystem::SetServer(std::shared_ptr<CServer> pserver) {
 
 bool LogicSystem::PostMsgToQue(std::size_t routing_key, std::shared_ptr<LogicNode> msg) {
 	//停机中或未初始化分片：拒绝，消息不持久化、不重传
-	if (_stopping.load() || _logic_workers.empty()) {
+	if (_ingress_stopping.load() || _logic_workers.empty()) {
 		return false;
 	}
 	auto& worker = _logic_workers[routing_key % _logic_workers.size()];
@@ -68,7 +70,7 @@ bool LogicSystem::PostMsgToQue(std::size_t routing_key, std::shared_ptr<LogicNod
 }
 
 bool LogicSystem::PostToUser(int uid, LogicWorker::Task task) {
-	if (_stopping.load() || _logic_workers.empty()) {
+	if (_ingress_stopping.load() || _logic_workers.empty()) {
 		return false;
 	}
 	std::size_t idx = std::hash<int>{}(uid) % _logic_workers.size();
@@ -76,7 +78,7 @@ bool LogicSystem::PostToUser(int uid, LogicWorker::Task task) {
 }
 
 bool LogicSystem::PostDelivery(int sender_uid, LogicWorker::Task task) {
-	if (_stopping.load() || _delivery_workers.empty()) {
+	if (_delivery_stopping.load() || _delivery_workers.empty()) {
 		return false;
 	}
 	std::size_t idx = std::hash<int>{}(sender_uid) % _delivery_workers.size();
@@ -84,18 +86,20 @@ bool LogicSystem::PostDelivery(int sender_uid, LogicWorker::Task task) {
 }
 
 void LogicSystem::Stop() {
-	//幂等：只允许一次排空/join，静态析构重复调用安全
+	//幂等：只允许一次完整排空/join，静态析构重复调用安全
 	std::lock_guard<std::mutex> lk(_stop_mutex);
-	if (_stopping.load()) {
+	if (_ingress_stopping.load()) {
 		return;
 	}
-	_stopping.store(true);
-
-	//先拒绝新投递（_stopping=true），再排空/join logic workers（它们仍可产生 outbound 任务）
+	//1) 先拒绝新的 client/gRPC 入口投递
+	_ingress_stopping.store(true);
+	//2) 排空/join logic workers；排空期间 PostDelivery 保持开放，任务仍可产生 outbound 跨服投递
 	for (auto& w : _logic_workers) {
 		if (w) w->Stop();
 	}
-	//最后排空/join delivery workers
+	//3) logic workers 全部 join 后才拒绝新的跨服投递
+	_delivery_stopping.store(true);
+	//4) 最后排空/join delivery workers
 	for (auto& w : _delivery_workers) {
 		if (w) w->Stop();
 	}
@@ -113,8 +117,8 @@ void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
 		if (session->GetUserId() != 0) {
 			json err;
 			err["error"] = ErrorCodes::UidInvalid;
-			session->Send(err.dump(4), MSG_CHAT_LOGIN_RSP);
-			session->Close();
+			//原子发送错误终帧，写完后关闭
+			session->SendAndClose(err.dump(4), MSG_CHAT_LOGIN_RSP);
 			return;
 		}
 		//token 失败后 _user_uid 仍为 0，允许用原 routing uid 重试登录，正常进入 LoginHandler

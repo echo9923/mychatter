@@ -109,6 +109,16 @@ public:
 	void Close();
 
 	/**
+	 * @brief 原子地发送最后一帧并安排写完即关
+	 *
+	 * 在同一把 _send_lock 内置关闭标志并入队终帧：之后的 Send 一律被拒绝，
+	 * HandleWrite 在发送队列排空后才真正 Close，保证错误响应完整写出。
+	 * @param msg 消息内容字符串（通常为JSON错误响应）
+	 * @param msgid 消息类型ID
+	 */
+	void SendAndClose(std::string msg, short msgid);
+
+	/**
 	 * @brief 获取自身的shared_ptr（用于异步回调中延长生命周期）
 	 * @return 当前会话的共享指针
 	 */
@@ -185,6 +195,8 @@ private:
 	CServer* _server;
 	/// 会话关闭标志，为true时表示会话已关闭不再处理消息
 	bool _b_close;
+	/// 写完即关标志（_send_lock 保护）：为true时拒绝新 Send，队列排空后由 HandleWrite 关闭
+	bool _close_after_send{false};
 	/// 发送队列，缓存待发送给客户端的消息节点
 	std::queue<shared_ptr<SendNode> > _send_que;
 	/// 发送队列互斥锁，保护_send_que的线程安全
