@@ -41,8 +41,10 @@ static std::size_t ReadConcurrencySize(const std::string& key, std::size_t fallb
 		return fallback;
 	}
 	try {
-		long long n = std::stoll(val);
-		if (n <= 0) {
+		std::size_t pos = 0;
+		long long n = std::stoll(val, &pos);
+		//必须整串消费（允许前导空白），否则视为非法值回退（计划2.5）
+		if (pos != val.size() || n <= 0) {
 			return fallback;
 		}
 		return static_cast<std::size_t>(n);
