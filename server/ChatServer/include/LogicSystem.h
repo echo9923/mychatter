@@ -213,6 +213,35 @@ private:
 	 * @brief 处理图片聊天消息（存储记录、通知ResourceServer上传、转发给接收者）
 	 */
 	void DealChatImgMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+
+	/**
+	 * @brief 应用层投递 ACK 处理器（计划4.3/5.2）
+	 *
+	 * 在 receiver uid shard 上执行：严格校验 uid==session->GetUserId() 与 message_ids；
+	 * GetMessagesByIds 验证所有 id 都属于本 receiver 且存在；MarkMessagesDelivered
+	 * 成功后才回 Success 并逐个 ZREM offline_msg:<uid>（Redis 失败不影响 success）。
+	 */
+	void DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+
+	/**
+	 * @brief 离线消息拉取处理器（计划5.3）
+	 *
+	 * 在 receiver uid shard 上执行：校验 uid；读 Redis ZSET cursor 后 IDs + MySQL pending
+	 * 做并集（MySQL 为真值，缺失项回填 Redis），按 count limit 与 PullMaxBytes 双上界
+	 * 序列化统一 envelope，设置 next_message_id/has_more。
+	 */
+	void PullOfflineMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+
+	/**
+	 * @brief 将一条 ChatMessage 序列化为统一 envelope（计划5.3）
+	 *
+	 * 固定字段：message_id,unique_id,thread_id,fromuid,touid,msg_type,content,
+	 * content_size(十进制字符串),chat_time,status。content_size 用 std::to_string
+	 * 避免 Qt JSON number 对 64 位文件大小丢精度。
+	 * @param msg 待序列化的消息
+	 * @return 填充好的 envelope JSON 对象
+	 */
+	json BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg);
 	
 	/// client/gRPC 入口停机标志：置 true 后 PostMsgToQue/PostToUser 拒绝新投递
 	std::atomic<bool> _ingress_stopping{false};

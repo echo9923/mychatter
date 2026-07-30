@@ -2,10 +2,17 @@
 #include "CServer.h"
 #include <iostream>
 #include <sstream>
+#include <climits>
 #include "LogicSystem.h"
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
 #include "MysqlMgr.h"
+
+namespace {
+/// SendNode 以 short 记录 payload 长度并构造 _total_len=max_len+HEAD_TOTAL_LEN；
+/// payload 超过 SHRT_MAX-HEAD_TOTAL_LEN 会使 short 溢出。这是帧上限硬约束（计划5.3）
+constexpr int kMaxSendPayload = SHRT_MAX - HEAD_TOTAL_LEN;
+} // namespace
 
 CSession::CSession(boost::asio::io_context& io_context, CServer* server):
 	_socket(io_context), _server(server), _b_close(false),_b_head_parse(false), _user_uid(0){
@@ -62,6 +69,12 @@ void CSession::Send(std::string msg, short msgid) {
 		//已安排写完即关的终帧，后续发送一律拒绝
 		return;
 	}
+	//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出，拒绝并入队（计划5.3）
+	if (static_cast<int>(msg.length()) > kMaxSendPayload) {
+		std::cout << "session: " << _session_id << " drop oversize payload, msgid=" << msgid
+			<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
+		return;
+	}
 	int send_que_size = _send_que.size();
 	if (send_que_size > MAX_SENDQUE) {
 		std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
@@ -83,6 +96,12 @@ void CSession::Send(char* msg, short max_length, short msgid) {
 		//已安排写完即关的终帧，后续发送一律拒绝
 		return;
 	}
+	//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出，拒绝并入队（计划5.3）
+	if (static_cast<int>(max_length) > kMaxSendPayload) {
+		std::cout << "session: " << _session_id << " drop oversize payload, msgid=" << msgid
+			<< " length=" << max_length << " exceeds " << kMaxSendPayload << endl;
+		return;
+	}
 	int send_que_size = _send_que.size();
 	if (send_que_size > MAX_SENDQUE) {
 		std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
@@ -102,6 +121,12 @@ void CSession::SendAndClose(std::string msg, short msgid) {
 	std::lock_guard<std::mutex> lock(_send_lock);
 	if (_close_after_send) {
 		//已经安排过终帧，忽略重复调用
+		return;
+	}
+	//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出；终帧虽小但仍统一检查（计划5.3）
+	if (static_cast<int>(msg.length()) > kMaxSendPayload) {
+		std::cout << "session: " << _session_id << " drop oversize terminal payload, msgid=" << msgid
+			<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
 		return;
 	}
 	//先置标志再入队：同一把锁内拒绝后续一切 Send，保证该帧是最后一帧

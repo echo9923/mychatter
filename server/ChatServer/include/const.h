@@ -101,7 +101,12 @@ enum MSG_IDS {
 	ID_IMG_CHAT_MSG_RSP = 1036,     ///< 图片聊天消息发送响应
 	ID_NOTIFY_IMG_CHAT_MSG_REQ = 1039, ///< 服务端通知接收者收到图片消息
 	ID_FILE_INFO_SYNC_REQ = 1041,   ///< 文件信息同步请求（断点续传）
-	ID_FILE_INFO_SYNC_RSP = 1042    ///< 文件信息同步响应
+	ID_FILE_INFO_SYNC_RSP = 1042,   ///< 文件信息同步响应
+	// 1043-1048 被 ResourceServer 占用，不在此声明
+	ID_CHAT_DELIVERY_ACK_REQ = 1049,  ///< 应用层投递 ACK 请求（receiver 确认已收到 message_ids）
+	ID_CHAT_DELIVERY_ACK_RSP = 1050,  ///< 应用层投递 ACK 响应
+	ID_PULL_OFFLINE_MSG_REQ = 1051,   ///< 离线消息拉取请求（按 cursor 分页取 pending）
+	ID_PULL_OFFLINE_MSG_RSP = 1052    ///< 离线消息拉取响应
 };
 
 /**
@@ -127,6 +132,8 @@ inline short ReqToRspId(short req_id) {
 	case ID_LOAD_CHAT_MSG_REQ:         return ID_LOAD_CHAT_MSG_RSP;        // 1029 -> 1030
 	case ID_IMG_CHAT_MSG_REQ:          return ID_IMG_CHAT_MSG_RSP;         // 1035 -> 1036
 	case ID_FILE_INFO_SYNC_REQ:        return ID_FILE_INFO_SYNC_RSP;       // 1041 -> 1042
+	case ID_CHAT_DELIVERY_ACK_REQ:    return ID_CHAT_DELIVERY_ACK_RSP;    // 1049 -> 1050
+	case ID_PULL_OFFLINE_MSG_REQ:     return ID_PULL_OFFLINE_MSG_RSP;     // 1051 -> 1052
 	default:                           return 0;
 	}
 }
