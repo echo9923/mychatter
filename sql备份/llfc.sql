@@ -29,119 +29,124 @@ CREATE TABLE `chat_message`  (
   `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=未读 1=已读 2=撤回',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=未读 1=发送失败 2=已读 3=资源未上传完成',
   `msg_type` tinyint NOT NULL DEFAULT 0 COMMENT '0=文本 1=图片 2=视频 3=文件',
+  `unique_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '客户端去重标识，历史/系统消息为NULL',
+  `content_size` bigint UNSIGNED NOT NULL DEFAULT 0 COMMENT '文本为0，图片为字节数',
+  `delivery_status` tinyint NOT NULL DEFAULT 0 COMMENT '0=待投递 1=已投递(ACK)',
   PRIMARY KEY (`message_id`) USING BTREE,
+  UNIQUE INDEX `uk_chat_message_sender_unique`(`sender_id` ASC, `unique_id` ASC) USING BTREE,
   INDEX `idx_thread_created`(`thread_id` ASC, `created_at` ASC) USING BTREE,
-  INDEX `idx_thread_message`(`thread_id` ASC, `message_id` ASC) USING BTREE
+  INDEX `idx_thread_message`(`thread_id` ASC, `message_id` ASC) USING BTREE,
+  INDEX `idx_chat_message_pending`(`recv_id` ASC, `delivery_status` ASC, `message_id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 355 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Records of chat_message
 -- ----------------------------
-INSERT INTO `chat_message` VALUES (33, 35, 1002, 1019, '您好,我是llfc', '2025-07-02 06:41:08', '2025-07-24 08:27:45', 2, 0);
-INSERT INTO `chat_message` VALUES (34, 35, 1019, 1002, 'We are friends now!', '2025-07-02 06:41:08', '2025-07-24 08:27:39', 2, 0);
-INSERT INTO `chat_message` VALUES (35, 35, 1002, 1019, '你好，很高兴认识你', '2025-07-24 21:36:30', '2025-07-24 21:36:30', 2, 0);
-INSERT INTO `chat_message` VALUES (36, 35, 1019, 1002, '我也是，很高兴认识你', '2025-07-24 21:36:43', '2025-07-24 21:36:43', 2, 0);
-INSERT INTO `chat_message` VALUES (37, 35, 1019, 1002, '中午吃点什么？', '2025-07-25 22:48:04', '2025-07-25 22:48:04', 2, 0);
-INSERT INTO `chat_message` VALUES (38, 35, 1002, 1019, '现在外卖三国杀，折扣力度大，赶紧薅羊毛', '2025-07-25 22:48:36', '2025-07-25 22:48:36', 2, 0);
-INSERT INTO `chat_message` VALUES (39, 35, 1019, 1002, '刚看了下，我得了一个25减25的券，我去订外卖去了', '2025-07-25 23:09:26', '2025-07-25 23:09:26', 2, 0);
-INSERT INTO `chat_message` VALUES (40, 35, 1002, 1019, '我怎么没看到，你在哪个平台？', '2025-07-25 23:09:40', '2025-07-25 23:09:40', 2, 0);
-INSERT INTO `chat_message` VALUES (41, 35, 1019, 1002, '我看错了，那不是外卖券，那是超市打折券', '2025-07-25 23:10:20', '2025-07-25 23:10:20', 2, 0);
-INSERT INTO `chat_message` VALUES (42, 35, 1019, 1002, '好吧，那我还是去看看外卖活动', '2025-07-27 09:07:21', '2025-07-27 09:07:21', 2, 0);
-INSERT INTO `chat_message` VALUES (43, 35, 1002, 1019, '嗯，有什么推荐的外卖可以告诉我', '2025-07-27 09:07:37', '2025-07-27 09:07:37', 2, 0);
-INSERT INTO `chat_message` VALUES (44, 35, 1019, 1002, '汉堡炸鸡怎么样？要不要一起订', '2025-07-29 17:40:20', '2025-07-29 17:40:20', 2, 0);
-INSERT INTO `chat_message` VALUES (45, 36, 1176, 1175, '您好,我是yulinyi', '2025-08-22 03:07:31', '2025-08-22 03:07:31', 2, 0);
-INSERT INTO `chat_message` VALUES (46, 36, 1175, 1176, 'We are friends now!', '2025-08-22 03:07:31', '2025-08-22 03:07:31', 2, 0);
-INSERT INTO `chat_message` VALUES (47, 0, 1175, 1176, '你好', '2025-08-22 11:07:45', '2025-08-22 11:07:45', 2, 0);
-INSERT INTO `chat_message` VALUES (48, 0, 1176, 1175, '你好', '2025-08-22 11:08:14', '2025-08-22 11:08:14', 2, 0);
-INSERT INTO `chat_message` VALUES (49, 0, 1175, 1176, '怎么了', '2025-08-22 11:08:31', '2025-08-22 11:08:31', 2, 0);
-INSERT INTO `chat_message` VALUES (50, 0, 1176, 1175, 'xiaodaji', '2025-08-22 11:09:09', '2025-08-22 11:09:09', 2, 0);
-INSERT INTO `chat_message` VALUES (51, 0, 1175, 1176, 'lisishei', '2025-08-22 11:09:19', '2025-08-22 11:09:19', 2, 0);
-INSERT INTO `chat_message` VALUES (52, 0, 1176, 1175, 'xiaohongshu', '2025-08-22 19:14:59', '2025-08-22 19:14:59', 2, 0);
-INSERT INTO `chat_message` VALUES (53, 0, 1175, 1176, '你真是一个', '2025-08-23 14:29:29', '2025-08-23 14:29:29', 2, 0);
-INSERT INTO `chat_message` VALUES (54, 0, 1175, 1176, 'ruhe', '2025-08-23 14:33:27', '2025-08-23 14:33:27', 2, 0);
-INSERT INTO `chat_message` VALUES (55, 0, 1175, 1176, '666', '2025-08-23 14:33:42', '2025-08-23 14:33:42', 2, 0);
-INSERT INTO `chat_message` VALUES (56, 0, 1175, 1176, '6666666', '2025-08-23 14:34:59', '2025-08-23 14:34:59', 2, 0);
-INSERT INTO `chat_message` VALUES (57, 0, 1175, 1176, '1314142', '2025-08-23 14:50:01', '2025-08-23 14:50:01', 2, 0);
-INSERT INTO `chat_message` VALUES (58, 0, 1175, 1176, '999', '2025-08-23 14:52:50', '2025-08-23 14:52:50', 2, 0);
-INSERT INTO `chat_message` VALUES (59, 0, 1175, 1176, '0000000000000', '2025-08-23 15:13:43', '2025-08-23 15:13:43', 2, 0);
-INSERT INTO `chat_message` VALUES (60, 0, 1175, 1176, 'aaaaaa', '2025-08-23 15:32:37', '2025-08-23 15:32:37', 2, 0);
-INSERT INTO `chat_message` VALUES (61, 0, 1176, 1175, '909090', '2025-08-23 15:50:31', '2025-08-23 15:50:31', 2, 0);
-INSERT INTO `chat_message` VALUES (62, 0, 1175, 1176, '007', '2025-08-23 16:00:40', '2025-08-23 16:00:40', 2, 0);
-INSERT INTO `chat_message` VALUES (63, 0, 1175, 1176, 'bbbbbbb', '2025-08-23 16:30:29', '2025-08-23 16:30:29', 2, 0);
-INSERT INTO `chat_message` VALUES (64, 0, 1175, 1176, 'ccccccc', '2025-08-23 16:43:35', '2025-08-23 16:43:35', 2, 0);
-INSERT INTO `chat_message` VALUES (65, 0, 1175, 1176, 'xiaoshengbuxi', '2025-08-23 16:55:03', '2025-08-23 16:55:03', 2, 0);
-INSERT INTO `chat_message` VALUES (66, 0, 1175, 1176, 'shengsi', '2025-08-23 17:02:41', '2025-08-23 17:02:41', 2, 0);
-INSERT INTO `chat_message` VALUES (67, 0, 1176, 1175, 'whoareyou', '2025-08-23 17:11:41', '2025-08-23 17:11:41', 2, 0);
-INSERT INTO `chat_message` VALUES (68, 0, 1175, 1176, 'xiao666', '2025-08-23 17:27:58', '2025-08-23 17:27:58', 2, 0);
-INSERT INTO `chat_message` VALUES (69, 0, 1176, 1175, 'niye666', '2025-08-23 17:28:10', '2025-08-23 17:28:10', 2, 0);
-INSERT INTO `chat_message` VALUES (70, 0, 1175, 1176, 'liubi', '2025-08-23 17:28:26', '2025-08-23 17:28:26', 2, 0);
-INSERT INTO `chat_message` VALUES (71, 0, 1176, 1175, 'xiuer', '2025-08-23 17:28:38', '2025-08-23 17:28:38', 2, 0);
-INSERT INTO `chat_message` VALUES (72, 0, 1176, 1175, 'nizhenniubi', '2025-08-23 17:38:43', '2025-08-23 17:38:43', 2, 0);
-INSERT INTO `chat_message` VALUES (73, 0, 1175, 1176, '你也是', '2025-08-23 17:39:00', '2025-08-23 17:39:00', 2, 0);
-INSERT INTO `chat_message` VALUES (74, 0, 1176, 1175, 'jizhenliu', '2025-08-23 17:39:08', '2025-08-23 17:39:08', 2, 0);
-INSERT INTO `chat_message` VALUES (75, 0, 1175, 1176, '666', '2025-08-23 18:05:08', '2025-08-23 18:05:08', 2, 0);
-INSERT INTO `chat_message` VALUES (76, 0, 1176, 1175, 'niyeliu', '2025-08-23 18:05:22', '2025-08-23 18:05:22', 2, 0);
-INSERT INTO `chat_message` VALUES (77, 0, 1175, 1176, '00000', '2025-08-23 18:06:26', '2025-08-23 18:06:26', 2, 0);
-INSERT INTO `chat_message` VALUES (78, 0, 1176, 1175, '77777', '2025-08-23 18:06:37', '2025-08-23 18:06:37', 2, 0);
-INSERT INTO `chat_message` VALUES (79, 0, 1176, 1175, '1111111', '2025-08-23 18:07:21', '2025-08-23 18:07:21', 2, 0);
-INSERT INTO `chat_message` VALUES (80, 0, 1176, 1175, 'lxxx', '2025-08-23 18:08:12', '2025-08-23 18:08:12', 2, 0);
-INSERT INTO `chat_message` VALUES (81, 0, 1176, 1175, 'xxxxxxxx', '2025-08-23 18:18:28', '2025-08-23 18:18:28', 2, 0);
-INSERT INTO `chat_message` VALUES (82, 0, 1176, 1175, 'shengshengbuxi', '2025-08-25 11:35:10', '2025-08-25 11:35:10', 2, 0);
-INSERT INTO `chat_message` VALUES (83, 0, 1175, 1176, 'llllll', '2025-08-25 11:44:14', '2025-08-25 11:44:14', 2, 0);
-INSERT INTO `chat_message` VALUES (84, 0, 1176, 1175, 'mmmmmmm', '2025-08-25 11:44:55', '2025-08-25 11:44:55', 2, 0);
-INSERT INTO `chat_message` VALUES (85, 0, 1175, 1176, 'xxx', '2025-08-25 12:27:04', '2025-08-25 12:27:04', 2, 0);
-INSERT INTO `chat_message` VALUES (86, 0, 1176, 1175, 'ddd', '2025-08-25 12:27:13', '2025-08-25 12:27:13', 2, 0);
-INSERT INTO `chat_message` VALUES (87, 0, 1175, 1176, 'VVVVV', '2025-08-25 12:47:53', '2025-08-25 12:47:53', 2, 0);
-INSERT INTO `chat_message` VALUES (88, 0, 1176, 1175, 'BBBBB', '2025-08-25 12:48:12', '2025-08-25 12:48:12', 2, 0);
-INSERT INTO `chat_message` VALUES (89, 0, 1175, 1176, 'XXX', '2025-08-25 13:00:19', '2025-08-25 13:00:19', 2, 0);
-INSERT INTO `chat_message` VALUES (90, 0, 1176, 1175, 'CCC', '2025-08-25 13:00:41', '2025-08-25 13:00:41', 2, 0);
-INSERT INTO `chat_message` VALUES (91, 0, 1176, 1175, 'BBBB', '2025-08-25 13:01:41', '2025-08-25 13:01:41', 2, 0);
-INSERT INTO `chat_message` VALUES (92, 0, 1176, 1175, '111', '2025-08-25 13:02:23', '2025-08-25 13:02:23', 2, 0);
-INSERT INTO `chat_message` VALUES (93, 0, 1176, 1175, 'dddccc', '2025-08-25 13:02:50', '2025-08-25 13:02:50', 2, 0);
-INSERT INTO `chat_message` VALUES (94, 0, 1175, 1176, 'xiaosheng', '2025-08-25 14:21:37', '2025-08-25 14:21:37', 2, 0);
-INSERT INTO `chat_message` VALUES (95, 0, 1176, 1175, 'lingyi', '2025-08-25 14:22:07', '2025-08-25 14:22:07', 2, 0);
-INSERT INTO `chat_message` VALUES (96, 0, 1175, 1176, 'mmmmmm', '2025-08-25 15:10:57', '2025-08-25 15:10:57', 2, 0);
-INSERT INTO `chat_message` VALUES (97, 0, 1176, 1175, '555', '2025-08-25 15:14:32', '2025-08-25 15:14:32', 2, 0);
-INSERT INTO `chat_message` VALUES (98, 0, 1175, 1176, 'liyue', '2025-08-25 16:25:15', '2025-08-25 16:25:15', 2, 0);
-INSERT INTO `chat_message` VALUES (99, 0, 1176, 1175, 'mengde', '2025-08-25 16:25:38', '2025-08-25 16:25:38', 2, 0);
-INSERT INTO `chat_message` VALUES (100, 0, 1175, 1176, 'xiaosheng', '2025-08-25 20:17:43', '2025-08-25 20:17:43', 2, 0);
-INSERT INTO `chat_message` VALUES (101, 0, 1176, 1175, 'yulinyi', '2025-08-25 20:19:10', '2025-08-25 20:19:10', 2, 0);
-INSERT INTO `chat_message` VALUES (102, 0, 1176, 1175, 'nihao', '2025-08-28 21:44:15', '2025-08-28 21:44:15', 2, 0);
-INSERT INTO `chat_message` VALUES (103, 0, 1175, 1176, 'wobuhao', '2025-08-28 21:44:26', '2025-08-28 21:44:26', 2, 0);
-INSERT INTO `chat_message` VALUES (104, 0, 1175, 1176, 'nice', '2025-08-28 21:44:34', '2025-08-28 21:44:34', 2, 0);
-INSERT INTO `chat_message` VALUES (105, 0, 1176, 1175, 'bunice', '2025-08-28 21:44:41', '2025-08-28 21:44:41', 2, 0);
-INSERT INTO `chat_message` VALUES (106, 0, 1176, 1175, 'ddddd', '2025-08-28 21:44:57', '2025-08-28 21:44:57', 2, 0);
-INSERT INTO `chat_message` VALUES (107, 0, 1175, 1176, 'ccccc', '2025-08-28 21:45:01', '2025-08-28 21:45:01', 2, 0);
-INSERT INTO `chat_message` VALUES (108, 0, 1175, 1176, '你好', '2025-10-09 23:33:53', '2025-10-09 23:33:53', 2, 0);
-INSERT INTO `chat_message` VALUES (188, 0, 1175, 1176, 'nihao', '2025-12-20 17:24:49', '2025-12-20 17:24:49', 2, 0);
-INSERT INTO `chat_message` VALUES (189, 0, 1175, 1176, 'nishishei', '2025-12-20 17:25:08', '2025-12-20 17:25:08', 2, 0);
-INSERT INTO `chat_message` VALUES (190, 0, 1175, 1176, 'nishishei', '2025-12-20 17:25:39', '2025-12-20 17:25:39', 2, 0);
-INSERT INTO `chat_message` VALUES (276, 40, 1267, 1268, '123', '2026-01-06 21:55:42', '2026-01-06 21:55:42', 2, 0);
-INSERT INTO `chat_message` VALUES (277, 40, 1267, 1268, '4535434534', '2026-01-06 21:55:49', '2026-01-06 21:55:49', 2, 0);
-INSERT INTO `chat_message` VALUES (278, 40, 1268, 1267, '123', '2026-01-06 21:57:20', '2026-01-06 21:57:20', 2, 0);
-INSERT INTO `chat_message` VALUES (280, 41, 2179, 2181, '您好,我是saheun', '2026-01-30 02:20:52', '2026-01-30 02:20:52', 2, 0);
-INSERT INTO `chat_message` VALUES (281, 41, 2181, 2179, 'We are friends now!', '2026-01-30 02:20:52', '2026-01-30 02:20:52', 2, 0);
-INSERT INTO `chat_message` VALUES (282, 41, 2179, 2181, '1', '2026-01-30 10:21:04', '2026-01-30 10:21:04', 2, 0);
-INSERT INTO `chat_message` VALUES (283, 41, 2179, 2181, '1234567', '2026-01-30 10:21:45', '2026-01-30 10:21:45', 2, 0);
-INSERT INTO `chat_message` VALUES (284, 41, 2181, 2179, '123', '2026-01-30 11:44:19', '2026-01-30 11:44:19', 2, 0);
-INSERT INTO `chat_message` VALUES (285, 42, 1019, 1005, 'We are friends now!', '2026-01-31 09:34:34', '2026-01-31 09:34:34', 2, 0);
-INSERT INTO `chat_message` VALUES (286, 41, 2181, 2179, '测试model气泡', '2026-01-31 17:38:12', '2026-01-31 17:38:12', 2, 0);
-INSERT INTO `chat_message` VALUES (287, 44, 1213, 1275, '您好,我是abc123', '2026-01-31 14:19:27', '2026-01-31 14:19:27', 2, 0);
-INSERT INTO `chat_message` VALUES (288, 44, 1275, 1213, 'We are friends now!', '2026-01-31 14:19:27', '2026-01-31 14:19:27', 2, 0);
-INSERT INTO `chat_message` VALUES (289, 44, 1275, 1213, '测试一下', '2026-02-01 14:16:17', '2026-02-01 14:16:17', 2, 0);
-INSERT INTO `chat_message` VALUES (290, 45, 1275, 0, '测试一下这个群聊', '2026-02-01 19:30:40', '2026-02-01 19:30:40', 2, 0);
-INSERT INTO `chat_message` VALUES (291, 45, 1213, 0, '好像现在没问题', '2026-02-01 19:30:57', '2026-02-01 19:30:57', 2, 0);
-INSERT INTO `chat_message` VALUES (292, 46, 1275, 0, '这个呢', '2026-02-01 19:31:03', '2026-02-01 19:31:03', 2, 0);
-INSERT INTO `chat_message` VALUES (293, 46, 1275, 0, 'nice兄弟,已经跑通,接下来是跨服', '2026-02-01 19:31:50', '2026-02-01 19:31:50', 2, 0);
-INSERT INTO `chat_message` VALUES (294, 46, 1213, 0, '嗯', '2026-02-01 19:31:55', '2026-02-01 19:31:55', 2, 0);
-INSERT INTO `chat_message` VALUES (295, 45, 1275, 0, '来吧,跨服务器的群聊', '2026-02-01 22:18:42', '2026-02-01 22:18:42', 2, 0);
-INSERT INTO `chat_message` VALUES (296, 45, 1213, 0, '没收到,完蛋', '2026-02-01 22:20:05', '2026-02-01 22:20:05', 2, 0);
-INSERT INTO `chat_message` VALUES (297, 45, 1213, 0, '测试1', '2026-02-01 22:43:53', '2026-02-01 22:43:53', 2, 0);
-INSERT INTO `chat_message` VALUES (298, 45, 1213, 0, '测试2', '2026-02-01 22:55:11', '2026-02-01 22:55:11', 2, 0);
-INSERT INTO `chat_message` VALUES (299, 45, 1275, 0, '成功收到测试2, 跨服务器的群聊已完成', '2026-02-01 22:55:59', '2026-02-01 22:55:59', 2, 0);
-INSERT INTO `chat_message` VALUES (354, 35, 1002, 1019, '053ce9cc-a5ca-4990-bd96-a91e8fdbf359.png', '2026-02-06 17:08:32', '2026-02-06 09:09:04', 2, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (33, 35, 1002, 1019, '您好,我是llfc', '2025-07-02 06:41:08', '2025-07-24 08:27:45', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (34, 35, 1019, 1002, 'We are friends now!', '2025-07-02 06:41:08', '2025-07-24 08:27:39', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (35, 35, 1002, 1019, '你好，很高兴认识你', '2025-07-24 21:36:30', '2025-07-24 21:36:30', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (36, 35, 1019, 1002, '我也是，很高兴认识你', '2025-07-24 21:36:43', '2025-07-24 21:36:43', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (37, 35, 1019, 1002, '中午吃点什么？', '2025-07-25 22:48:04', '2025-07-25 22:48:04', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (38, 35, 1002, 1019, '现在外卖三国杀，折扣力度大，赶紧薅羊毛', '2025-07-25 22:48:36', '2025-07-25 22:48:36', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (39, 35, 1019, 1002, '刚看了下，我得了一个25减25的券，我去订外卖去了', '2025-07-25 23:09:26', '2025-07-25 23:09:26', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (40, 35, 1002, 1019, '我怎么没看到，你在哪个平台？', '2025-07-25 23:09:40', '2025-07-25 23:09:40', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (41, 35, 1019, 1002, '我看错了，那不是外卖券，那是超市打折券', '2025-07-25 23:10:20', '2025-07-25 23:10:20', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (42, 35, 1019, 1002, '好吧，那我还是去看看外卖活动', '2025-07-27 09:07:21', '2025-07-27 09:07:21', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (43, 35, 1002, 1019, '嗯，有什么推荐的外卖可以告诉我', '2025-07-27 09:07:37', '2025-07-27 09:07:37', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (44, 35, 1019, 1002, '汉堡炸鸡怎么样？要不要一起订', '2025-07-29 17:40:20', '2025-07-29 17:40:20', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (45, 36, 1176, 1175, '您好,我是yulinyi', '2025-08-22 03:07:31', '2025-08-22 03:07:31', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (46, 36, 1175, 1176, 'We are friends now!', '2025-08-22 03:07:31', '2025-08-22 03:07:31', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (47, 0, 1175, 1176, '你好', '2025-08-22 11:07:45', '2025-08-22 11:07:45', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (48, 0, 1176, 1175, '你好', '2025-08-22 11:08:14', '2025-08-22 11:08:14', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (49, 0, 1175, 1176, '怎么了', '2025-08-22 11:08:31', '2025-08-22 11:08:31', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (50, 0, 1176, 1175, 'xiaodaji', '2025-08-22 11:09:09', '2025-08-22 11:09:09', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (51, 0, 1175, 1176, 'lisishei', '2025-08-22 11:09:19', '2025-08-22 11:09:19', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (52, 0, 1176, 1175, 'xiaohongshu', '2025-08-22 19:14:59', '2025-08-22 19:14:59', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (53, 0, 1175, 1176, '你真是一个', '2025-08-23 14:29:29', '2025-08-23 14:29:29', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (54, 0, 1175, 1176, 'ruhe', '2025-08-23 14:33:27', '2025-08-23 14:33:27', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (55, 0, 1175, 1176, '666', '2025-08-23 14:33:42', '2025-08-23 14:33:42', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (56, 0, 1175, 1176, '6666666', '2025-08-23 14:34:59', '2025-08-23 14:34:59', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (57, 0, 1175, 1176, '1314142', '2025-08-23 14:50:01', '2025-08-23 14:50:01', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (58, 0, 1175, 1176, '999', '2025-08-23 14:52:50', '2025-08-23 14:52:50', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (59, 0, 1175, 1176, '0000000000000', '2025-08-23 15:13:43', '2025-08-23 15:13:43', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (60, 0, 1175, 1176, 'aaaaaa', '2025-08-23 15:32:37', '2025-08-23 15:32:37', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (61, 0, 1176, 1175, '909090', '2025-08-23 15:50:31', '2025-08-23 15:50:31', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (62, 0, 1175, 1176, '007', '2025-08-23 16:00:40', '2025-08-23 16:00:40', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (63, 0, 1175, 1176, 'bbbbbbb', '2025-08-23 16:30:29', '2025-08-23 16:30:29', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (64, 0, 1175, 1176, 'ccccccc', '2025-08-23 16:43:35', '2025-08-23 16:43:35', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (65, 0, 1175, 1176, 'xiaoshengbuxi', '2025-08-23 16:55:03', '2025-08-23 16:55:03', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (66, 0, 1175, 1176, 'shengsi', '2025-08-23 17:02:41', '2025-08-23 17:02:41', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (67, 0, 1176, 1175, 'whoareyou', '2025-08-23 17:11:41', '2025-08-23 17:11:41', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (68, 0, 1175, 1176, 'xiao666', '2025-08-23 17:27:58', '2025-08-23 17:27:58', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (69, 0, 1176, 1175, 'niye666', '2025-08-23 17:28:10', '2025-08-23 17:28:10', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (70, 0, 1175, 1176, 'liubi', '2025-08-23 17:28:26', '2025-08-23 17:28:26', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (71, 0, 1176, 1175, 'xiuer', '2025-08-23 17:28:38', '2025-08-23 17:28:38', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (72, 0, 1176, 1175, 'nizhenniubi', '2025-08-23 17:38:43', '2025-08-23 17:38:43', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (73, 0, 1175, 1176, '你也是', '2025-08-23 17:39:00', '2025-08-23 17:39:00', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (74, 0, 1176, 1175, 'jizhenliu', '2025-08-23 17:39:08', '2025-08-23 17:39:08', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (75, 0, 1175, 1176, '666', '2025-08-23 18:05:08', '2025-08-23 18:05:08', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (76, 0, 1176, 1175, 'niyeliu', '2025-08-23 18:05:22', '2025-08-23 18:05:22', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (77, 0, 1175, 1176, '00000', '2025-08-23 18:06:26', '2025-08-23 18:06:26', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (78, 0, 1176, 1175, '77777', '2025-08-23 18:06:37', '2025-08-23 18:06:37', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (79, 0, 1176, 1175, '1111111', '2025-08-23 18:07:21', '2025-08-23 18:07:21', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (80, 0, 1176, 1175, 'lxxx', '2025-08-23 18:08:12', '2025-08-23 18:08:12', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (81, 0, 1176, 1175, 'xxxxxxxx', '2025-08-23 18:18:28', '2025-08-23 18:18:28', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (82, 0, 1176, 1175, 'shengshengbuxi', '2025-08-25 11:35:10', '2025-08-25 11:35:10', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (83, 0, 1175, 1176, 'llllll', '2025-08-25 11:44:14', '2025-08-25 11:44:14', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (84, 0, 1176, 1175, 'mmmmmmm', '2025-08-25 11:44:55', '2025-08-25 11:44:55', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (85, 0, 1175, 1176, 'xxx', '2025-08-25 12:27:04', '2025-08-25 12:27:04', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (86, 0, 1176, 1175, 'ddd', '2025-08-25 12:27:13', '2025-08-25 12:27:13', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (87, 0, 1175, 1176, 'VVVVV', '2025-08-25 12:47:53', '2025-08-25 12:47:53', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (88, 0, 1176, 1175, 'BBBBB', '2025-08-25 12:48:12', '2025-08-25 12:48:12', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (89, 0, 1175, 1176, 'XXX', '2025-08-25 13:00:19', '2025-08-25 13:00:19', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (90, 0, 1176, 1175, 'CCC', '2025-08-25 13:00:41', '2025-08-25 13:00:41', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (91, 0, 1176, 1175, 'BBBB', '2025-08-25 13:01:41', '2025-08-25 13:01:41', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (92, 0, 1176, 1175, '111', '2025-08-25 13:02:23', '2025-08-25 13:02:23', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (93, 0, 1176, 1175, 'dddccc', '2025-08-25 13:02:50', '2025-08-25 13:02:50', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (94, 0, 1175, 1176, 'xiaosheng', '2025-08-25 14:21:37', '2025-08-25 14:21:37', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (95, 0, 1176, 1175, 'lingyi', '2025-08-25 14:22:07', '2025-08-25 14:22:07', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (96, 0, 1175, 1176, 'mmmmmm', '2025-08-25 15:10:57', '2025-08-25 15:10:57', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (97, 0, 1176, 1175, '555', '2025-08-25 15:14:32', '2025-08-25 15:14:32', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (98, 0, 1175, 1176, 'liyue', '2025-08-25 16:25:15', '2025-08-25 16:25:15', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (99, 0, 1176, 1175, 'mengde', '2025-08-25 16:25:38', '2025-08-25 16:25:38', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (100, 0, 1175, 1176, 'xiaosheng', '2025-08-25 20:17:43', '2025-08-25 20:17:43', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (101, 0, 1176, 1175, 'yulinyi', '2025-08-25 20:19:10', '2025-08-25 20:19:10', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (102, 0, 1176, 1175, 'nihao', '2025-08-28 21:44:15', '2025-08-28 21:44:15', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (103, 0, 1175, 1176, 'wobuhao', '2025-08-28 21:44:26', '2025-08-28 21:44:26', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (104, 0, 1175, 1176, 'nice', '2025-08-28 21:44:34', '2025-08-28 21:44:34', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (105, 0, 1176, 1175, 'bunice', '2025-08-28 21:44:41', '2025-08-28 21:44:41', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (106, 0, 1176, 1175, 'ddddd', '2025-08-28 21:44:57', '2025-08-28 21:44:57', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (107, 0, 1175, 1176, 'ccccc', '2025-08-28 21:45:01', '2025-08-28 21:45:01', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (108, 0, 1175, 1176, '你好', '2025-10-09 23:33:53', '2025-10-09 23:33:53', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (188, 0, 1175, 1176, 'nihao', '2025-12-20 17:24:49', '2025-12-20 17:24:49', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (189, 0, 1175, 1176, 'nishishei', '2025-12-20 17:25:08', '2025-12-20 17:25:08', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (190, 0, 1175, 1176, 'nishishei', '2025-12-20 17:25:39', '2025-12-20 17:25:39', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (276, 40, 1267, 1268, '123', '2026-01-06 21:55:42', '2026-01-06 21:55:42', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (277, 40, 1267, 1268, '4535434534', '2026-01-06 21:55:49', '2026-01-06 21:55:49', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (278, 40, 1268, 1267, '123', '2026-01-06 21:57:20', '2026-01-06 21:57:20', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (280, 41, 2179, 2181, '您好,我是saheun', '2026-01-30 02:20:52', '2026-01-30 02:20:52', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (281, 41, 2181, 2179, 'We are friends now!', '2026-01-30 02:20:52', '2026-01-30 02:20:52', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (282, 41, 2179, 2181, '1', '2026-01-30 10:21:04', '2026-01-30 10:21:04', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (283, 41, 2179, 2181, '1234567', '2026-01-30 10:21:45', '2026-01-30 10:21:45', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (284, 41, 2181, 2179, '123', '2026-01-30 11:44:19', '2026-01-30 11:44:19', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (285, 42, 1019, 1005, 'We are friends now!', '2026-01-31 09:34:34', '2026-01-31 09:34:34', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (286, 41, 2181, 2179, '测试model气泡', '2026-01-31 17:38:12', '2026-01-31 17:38:12', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (287, 44, 1213, 1275, '您好,我是abc123', '2026-01-31 14:19:27', '2026-01-31 14:19:27', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (288, 44, 1275, 1213, 'We are friends now!', '2026-01-31 14:19:27', '2026-01-31 14:19:27', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (289, 44, 1275, 1213, '测试一下', '2026-02-01 14:16:17', '2026-02-01 14:16:17', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (290, 45, 1275, 0, '测试一下这个群聊', '2026-02-01 19:30:40', '2026-02-01 19:30:40', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (291, 45, 1213, 0, '好像现在没问题', '2026-02-01 19:30:57', '2026-02-01 19:30:57', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (292, 46, 1275, 0, '这个呢', '2026-02-01 19:31:03', '2026-02-01 19:31:03', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (293, 46, 1275, 0, 'nice兄弟,已经跑通,接下来是跨服', '2026-02-01 19:31:50', '2026-02-01 19:31:50', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (294, 46, 1213, 0, '嗯', '2026-02-01 19:31:55', '2026-02-01 19:31:55', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (295, 45, 1275, 0, '来吧,跨服务器的群聊', '2026-02-01 22:18:42', '2026-02-01 22:18:42', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (296, 45, 1213, 0, '没收到,完蛋', '2026-02-01 22:20:05', '2026-02-01 22:20:05', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (297, 45, 1213, 0, '测试1', '2026-02-01 22:43:53', '2026-02-01 22:43:53', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (298, 45, 1213, 0, '测试2', '2026-02-01 22:55:11', '2026-02-01 22:55:11', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (299, 45, 1275, 0, '成功收到测试2, 跨服务器的群聊已完成', '2026-02-01 22:55:59', '2026-02-01 22:55:59', 2, 0, NULL, 0, 1);
+INSERT INTO `chat_message` (`message_id`, `thread_id`, `sender_id`, `recv_id`, `content`, `created_at`, `updated_at`, `status`, `msg_type`, `unique_id`, `content_size`, `delivery_status`) VALUES (354, 35, 1002, 1019, '053ce9cc-a5ca-4990-bd96-a91e8fdbf359.png', '2026-02-06 17:08:32', '2026-02-06 09:09:04', 2, 1, NULL, 0, 1);
 
 -- ----------------------------
 -- Table structure for chat_thread
