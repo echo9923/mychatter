@@ -44,6 +44,7 @@ add_executable(ChatServer
   src/CSession.cpp
   src/DistLock.cpp
   src/LogicSystem.cpp
+  src/LogicWorker.cpp
   src/MsgNode.cpp
   src/MysqlDao.cpp
   src/MysqlMgr.cpp
@@ -61,6 +62,7 @@ add_executable(ChatServer
   include/data.h
   include/DistLock.h
   include/LogicSystem.h
+  include/LogicWorker.h
   include/MsgNode.h
   include/MysqlDao.h
   include/MysqlMgr.h
