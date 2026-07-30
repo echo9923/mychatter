@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <thread>
 #include <mutex>
 #include <queue>
@@ -65,6 +65,8 @@ public:
 	void PostTask(std::shared_ptr<FileTask> task);
 private:
 	void task_callback(std::shared_ptr<FileTask>);
+	//图片上传完成点统一处理：UpdateUploadStatus 成功后激活 pending（ZADD+EXPIRE）并尝试跨服 live 通知（计划5.7）
+	void CompleteChatImageUpload(std::shared_ptr<FileTask> task);
 	std::unordered_map<MSG_IDS, std::function<void(std::shared_ptr<FileTask>)> > _handlers;
 	std::thread _work_thread;
 	std::queue<std::function<void()>> _task_que;
