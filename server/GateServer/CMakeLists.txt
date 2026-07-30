@@ -40,6 +40,7 @@ add_executable(GateServer
   src/ConfigMgr.cpp
   src/CServer.cpp
   src/GateServer.cpp
+  src/HandlerExecutor.cpp
   src/HttpConnection.cpp
   src/LogicSystem.cpp
   src/MysqlDao.cpp
@@ -51,6 +52,7 @@ add_executable(GateServer
   include/ConfigMgr.h
   include/const.h
   include/CServer.h
+  include/HandlerExecutor.h
   include/HttpConnection.h
   include/LogicSystem.h
   include/MysqlDao.h
