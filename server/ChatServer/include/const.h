@@ -149,6 +149,8 @@ inline short ReqToRspId(short req_id) {
 #define USER_SESSION_PREFIX "usession_"
 /// Redis中存储分布式锁计数器的键名
 #define LOCK_COUNT "lockcount"
+/// Redis中离线消息待投递有序集合的键前缀，完整键为 "offline_msg:" + recv_uid，ZSET member/score 均为十进制 message_id
+#define OFFLINE_MSG_PREFIX "offline_msg:"
 
 /// 分布式锁的持有超时时间（秒），超时后锁自动释放防止死锁
 #define LOCK_TIME_OUT 10
