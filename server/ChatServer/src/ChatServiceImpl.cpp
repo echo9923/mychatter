@@ -149,20 +149,28 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 		return Status::OK;
 	}
 
-	//在内存中则先构建通知（gRPC 线程不直接写 session）
+	//统一十字段 live envelope（计划5.5）：TextChatData proto 已携带
+	//unique_id/msg_id/msgcontent/chat_time，thread_id/fromuid/touid 来自 req，
+	//msg_type=TEXT/status=UN_READ/content_size="0" 为常量。旧 content/unique_id/
+	//message_id/chat_time/status 字段名保留兼容。
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
 	rtvalue["touid"] = request->touid();
 	rtvalue["thread_id"] = request->thread_id();
-	//将聊天数据组织为数组
 	json text_array;
 	for (auto& msg : request->textmsgs()) {
 		json element;
-		element["content"] = msg.msgcontent();
-		element["unique_id"] = msg.unique_id();
 		element["message_id"] = msg.msg_id();
+		element["unique_id"] = msg.unique_id();
+		element["thread_id"] = request->thread_id();
+		element["fromuid"] = request->fromuid();
+		element["touid"] = request->touid();
+		element["msg_type"] = static_cast<int>(ChatMsgType::TEXT);
+		element["content"] = msg.msgcontent();
+		element["content_size"] = "0";
 		element["chat_time"] = msg.chat_time();
+		element["status"] = MsgStatus::UN_READ;
 		text_array.push_back(element);
 	}
 	rtvalue["chat_datas"] = text_array;

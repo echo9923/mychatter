@@ -570,23 +570,22 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 
 	auto uid = root["fromuid"].get<int>();
 	auto touid = root["touid"].get<int>();
+	auto thread_id = root["thread_id"].get<int>();
 
 	const json  arrays = root["text_array"];
-	
+
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
-
 	rtvalue["fromuid"] = uid;
 	rtvalue["touid"] = touid;
-	auto thread_id = root["thread_id"].get<int>();
 	rtvalue["thread_id"] = thread_id;
-	std::vector<std::shared_ptr<ChatMessage>> chat_datas;
+
+	//逐条构造 ChatMessage：status 统一 UN_READ，content_size 固定 0（计划5.4/3.2）
 	auto timestamp = getCurrentTimestamp();
+	std::vector<std::shared_ptr<ChatMessage>> chat_datas;
 	for (const auto& txt_obj : arrays) {
 		auto content = txt_obj["content"].get<std::string>();
 		auto unique_id = txt_obj["unique_id"].get<std::string>();
-		std::cout << "content is " << content << std::endl;
-		std::cout << "unique_id is " << unique_id << std::endl;
 		auto chat_msg = std::make_shared<ChatMessage>();
 		chat_msg->chat_time = timestamp;
 		chat_msg->sender_id = uid;
@@ -595,77 +594,110 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 		chat_msg->thread_id = thread_id;
 		chat_msg->content = content;
 		chat_msg->status = MsgStatus::UN_READ;
-		chat_msg->msg_type = int(ChatMsgType::TEXT);
+		chat_msg->msg_type = static_cast<int>(ChatMsgType::TEXT);
+		chat_msg->content_size = 0;
 		chat_datas.push_back(chat_msg);
 	}
 
-
-	//插入数据库
+	//插入数据库（同一事务；任一 conflict/SQL 错误回滚本批新行）。DAO 在 commit 后回写
+	//canonical message_id/status/chat_time/delivery_status（计划3.3）
 	std::vector<std::string> conflict_unique_ids;
 	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_datas, conflict_unique_ids);
 	if (save_res == SaveMessageResult::Failed) {
-		// 持久化失败：不 ACK、不转发，sender 按 transient 重传
+		//持久化失败：不 ACK、不转发，sender 按 transient 重传（计划3.5/5.4）
 		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
 		session->Send(rtvalue.dump(4), ID_TEXT_CHAT_MSG_RSP);
 		return;
 	}
 	if (save_res == SaveMessageResult::Conflict) {
-		// 永久冲突：原消息不变，sender 停止重传对应 unique_id
+		//永久冲突：原消息不变，sender 停止重传对应 unique_id（计划3.5/5.4）
 		rtvalue["error"] = ErrorCodes::MESSAGE_CONFLICT;
 		rtvalue["conflict_unique_ids"] = conflict_unique_ids;
 		session->Send(rtvalue.dump(4), ID_TEXT_CHAT_MSG_RSP);
 		return;
 	}
-	// Stored/Duplicate：保持现有流程（Redis pending / live 转发留给 §5.4）
 
-
+	//Stored/Duplicate：用 canonical 持久值构造相同 sender response。每项为统一十字段
+	//envelope（兼容旧 message_id/unique_id/content/status/chat_time 字段）（计划5.4/5.3）
 	for (const auto& chat_data : chat_datas) {
-		json  chat_msg;
-		chat_msg["message_id"] = chat_data->message_id;
-		chat_msg["unique_id"] = chat_data->unique_id;
-		chat_msg["content"] = chat_data->content;
-		chat_msg["status"] = chat_data->status;
-		chat_msg["chat_time"] = chat_data->chat_time;
-		rtvalue["chat_datas"].push_back(chat_msg);
+		rtvalue["chat_datas"].push_back(BuildMessageEnvelope(chat_data));
 	}
 
-	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.dump(4);
-		session->Send(return_str, ID_TEXT_CHAT_MSG_RSP);
-		});
+	//【关键顺序】事务已提交 → 先发 1018（语义固定为“服务端已持久化”），再做 pending
+	//激活与 live delivery。不得用 Defer 延后：那会让 Redis/live 先于 sender ACK（计划5.4）
+	std::string sender_rsp = rtvalue.dump(4);
+	session->Send(sender_rsp, ID_TEXT_CHAT_MSG_RSP);
 
+	//仅 canonical delivery_status==Pending 的行才写 pending ZSET 并尝试 live delivery。
+	//已 ACK 的 duplicate 只重发上面的 sender response，绝不重新打开 pending（计划5.4）
+	std::vector<std::shared_ptr<ChatMessage>> pending_rows;
+	for (const auto& chat_data : chat_datas) {
+		if (chat_data->delivery_status == DeliveryStatus::Pending) {
+			pending_rows.push_back(chat_data);
+		}
+	}
+	if (pending_rows.empty()) {
+		return;
+	}
 
-	//查询redis 查找touid对应的server ip
+	//pending 激活：ZAdd offline_msg:<recv_uid>（score=member=十进制 message_id，天然幂等
+	//且按 DB ID 排序）+Expire。Redis 失败只日志，不否定 sender response；后续 pull 由
+	//MySQL 兜底（计划4.1/4.2/5.4）
+	int ttl = ReadDeliveryInt("OfflineTtlSeconds", 604800);
+	if (ttl < 1) ttl = 604800;
+	std::string zkey = OFFLINE_MSG_PREFIX + std::to_string(touid);
+	auto redis = RedisMgr::GetInstance();
+	for (const auto& chat_data : pending_rows) {
+		std::string mid = std::to_string(chat_data->message_id);
+		if (!redis->ZAdd(zkey, chat_data->message_id, mid)) {
+			std::cout << "DealChatTextMsg ZAdd failed, key=" << zkey
+				<< " message_id=" << chat_data->message_id << std::endl;
+		}
+	}
+	if (!redis->Expire(zkey, ttl)) {
+		std::cout << "DealChatTextMsg Expire failed, key=" << zkey << std::endl;
+	}
+
+	//live delivery：查询 touid 路由。pending duplicate 可能再次 live-push，这是
+	//at-least-once 允许的行为，recipient 以 message_id 去重（计划5.4）
 	auto to_str = std::to_string(touid);
 	auto to_ip_key = USERIPPREFIX + to_str;
 	std::string to_ip_value = "";
 	bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
 	if (!b_ip) {
-		return;
+		return; //目标不在任何节点，pending 已建立，等 receiver 登录 pull
 	}
 
 	auto& cfg = ConfigMgr::Inst();
 	auto self_name = cfg["SelfServer"]["Name"];
-	//直接通知对方有文本消息
 	if (to_ip_value == self_name) {
-		//计划1.5：本机 recipient 分支也纳入其 uid 分片，闭包内重新查 session 存在才发送
-		std::string return_str = rtvalue.dump(4);
-		PostToUser(touid, [touid, return_str]() {
+		//本机 recipient：构造统一十字段 live envelope，纳入 recipient uid 分片（计划1.5/5.5）
+		json notify;
+		notify["error"] = ErrorCodes::Success;
+		notify["fromuid"] = uid;
+		notify["touid"] = touid;
+		notify["thread_id"] = thread_id;
+		for (const auto& chat_data : pending_rows) {
+			notify["chat_datas"].push_back(BuildMessageEnvelope(chat_data));
+		}
+		std::string notify_str = notify.dump(4);
+		PostToUser(touid, [touid, notify_str]() {
 			auto session = UserMgr::GetInstance()->GetSession(touid);
 			if (session) {
-				session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
+				session->Send(notify_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
 			}
 		});
-
-		return ;
+		return;
 	}
 
-
+	//远端：TextChatMsgReq 已携带 unique_id/msg_id/content/chat_time；对端
+	//NotifyTextChatMsg 补 msg_type=TEXT,status=UN_READ,content_size="0"（计划5.5）。
+	//§5.6 会把此处改为 PostDelivery + retry；当前保持同步调用
 	TextChatMsgReq text_msg_req;
 	text_msg_req.set_fromuid(uid);
 	text_msg_req.set_touid(touid);
 	text_msg_req.set_thread_id(thread_id);
-	for (const auto& chat_data : chat_datas) {
+	for (const auto& chat_data : pending_rows) {
 		auto *text_msg = text_msg_req.add_textmsgs();
 		text_msg->set_unique_id(chat_data->unique_id);
 		text_msg->set_msgcontent(chat_data->content);
@@ -673,8 +705,6 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 		text_msg->set_chat_time(chat_data->chat_time);
 	}
 
-
-	//发送通知 todo...
 	ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, text_msg_req, rtvalue);
 }
 
@@ -1006,34 +1036,46 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 
 }
 
-void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session, 
+void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	const short& msg_id, const string& msg_data) {
 	auto root = json::parse(msg_data, nullptr, false);
 
 	auto uid = root["fromuid"].get<int>();
 	auto touid = root["touid"].get<int>();
+	auto thread_id = root["thread_id"].get<int>();
 
 	auto md5 = root["md5"].get<std::string>();
 	auto unique_name = root["name"].get<std::string>();
 	auto token = root["token"].get<std::string>();
 	auto unique_id = root["unique_id"].get<std::string>();
-	auto chat_time = root["chat_time"].get<std::string>();
-	auto status = root["status"].get<int>();
+
+	//content_size：JSON 十进制字符串（兼容当前整数）；非法一律 0（计划5.4/6.3）
+	std::uint64_t content_size = 0;
+	if (root.contains("content_size")) {
+		const auto& cs = root["content_size"];
+		if (cs.is_string()) {
+			try { content_size = std::stoull(cs.get<std::string>()); }
+			catch (...) { content_size = 0; }
+		}
+		else if (cs.is_number()) {
+			content_size = cs.get<std::uint64_t>();
+		}
+	}
 
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
-
 	rtvalue["fromuid"] = uid;
 	rtvalue["touid"] = touid;
-	auto thread_id = root["thread_id"].get<int>();
 	rtvalue["thread_id"] = thread_id;
 	rtvalue["md5"] = md5;
 	rtvalue["unique_name"] = unique_name;
 	rtvalue["unique_id"] = unique_id;
-	rtvalue["chat_time"] = chat_time;
+
+	//服务端生成 chat_time/status=UN_UPLOAD，不读取 client 的 chat_time/status（计划5.4/6.3）
+	auto timestamp = getCurrentTimestamp();
+	rtvalue["chat_time"] = timestamp;
 	rtvalue["status"] = MsgStatus::UN_UPLOAD;
 
-	auto timestamp = getCurrentTimestamp();
 	auto chat_msg = std::make_shared<ChatMessage>();
 	chat_msg->chat_time = timestamp;
 	chat_msg->sender_id = uid;
@@ -1042,30 +1084,34 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	chat_msg->thread_id = thread_id;
 	chat_msg->content = unique_name;
 	chat_msg->status = MsgStatus::UN_UPLOAD;
-	chat_msg->msg_type = int(ChatMsgType::PIC);
+	chat_msg->msg_type = static_cast<int>(ChatMsgType::PIC);
+	chat_msg->content_size = content_size;
 
-	//插入数据库
+	//插入数据库：duplicate 回同一 canonical message_id/unique_id，不建第二行（计划5.4）
 	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_msg);
 	if (save_res == SaveMessageResult::Failed) {
-		// 持久化失败：不 ACK、不转发
+		//持久化失败：不 ACK、不转发，sender 按 transient 重传
 		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
 		session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
 		return;
 	}
 	if (save_res == SaveMessageResult::Conflict) {
-		// 永久冲突：原消息不变，不创建第二行
+		//永久冲突：原消息不变，不创建第二行
 		rtvalue["error"] = ErrorCodes::MESSAGE_CONFLICT;
 		rtvalue["conflict_unique_ids"] = std::vector<std::string>{chat_msg->unique_id};
 		session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
 		return;
 	}
 
+	//canonical：message_id 由 DAO 回写；content_size 十进制字符串（计划5.4/6.3）
 	rtvalue["message_id"] = chat_msg->message_id;
-	Defer defer([this, &rtvalue, session]() {
-		std::string return_str = rtvalue.dump(4);
-		session->Send(return_str, ID_IMG_CHAT_MSG_RSP);
-		});
+	rtvalue["content_size"] = std::to_string(chat_msg->content_size);
 
+	//【关键顺序】事务已提交 → 发 1036 sender response（语义固定为“服务端已持久化”）（计划5.4）
+	session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
+
+	//UN_UPLOAD 图片绝不 ZADD/实时通知，待 §5.7 上传完成点（UpdateUploadStatus 成功后）
+	//才激活 pending，避免拉取尚不可下载的图片（计划5.4/4.2）
 }
 
 json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) {
