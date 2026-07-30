@@ -3,14 +3,12 @@
 GetChatServerRsp StatusGrpcClient::GetChatServer(int uid)
 {
 	ClientContext context;
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	GetChatServerRsp reply;
 	GetChatServerReq request;
 	request.set_uid(uid);
-	auto stub = pool_->getConnection();
+	auto stub = StatusService::NewStub(channel_);
 	Status status = stub->GetChatServer(&context, request, &reply);
-	Defer defer([&stub, this]() {
-		pool_->returnConnection(std::move(stub));
-		});
 	if (status.ok()) {	
 		return reply;
 	}
@@ -23,16 +21,14 @@ GetChatServerRsp StatusGrpcClient::GetChatServer(int uid)
 LoginRsp StatusGrpcClient::Login(int uid, std::string token)
 {
 	ClientContext context;
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	LoginRsp reply;
 	LoginReq request;
 	request.set_uid(uid);
 	request.set_token(token);
 
-	auto stub = pool_->getConnection();
+	auto stub = StatusService::NewStub(channel_);
 	Status status = stub->Login(&context, request, &reply);
-	Defer defer([&stub, this]() {
-		pool_->returnConnection(std::move(stub));
-		});
 	if (status.ok()) {
 		return reply;
 	}
@@ -48,5 +44,5 @@ StatusGrpcClient::StatusGrpcClient()
 	auto& gCfgMgr = ConfigMgr::Inst();
 	std::string host = gCfgMgr["StatusServer"]["Host"];
 	std::string port = gCfgMgr["StatusServer"]["Port"];
-	pool_.reset(new StatusConPool(5, host, port));
+	channel_ = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
 }
