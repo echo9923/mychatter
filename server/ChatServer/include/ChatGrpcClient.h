@@ -1,11 +1,10 @@
-﻿#pragma once
+#pragma once
 #include "const.h"
 #include "Singleton.h"
 #include "ConfigMgr.h"
 #include <grpcpp/grpcpp.h> 
 #include "chat.grpc.pb.h"
 #include "chat.pb.h"
-#include <queue>
 #include "const.h"
 #include "data.h"
 #include <nlohmann/json.hpp>
@@ -32,102 +31,10 @@ using message::KickUserRsp;
 
 
 /**
- * @brief ChatServer gRPC 连接池
- * 
- * 管理与目标 ChatServer 节点的 gRPC 连接，采用对象池模式复用 Stub 连接。
- * 当需要向其他 ChatServer 发送跨服通知（如加好友、踢人、消息转发）时，
- * 从池中获取连接，使用完毕后归还。
- */
-class ChatConPool {
-public:
-	/**
-	 * @brief 构造连接池，预创建指定数量的gRPC Stub连接
-	 * @param poolSize 连接池大小（预创建的连接数）
-	 * @param host 目标ChatServer的IP地址
-	 * @param port 目标ChatServer的gRPC端口号
-	 */
-	ChatConPool(size_t poolSize, std::string host, std::string port)
-		: poolSize_(poolSize), host_(host), port_(port), b_stop_(false) {
-		for (size_t i = 0; i < poolSize_; ++i) {
-
-			std::shared_ptr<Channel> channel = grpc::CreateChannel(host + ":" + port,
-				grpc::InsecureChannelCredentials());
-
-			connections_.push(ChatService::NewStub(channel));
-		}
-	}
-
-	/// 析构函数，关闭连接池并清空所有连接
-	~ChatConPool() {
-		std::lock_guard<std::mutex> lock(mutex_);
-		Close();
-		while (!connections_.empty()) {
-			connections_.pop();
-		}
-	}
-
-	/**
-	 * @brief 从连接池中获取一个可用的gRPC Stub连接（阻塞等待）
-	 * @return ChatService::Stub 智能指针，若池已停止则返回nullptr
-	 */
-	std::unique_ptr<ChatService::Stub> getConnection() {
-		std::unique_lock<std::mutex> lock(mutex_);
-		cond_.wait(lock, [this] {
-			if (b_stop_) {
-				return true;
-			}
-			return !connections_.empty();
-			});
-		//如果停止则直接返回空指针
-		if (b_stop_) {
-			return  nullptr;
-		}
-		auto context = std::move(connections_.front());
-		connections_.pop();
-		return context;
-	}
-
-	/**
-	 * @brief 将使用完毕的gRPC Stub连接归还到连接池
-	 * @param context 要归还的Stub连接智能指针
-	 */
-	void returnConnection(std::unique_ptr<ChatService::Stub> context) {
-		std::lock_guard<std::mutex> lock(mutex_);
-		if (b_stop_) {
-			return;
-		}
-		connections_.push(std::move(context));
-		cond_.notify_one();
-	}
-
-	/// 关闭连接池，唤醒所有等待线程使其退出
-	void Close() {
-		b_stop_ = true;
-		cond_.notify_all();
-	}
-
-private:
-	/// 停止标志，为true时连接池不再提供连接
-	atomic<bool> b_stop_;
-	/// 连接池容量（预创建的连接总数）
-	size_t poolSize_;
-	/// 目标ChatServer的主机地址
-	std::string host_;
-	/// 目标ChatServer的gRPC端口
-	std::string port_;
-	/// gRPC Stub连接队列，存储所有可复用的ChatService::Stub
-	std::queue<std::unique_ptr<ChatService::Stub> > connections_;
-	/// 互斥锁，保护连接队列的线程安全访问
-	std::mutex mutex_;
-	/// 条件变量，当无可用连接时阻塞等待，有连接归还时唤醒
-	std::condition_variable cond_;
-};
-
-/**
  * @brief ChatServer gRPC 客户端（单例）
  * 
  * 用于向其他 ChatServer 节点发送跨服 gRPC 请求。
- * 内部维护一个以 "ip:port" 为键的连接池映射，按需创建并复用连接池。
+ * 内部维护一个以节点名为键的共享 gRPC 通道映射，调用时按需创建 Stub。
  * 支持的操作包括：通知加好友、通知认证好友、转发文本聊天消息、踢人等。
  */
 class ChatGrpcClient :public Singleton<ChatGrpcClient>
@@ -182,10 +89,10 @@ public:
 	KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& req);
 
 private:
-	/// 私有构造函数，从配置文件读取连接池参数
+	/// 私有构造函数，从配置文件读取PeerServer配置并建立共享gRPC通道
 	ChatGrpcClient();
-	/// 连接池映射表，键为目标服务器的 "ip:port"，值为对应的连接池实例
-	unordered_map<std::string, std::unique_ptr<ChatConPool>> _pools;	
+	/// 共享gRPC通道映射表，键为目标节点的配置名，值为共享Channel
+	unordered_map<std::string, std::shared_ptr<Channel>> _channels;
 };
 
 

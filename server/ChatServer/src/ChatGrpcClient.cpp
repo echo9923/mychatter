@@ -1,4 +1,4 @@
-﻿#include "ChatGrpcClient.h"
+#include "ChatGrpcClient.h"
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
 #include "UserMgr.h"
@@ -24,7 +24,7 @@ ChatGrpcClient::ChatGrpcClient()
 		if (cfg[word]["Name"].empty()) {
 			continue;
 		}
-		_pools[cfg[word]["Name"]] = std::make_unique<ChatConPool>(5, cfg[word]["Host"], cfg[word]["Port"]);
+		_channels[cfg[word]["Name"]] = grpc::CreateChannel(cfg[word]["Host"] + ":" + cfg[word]["Port"], grpc::InsecureChannelCredentials());
 	}
 
 }
@@ -38,18 +38,15 @@ AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_ip, const AddFri
 		rsp.set_touid(req.touid());
 		});
 
-	auto find_iter = _pools.find(server_ip);
-	if (find_iter == _pools.end()) {
+	auto find_iter = _channels.find(server_ip);
+	if (find_iter == _channels.end()) {
 		return rsp;
 	}
-	
-	auto &pool = find_iter->second;
+
+	auto stub = ChatService::NewStub(find_iter->second);
 	ClientContext context;
-	auto stub = pool->getConnection();
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	Status status = stub->NotifyAddFriend(&context, req, &rsp);
-	Defer defercon([&stub, this, &pool]() {
-		pool->returnConnection(std::move(stub));
-		});
 
 	if (!status.ok()) {
 		rsp.set_error(ErrorCodes::RPCFailed);
@@ -113,18 +110,15 @@ AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const Auth
 		rsp.set_touid(req.touid());
 		});
 
-	auto find_iter = _pools.find(server_ip);
-	if (find_iter == _pools.end()) {
+	auto find_iter = _channels.find(server_ip);
+	if (find_iter == _channels.end()) {
 		return rsp;
 	}
 
-	auto& pool = find_iter->second;
+	auto stub = ChatService::NewStub(find_iter->second);
 	ClientContext context;
-	auto stub = pool->getConnection();
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	Status status = stub->NotifyAuthFriend(&context, req, &rsp);
-	Defer defercon([&stub, this, &pool]() {
-		pool->returnConnection(std::move(stub));
-		});
 
 	if (!status.ok()) {
 		rsp.set_error(ErrorCodes::RPCFailed);
@@ -151,18 +145,15 @@ TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip,
 		
 		});
 
-	auto find_iter = _pools.find(server_ip);
-	if (find_iter == _pools.end()) {
+	auto find_iter = _channels.find(server_ip);
+	if (find_iter == _channels.end()) {
 		return rsp;
 	}
 
-	auto& pool = find_iter->second;
+	auto stub = ChatService::NewStub(find_iter->second);
 	ClientContext context;
-	auto stub = pool->getConnection();
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	Status status = stub->NotifyTextChatMsg(&context, req, &rsp);
-	Defer defercon([&stub, this, &pool]() {
-		pool->returnConnection(std::move(stub));
-		});
 
 	if (!status.ok()) {
 		rsp.set_error(ErrorCodes::RPCFailed);
@@ -180,17 +171,14 @@ KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_ip, const KickUser
 		rsp.set_uid(req.uid());
 		});
 
-	auto find_iter = _pools.find(server_ip);
-	if (find_iter == _pools.end()) {
+	auto find_iter = _channels.find(server_ip);
+	if (find_iter == _channels.end()) {
 		return rsp;
 	}
 
-	auto& pool = find_iter->second;
+	auto stub = ChatService::NewStub(find_iter->second);
 	ClientContext context;
-	auto stub = pool->getConnection();
-	Defer defercon([&stub, this, &pool]() {
-		pool->returnConnection(std::move(stub));
-		});
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	Status status = stub->NotifyKickUser(&context, req, &rsp);
 
 	if (!status.ok()) {

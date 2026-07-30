@@ -4,10 +4,11 @@
 NotifyChatImgRsp  ChatServerGrpcClient::NotifyChatImgMsg(int message_id,std::string chatserver)
 {
 	ClientContext context;
+	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	NotifyChatImgRsp reply;
 	NotifyChatImgReq request;
 	request.set_message_id(message_id);
-	if (_hash_pools.find(chatserver) == _hash_pools.end()) {
+	if (_hash_channels.find(chatserver) == _hash_channels.end()) {
 		reply.set_error(ErrorCodes::ServerIpErr);
 		return reply;
 	}
@@ -24,12 +25,8 @@ NotifyChatImgRsp  ChatServerGrpcClient::NotifyChatImgMsg(int message_id,std::str
 	boost::uintmax_t file_size = boost::filesystem::file_size(file_path);
 	request.set_total_size(file_size);
 
-	auto &pool_ = _hash_pools[chatserver];
-	auto stub = pool_->getConnection();
+	auto stub = ChatService::NewStub(_hash_channels[chatserver]);
 	Status status = stub->NotifyChatImgMsg(&context, request, &reply);
-	Defer defer([&stub, &pool_, this]() {
-		pool_->returnConnection(std::move(stub));
-		});
 	if (status.ok()) {
 		return reply;
 	}
@@ -44,9 +41,9 @@ ChatServerGrpcClient::ChatServerGrpcClient()
 	auto& gCfgMgr = ConfigMgr::Inst();
 	std::string host1 = gCfgMgr["chatserver1"]["Host"];
 	std::string port1 = gCfgMgr["chatserver1"]["Port"];
-	_hash_pools["chatserver1"] = std::make_unique<ChatServerConPool>(5, host1, port1);
-	
+	_hash_channels["chatserver1"] = grpc::CreateChannel(host1 + ":" + port1, grpc::InsecureChannelCredentials());
+
 	std::string host2 = gCfgMgr["chatserver2"]["Host"];
 	std::string port2 = gCfgMgr["chatserver2"]["Port"];
-	_hash_pools["chatserver2"] = std::make_unique<ChatServerConPool>(5, host2, port2);
+	_hash_channels["chatserver2"] = grpc::CreateChannel(host2 + ":" + port2, grpc::InsecureChannelCredentials());
 }
