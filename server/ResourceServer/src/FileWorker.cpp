@@ -1,10 +1,32 @@
-﻿#include "FileWorker.h"
+#include "FileWorker.h"
 #include "CSession.h"
 #include "base64.h"
 #include "ConfigMgr.h"
 #include "MysqlMgr.h"
 #include "RedisMgr.h"
 #include "ChatServerGrpcClient.h"
+
+namespace {
+/// 从 [Delivery] 读取整数配置；非法/缺失时回退 fallback（计划4.2/5.7）
+int ReadDeliveryInt(const std::string& key, int fallback) {
+	try {
+		auto val = ConfigMgr::Inst().GetValue("Delivery", key);
+		if (!val.empty()) {
+			std::size_t pos = 0;
+			int n = std::stoi(val, &pos);
+			if (pos == val.size() && n > 0) {
+				return n;
+			}
+		}
+	}
+	catch (...) {
+	}
+	return fallback;
+}
+
+/// 对端 ChatServer RECIPIENT_OFFLINE 应用层错误码（计划5.7，只记录不重试）
+constexpr int kAppRecipientOffline = 1015;
+} // namespace
 
 FileWorker::FileWorker() :_b_stop(false)
 {
@@ -249,28 +271,8 @@ void FileWorker::RegisterHandlers()
 		outfile.close();
 		if (last) {
 			std::cout << "文件已成功保存为: " << task->_name << std::endl;
-			//更新数据库聊天图像上传状态
-			MysqlMgr::GetInstance()->UpdateUploadStatus(task->_chat_msg_id);
-
-			std::string uid_ip_value = "";
-			auto receiver_str = std::to_string(task->_receiver);
-			auto uid_ip_key = USERIPPREFIX + receiver_str;
-			bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
-			//如果接收者未登录，则直接返回
-			if (!b_ip) {
-				if (task->_callback) {
-					task->_callback(result);
-				}
-
-				return;
-			}
-
-			if (task->_callback) {
-				task->_callback(result);
-			}
-
-			//通过grpc通知ChatServer
-			ChatServerGrpcClient::GetInstance()->NotifyChatImgMsg(task->_chat_msg_id, uid_ip_value);
+			//图片上传完成：统一激活 pending + 跨服通知（计划5.7）
+			CompleteChatImageUpload(task);
 			return;
 		}
 
@@ -336,27 +338,8 @@ void FileWorker::RegisterHandlers()
 		outfile.close();
 		if (last) {
 			std::cout << "文件已成功保存为: " << task->_name << std::endl;
-			//todo...更新数据库聊天图像上传状态
-			MysqlMgr::GetInstance()->UpdateUploadStatus(task->_chat_msg_id);
-			std::string uid_ip_value = "";
-			auto receiver_str = std::to_string(task->_receiver);
-			auto uid_ip_key = USERIPPREFIX + receiver_str;
-			bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
-			//如果接收者未登录，则直接返回
-			if (!b_ip) {
-				if (task->_callback) {
-					task->_callback(result);
-				}
-
-				return;
-			}
-
-			if (task->_callback) {
-				task->_callback(result);
-			}
-		
-			//通过grpc通知ChatServer
-			ChatServerGrpcClient::GetInstance()->NotifyChatImgMsg(task->_chat_msg_id, uid_ip_value);
+			//图片上传完成：统一激活 pending + 跨服通知（计划5.7）
+			CompleteChatImageUpload(task);
 			return;
 		}
 
@@ -422,28 +405,8 @@ void FileWorker::RegisterHandlers()
 		outfile.close();
 		if (last) {
 			std::cout << "文件已成功保存为: " << task->_name << std::endl;
-			//更新数据库聊天图像上传状态
-			MysqlMgr::GetInstance()->UpdateUploadStatus(task->_chat_msg_id);
-
-			std::string uid_ip_value = "";
-			auto receiver_str = std::to_string(task->_receiver);
-			auto uid_ip_key = USERIPPREFIX + receiver_str;
-			bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
-			//如果接收者未登录，则直接返回
-			if (!b_ip) {
-				if (task->_callback) {
-					task->_callback(result);
-				}
-
-				return;
-			}
-
-			//通过grpc通知ChatServer
-			ChatServerGrpcClient::GetInstance()->NotifyChatImgMsg(task->_chat_msg_id, uid_ip_value);
-			if (task->_callback) {
-				task->_callback(result);
-			}
-
+			//图片上传完成：统一激活 pending + 跨服通知（计划5.7）
+			CompleteChatImageUpload(task);
 			return;
 		}
 
@@ -475,6 +438,65 @@ void FileWorker::task_callback(std::shared_ptr<FileTask> task)
 	}
 
 	iter->second(task);
+}
+
+void FileWorker::CompleteChatImageUpload(std::shared_ptr<FileTask> task)
+{
+	json result;
+	result["error"] = ErrorCodes::Success;
+
+	//只有 DB 状态迁移成功才激活 pending 并尝试 live RPC（计划5.7 不变式）
+	if (!MysqlMgr::GetInstance()->UpdateUploadStatus(task->_chat_msg_id)) {
+		//DB 失败：向当前 chunk callback 回送定义好的失败响应；绝不 ZADD、绝不 RPC
+		std::cerr << "CompleteChatImageUpload: UpdateUploadStatus failed for chat_msg_id="
+		          << task->_chat_msg_id << ", pending not activated, peer not notified" << std::endl;
+		result["error"] = ErrorCodes::RPCFailed; //服务端完成失败，客户端据此重传上传
+		if (task->_callback) {
+			task->_callback(result);
+		}
+		return;
+	}
+
+	//1) 激活离线 pending：ZADD offline_msg:<recv_uid>（score/member=message_id）+ EXPIRE
+	auto receiver_str = std::to_string(task->_receiver);
+	auto offline_key = OFFLINE_MSG_PREFIX + receiver_str;
+	auto member = std::to_string(task->_chat_msg_id);
+	int ttl = ReadDeliveryInt("OfflineTtlSeconds", 604800);
+	if (ttl < 1) ttl = 604800;
+	bool zadd_ok = RedisMgr::GetInstance()->ZAdd(offline_key, (long long)task->_chat_msg_id, member);
+	bool expire_ok = RedisMgr::GetInstance()->Expire(offline_key, ttl);
+	if (!zadd_ok || !expire_ok) {
+		//Redis 失败只日志：上传仍成功，登录拉取会用 MySQL 真值补回缺项（计划5.7/4.3）
+		std::cerr << "CompleteChatImageUpload: activate pending ZSET failed msg_id="
+		          << task->_chat_msg_id << " zadd=" << zadd_ok << " expire=" << expire_ok
+		          << " (offline pull will fall back to MySQL)" << std::endl;
+	}
+
+	//先回送上传成功响应（图片已持久化、pending 已尽力激活）
+	if (task->_callback) {
+		task->_callback(result);
+	}
+
+	//2) 仅当接收者在线才尝试 live RPC；失败只日志，不影响离线拉取
+	std::string uid_ip_value;
+	auto uid_ip_key = USERIPPREFIX + receiver_str;
+	bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
+	if (!b_ip) {
+		//接收者未登录：pending 已记录，由离线 pull 兜底，不做 live 推送
+		return;
+	}
+
+	auto notify = ChatServerGrpcClient::GetInstance()->NotifyChatImgMsg(task->_chat_msg_id, uid_ip_value);
+	if (notify.app_error == kAppRecipientOffline) {
+		//RECIPIENT_OFFLINE：只记录 pending 状态，不重复重试（离线 pull 兜底，计划5.7）
+		std::cout << "CompleteChatImageUpload: recipient offline msg_id="
+		          << task->_chat_msg_id << ", pending retained for offline pull" << std::endl;
+	}
+	else if (notify.app_error != ErrorCodes::Success) {
+		std::cerr << "CompleteChatImageUpload: NotifyChatImgMsg failed msg_id="
+		          << task->_chat_msg_id << " grpc_code=" << notify.grpc_code
+		          << " app_error=" << notify.app_error << " (offline pull will deliver)" << std::endl;
+	}
 }
 
 DownloadWorker::DownloadWorker() :_b_stop(false)
