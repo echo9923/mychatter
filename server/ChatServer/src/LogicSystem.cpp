@@ -568,14 +568,29 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 		chat_msg->unique_id = unique_id;
 		chat_msg->thread_id = thread_id;
 		chat_msg->content = content;
-		chat_msg->status = 2;
+		chat_msg->status = MsgStatus::UN_READ;
 		chat_msg->msg_type = int(ChatMsgType::TEXT);
 		chat_datas.push_back(chat_msg);
 	}
 
 
 	//插入数据库
-	MysqlMgr::GetInstance()->AddChatMsg(chat_datas);
+	std::vector<std::string> conflict_unique_ids;
+	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_datas, conflict_unique_ids);
+	if (save_res == SaveMessageResult::Failed) {
+		// 持久化失败：不 ACK、不转发，sender 按 transient 重传
+		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
+		session->Send(rtvalue.dump(4), ID_TEXT_CHAT_MSG_RSP);
+		return;
+	}
+	if (save_res == SaveMessageResult::Conflict) {
+		// 永久冲突：原消息不变，sender 停止重传对应 unique_id
+		rtvalue["error"] = ErrorCodes::MESSAGE_CONFLICT;
+		rtvalue["conflict_unique_ids"] = conflict_unique_ids;
+		session->Send(rtvalue.dump(4), ID_TEXT_CHAT_MSG_RSP);
+		return;
+	}
+	// Stored/Duplicate：保持现有流程（Redis pending / live 转发留给 §5.4）
 
 
 	for (const auto& chat_data : chat_datas) {
@@ -1004,7 +1019,20 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	chat_msg->msg_type = int(ChatMsgType::PIC);
 
 	//插入数据库
-	MysqlMgr::GetInstance()->AddChatMsg(chat_msg);
+	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_msg);
+	if (save_res == SaveMessageResult::Failed) {
+		// 持久化失败：不 ACK、不转发
+		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
+		session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
+		return;
+	}
+	if (save_res == SaveMessageResult::Conflict) {
+		// 永久冲突：原消息不变，不创建第二行
+		rtvalue["error"] = ErrorCodes::MESSAGE_CONFLICT;
+		rtvalue["conflict_unique_ids"] = std::vector<std::string>{chat_msg->unique_id};
+		session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
+		return;
+	}
 
 	rtvalue["message_id"] = chat_msg->message_id;
 	Defer defer([this, &rtvalue, session]() {

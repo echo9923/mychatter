@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 #include <string>
 #include <vector>
+#include <cstdint>
 
 /**
  * @brief 用户基本信息结构体
@@ -65,6 +66,17 @@ struct ChatThreadInfo {
 };
 
 /**
+ * @brief 消息投递状态枚举
+ *
+ * 与数据库 delivery_status 列对应，表示应用层“至少一次投递”的进展。
+ * 与展示状态(status)分离：status 描述阅读/上传状态，delivery_status 描述是否已被接收方 ACK。
+ */
+enum class DeliveryStatus {
+	Pending = 0, ///< 待投递（新写入默认值，进入离线 pending 集合）
+	Acked   = 1  ///< 已投递（接收方已 ACK；历史/系统消息也固定为已投递，不重推）
+};
+
+/**
  * @brief 聊天消息结构体
  * 
  * 对应数据库中的一条聊天消息记录。
@@ -74,11 +86,13 @@ struct ChatMessage {
 	int thread_id;          ///< 所属会话线程ID
 	int sender_id;          ///< 发送者用户ID
 	int recv_id;            ///< 接收者用户ID
-	std::string unique_id;  ///< 消息唯一标识（客户端生成，用于去重）
+	std::string unique_id;  ///< 消息唯一标识（客户端生成，用于去重，历史/系统消息为空串）
 	std::string content;    ///< 消息内容（文本或图片URL）
 	std::string chat_time;  ///< 消息发送时间
 	int status;             ///< 消息状态（参见MsgStatus枚举）
 	int msg_type;           ///< 消息类型（参见ChatMsgType枚举）
+	std::uint64_t content_size{0};                ///< 内容字节大小（文本为0，图片为字节数）
+	DeliveryStatus delivery_status{DeliveryStatus::Pending}; ///< 应用层投递状态（参见DeliveryStatus枚举）
 };
 
 /**

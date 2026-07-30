@@ -79,16 +79,31 @@ std::shared_ptr<PageResult> MysqlMgr::LoadChatMsg(int threadId, int lastId, int 
 	return _dao.LoadChatMsg(threadId, lastId, pageSize);
 }
 
-bool MysqlMgr::AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas) {
-	return _dao.AddChatMsg(chat_datas);
+SaveMessageResult MysqlMgr::AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas,
+	std::vector<std::string>& conflict_unique_ids) {
+	return _dao.AddChatMsg(chat_datas, conflict_unique_ids);
 }
 
-bool MysqlMgr::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
+SaveMessageResult MysqlMgr::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
 	return _dao.AddChatMsg(chat_data);
 }
 
 std::shared_ptr<ChatMessage> MysqlMgr::GetChatMsg(int message_id)
 {
 	return _dao.GetChatMsg(message_id);
+}
+
+std::vector<std::shared_ptr<ChatMessage>> MysqlMgr::GetPendingMessages(int recv_uid,
+	int after_message_id, int limit) {
+	return _dao.GetPendingMessages(recv_uid, after_message_id, limit);
+}
+
+std::vector<std::shared_ptr<ChatMessage>> MysqlMgr::GetMessagesByIds(int recv_uid,
+	const std::vector<int>& ids) {
+	return _dao.GetMessagesByIds(recv_uid, ids);
+}
+
+bool MysqlMgr::MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids) {
+	return _dao.MarkMessagesDelivered(recv_uid, ids);
 }
 
