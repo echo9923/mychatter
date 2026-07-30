@@ -984,11 +984,8 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 	}
 	msg->message_id = static_cast<int>(rs->getUInt64(1));
 
-	// affected==1 表示新行插入；否则命中唯一键，需回读核对内容以区分 Duplicate/Conflict
-	if (affected == 1) {
-		return SaveMessageResult::Stored;
-	}
-
+	// 无条件按 canonical message_id 回读核对五字段；不区分是否新插入，也不覆盖原行。
+	// 行不存在→Failed；五字段全等→affected==1 ? Stored : Duplicate；不等→Conflict。
 	auto readStmt = std::unique_ptr<sql::PreparedStatement>(
 		conn->prepareStatement(
 			"SELECT thread_id, recv_id, content, msg_type, content_size "
@@ -1009,7 +1006,7 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 		rr->getUInt64("content_size") == msg->content_size;
 
 	if (same) {
-		return SaveMessageResult::Duplicate;
+		return affected == 1 ? SaveMessageResult::Stored : SaveMessageResult::Duplicate;
 	}
 	out_conflict_uid = msg->unique_id;
 	return SaveMessageResult::Conflict;
