@@ -1,4 +1,4 @@
-﻿#include "LogicWorker.h"
+#include "LogicWorker.h"
 #include "FileSystem.h"
 #include "CSession.h"
 #include "LogicSystem.h"
@@ -643,7 +643,19 @@ void LogicWorker::RegisterCallBacks()
 			//该消息是接收方客户端发送过来的,服务器将资源存储在发送方的文件夹中
 			auto uid_str = std::to_string(chat_msg->sender_id);
 			auto file_path = (file_dir / uid_str / chat_msg->content);
-			boost::uintmax_t file_size = boost::filesystem::file_size(file_path);
+			//文件可能缺失（头像/历史图片被清理）：用 error_code 重载，绝不让
+			//boost::filesystem_error 穿出 LogicWorker 线程导致 std::terminate/abort
+			boost::system::error_code fs_ec;
+			boost::uintmax_t file_size = boost::filesystem::file_size(file_path, fs_ec);
+			if (fs_ec) {
+				std::cerr << "img down info sync: file missing " << file_path
+				          << " ec=" << fs_ec.message() << std::endl;
+				json err_value;
+				err_value["error"] = ErrorCodes::FileNotExists;
+				err_value["message_id"] = chat_msg->message_id;
+				session->Send(err_value.dump(4), ID_IMG_CHAT_DOWN_INFO_SYNC_RSP);
+				return;
+			}
 
 			// 在异步任务完成后调用
 			json rtvalue ;
