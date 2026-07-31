@@ -50,6 +50,18 @@ public:
 	// COUNT(*) for unique_id matching a LIKE pattern (e.g. "imtest-%").
 	long long CountByUniqueIdLike(const std::string& pattern);
 
+	// COUNT(*) for unique_id LIKE pattern AND a specific delivery_status.
+	// delivery_status: 0=Pending, 1=Acked.
+	long long CountByUniqueIdLikeAndDelivery(const std::string& pattern,
+	                                         int delivery_status);
+
+	// All rows for a specific message_id (single-row expected).
+	std::vector<ChatMessageRow> QueryByMessageId(int message_id);
+
+	// All chat_message rows for recv_id with a given delivery_status.
+	std::vector<ChatMessageRow> QueryByRecvIdAndDelivery(int recv_id,
+	                                                    int delivery_status);
+
 	// Delete every chat_message row whose unique_id matches the LIKE pattern.
 	// Returns rows affected, or -1 on error.
 	long long DeleteByUniqueIdLike(const std::string& pattern);

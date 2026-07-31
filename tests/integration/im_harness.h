@@ -51,10 +51,19 @@ public:
 	// Terminate every started process and free handles. Safe to call repeatedly.
 	void StopAll();
 
+	// Terminate a single process by its spec.name (the work-dir label).
+	// Returns true if a matching process was found and terminated.
+	// The handle is freed; StopAll() will skip it.
+	bool StopOne(const std::string& name);
+
+	// Check whether a process with the given name is still running.
+	bool IsRunning(const std::string& name);
+
 	const std::string& base_dir() const { return base_dir_; }
 
 private:
 	struct Proc {
+		std::string name;
 		void* hProcess = nullptr;
 		void* hThread  = nullptr;
 		void* hJob     = nullptr;
@@ -68,6 +77,12 @@ private:
 std::string MakeStatusIni();
 std::string MakeChatIni(const std::string& self_name, unsigned short tcp_port,
                         unsigned short rpc_port, int logic_workers);
+std::string MakeChatIniPeer(const std::string& self_name, unsigned short tcp_port,
+                            unsigned short rpc_port, int logic_workers,
+                            const std::string& peer_name,
+                            unsigned short peer_tcp_port,
+                            unsigned short peer_rpc_port);
 std::string MakeGateIni();
+std::string MakeResourceIni();
 
 } // namespace imt

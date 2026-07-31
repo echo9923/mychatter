@@ -1,4 +1,4 @@
-﻿#include "MysqlDao.h"
+#include "MysqlDao.h"
 #include "ConfigMgr.h"
 #include "const.h"
 
@@ -972,6 +972,8 @@ bool MysqlDao::UpdateUploadStatus(int chat_message_id)
 
 	auto& conn = con->_con;
 	try {
+		// 连接池中被 AddFriend 等方法留下 autocommit=false 的连接，必须显式恢复。
+		conn->setAutoCommit(true);
 		std::string update_sql =
 			"UPDATE chat_message SET status = ? WHERE message_id = ?;";
 

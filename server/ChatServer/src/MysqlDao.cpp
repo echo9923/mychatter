@@ -1279,6 +1279,9 @@ bool MysqlDao::MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids) 
 	auto& conn = con->_con;
 
 	try {
+		// 连接池中被 AddChatMsg 等方法留下 autocommit=false 的连接，必须显式恢复。
+		conn->setAutoCommit(true);
+
 		// UPDATE 带 recv_id 过滤防越权；重复 ACK（已为 1）仍返回成功（幂等）。
 		std::string sql = "UPDATE chat_message SET delivery_status = 1 "
 			"WHERE recv_id = ? AND delivery_status = 0 AND message_id IN (";
