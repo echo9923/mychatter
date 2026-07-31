@@ -65,6 +65,7 @@ add_executable(GateServer
 
 target_include_directories(GateServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${LLFC_REPO_ROOT}/server/common/include"
 )
 
 target_link_libraries(GateServer PRIVATE
@@ -78,6 +79,7 @@ target_link_libraries(GateServer PRIVATE
   nlohmann_json::nlohmann_json
   hiredis::hiredis
   mysql::concpp-jdbc-static
+  OpenSSL::Crypto
 )
 
 target_compile_features(GateServer PRIVATE cxx_std_17)

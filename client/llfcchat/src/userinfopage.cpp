@@ -246,8 +246,7 @@ void UserInfoPage::slot_up_load()
     jsonObj["seq"] = seq;
     jsonObj["trans_size"] = buffer.size() + (seq - 1) * MAX_FILE_LEN;
     jsonObj["total_size"] = total_size;
-    jsonObj["token"] = UserMgr::GetInstance()->GetToken();
-    jsonObj["uid"] = UserMgr::GetInstance()->GetUid();
+    //3.2 token/uid 由 Resource 从 session 派生，不再发送
 
     if (buffer.size() + (seq - 1) * MAX_FILE_LEN == total_size) {
         jsonObj["last"] = 1;

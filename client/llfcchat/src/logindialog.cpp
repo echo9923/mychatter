@@ -3,6 +3,7 @@
 #include <QDebug>
 #include "httpmgr.h"
 #include "tcpmgr.h"
+#include "usermgr.h"
 #include <QRegExp>
 #include <QRegularExpression>
 #include <QPainter>
@@ -29,12 +30,21 @@ LoginDialog::LoginDialog(QWidget *parent) :
     //连接tcp管理者发出的登陆失败信号
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_login_failed, this, &LoginDialog::slot_login_failed);
 
-    //连接tcp连接资源服务器请求的信号和槽函数
-    connect(this, &LoginDialog::sig_connect_res_server,
+    //3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_connect_resource,
             FileTcpMgr::GetInstance().get(), &FileTcpMgr::slot_tcp_connect);
 
     //连接资源管理tcp发出的连接成功信号
     connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_con_success, this, &LoginDialog::slot_res_con_finish);
+    //3.2 Resource 登录成功后才切 UI
+    connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_login_success,
+            TcpMgr::GetInstance().get(), &TcpMgr::sig_swich_chatdlg);
+    //3.2 Resource 登录失败提示
+    connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_login_failed,
+            this, [this](QString reason){
+        showTip(reason, false);
+        enableBtn(true);
+    });
     initHead();
 }
 
@@ -92,7 +102,8 @@ void LoginDialog::initHttpHandlers()
         _si->_uid = jsonObj["uid"].toInt();
         _si->_chat_host = jsonObj["chathost"].toString();
         _si->_chat_port = jsonObj["chatport"].toString();
-        _si->_token = jsonObj["token"].toString();
+        //3.2 Gate 返回一次性票据 chat_ticket（不再返回 token）
+        _si->_chat_ticket = jsonObj["chat_ticket"].toString();
 
         _si->_res_host = jsonObj["reshost"].toString();
         _si->_res_port = jsonObj["resport"].toString();
@@ -100,7 +111,7 @@ void LoginDialog::initHttpHandlers()
 
         qDebug()<< "email is " << email << " uid is " << _si->_uid <<" chat host is "
                 << _si->_chat_host << " chat port is "
-                << _si->_chat_port << " token is " << _si->_token
+                << _si->_chat_port
                 << " res host is " << _si->_res_host
                 << " res port is " << _si->_res_port;
         emit sig_connect_tcp(_si);
@@ -225,10 +236,20 @@ void LoginDialog::slot_login_mod_finish(ReqId id, QString res, ErrorCodes err)
 void LoginDialog::slot_tcp_con_finish(bool bsuccess)
 {
     if(bsuccess){
-        showTip(tr("聊天服务连接成功，正在连接资源服务器..."),true);
-        emit sig_connect_res_server(_si);
+        showTip(tr("聊天服务连接成功，正在登录..."),true);
+        //3.2 INITIAL 登录：请求体 {uid, chat_ticket}（无 session_token）
+        QJsonObject jsonObj;
+        jsonObj["uid"] = _si->_uid;
+        jsonObj["chat_ticket"] = _si->_chat_ticket;
+
+        QJsonDocument doc(jsonObj);
+        QByteArray jsonData = doc.toJson(QJsonDocument::Indented);
+
+        //发送tcp请求给chat server
+        emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_CHAT_LOGIN, jsonData);
     }else{
         showTip(tr("网络异常"), false);
+        enableBtn(true);
     }
 }
 
@@ -243,16 +264,16 @@ void LoginDialog::slot_login_failed(int err)
 void LoginDialog::slot_res_con_finish(bool bsuccess)
 {
        if(bsuccess){
-          showTip(tr("聊天服务连接成功，正在登录..."),true);
+          showTip(tr("资源服务连接成功，正在鉴权..."),true);
+          //3.2 Resource 登录：请求体 {uid, session_token}
           QJsonObject jsonObj;
           jsonObj["uid"] = _si->_uid;
-          jsonObj["token"] = _si->_token;
+          jsonObj["session_token"] = UserMgr::GetInstance()->GetToken();
 
           QJsonDocument doc(jsonObj);
-          QByteArray jsonData = doc.toJson(QJsonDocument::Indented);
+          QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
 
-          //发送tcp请求给chat server
-         emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_CHAT_LOGIN, jsonData);
+          FileTcpMgr::GetInstance()->SendData(ReqId::ID_RESOURCE_LOGIN_REQ, jsonData);
 
        }else{
           showTip(tr("网络异常"),false);

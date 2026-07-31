@@ -75,6 +75,7 @@ add_executable(ChatServer
 
 target_include_directories(ChatServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${LLFC_REPO_ROOT}/server/common/include"
 )
 
 target_link_libraries(ChatServer PRIVATE
@@ -89,6 +90,7 @@ target_link_libraries(ChatServer PRIVATE
   nlohmann_json::nlohmann_json
   hiredis::hiredis
   mysql::concpp-jdbc-static
+  OpenSSL::Crypto
 )
 
 target_compile_features(ChatServer PRIVATE cxx_std_17)

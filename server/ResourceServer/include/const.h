@@ -91,17 +91,20 @@ enum MSG_IDS {
 	ID_IMG_CHAT_DOWN_INFO_SYNC_REQ = 1045,   //获取聊天图片下载的同步信息
 	ID_IMG_CHAT_DOWN_INFO_SYNC_RSP = 1046,    //获取聊天图片下载的同步信息回包
 	ID_IMG_CHAT_DOWN_REQ = 1047,    //聊天图片下载请求
-	ID_IMG_CHAT_DOWN_RSP = 1048     //聊天图片下载回复
+	ID_IMG_CHAT_DOWN_RSP = 1048,     //聊天图片下载回复
+	ID_RESOURCE_LOGIN_REQ = 1053,    //资源服务登录鉴权请求
+	ID_RESOURCE_LOGIN_RSP = 1054     //资源服务登录鉴权回复
 };
 
 #define USERIPPREFIX  "uip_"
-#define USERTOKENPREFIX  "utoken_"
 #define IPCOUNTPREFIX  "ipcount_"
 #define USER_BASE_INFO "ubaseinfo_"
 #define NAME_INFO  "nameinfo_"
 
 #define LOCK_PREFIX "lock_"
 #define USER_SESSION_PREFIX "usession_"
+/// 会话令牌Redis键前缀: SESSION_TOKEN_V2_PREFIX + uid（值=32位hex session token，由ChatServer写入，TTL 86400s）
+#define SESSION_TOKEN_V2_PREFIX "session:token:v2:"
 #define LOCK_COUNT "lockcount"
 /// Redis中离线消息待投递有序集合的键前缀，完整键为 "offline_msg:" + recv_uid，ZSET member/score 均为十进制 message_id
 #define OFFLINE_MSG_PREFIX "offline_msg:"

@@ -144,8 +144,6 @@ bool MysqlDao::CheckPwd(const std::string& name, const std::string& pwd, UserInf
 		// 遍历结果集
 		while (res->next()) {
 			origin_pwd = res->getString("pwd");
-			// 输出查询到的密码
-			std::cout << "Password: " << origin_pwd << std::endl;
 			break;
 		}
 

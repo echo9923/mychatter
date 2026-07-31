@@ -348,6 +348,29 @@ public:
 	/// 为键设置过期时间，单位秒（EXPIRE key seconds）
 	bool Expire(const std::string& key, int seconds);
 
+	/**
+	 * @brief 执行 Lua 脚本（EVAL script numkeys key... arg...）
+	 *
+	 * 以 redisCommandArgv 二进制安全方式传递脚本、键、参数，避免 %s 格式被特殊字符拆分。
+	 * @param script Lua 脚本源码
+	 * @param keys KEYS 列表
+	 * @param args ARGV 列表
+	 * @return 字符串/状态回复返回其 str；整数回复转为十进制串；NIL/错误/NULL 返回空串（fail-closed）
+	 */
+	std::string Eval(const std::string& script, const std::vector<std::string>& keys, const std::vector<std::string>& args);
+
+	/**
+	 * @brief 仅当 key 当前值==token 时才刷新其 TTL（compare-and-expire，原子 Lua）
+	 *
+	 * 用于可恢复会话令牌的周期性续期：token 仍与登录时一致才 SETEX 续命，
+	 * 若已被异地登录覆盖（token 不匹配）则不续期，使旧连接尽快失效。
+	 * @param key Redis 键
+	 * @param token 期望的当前值
+	 * @param ttl_seconds 续期后的过期秒数
+	 * @return token 匹配且 SETEX 成功返回 true，不匹配或出错返回 false
+	 */
+	bool CompareAndExpire(const std::string& key, const std::string& token, int ttl_seconds);
+
 	/// 关闭Redis连接池并释放所有连接
 	void Close() {
 		_con_pool->Close();

@@ -58,6 +58,7 @@ add_executable(StatusServer
 
 target_include_directories(StatusServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${LLFC_REPO_ROOT}/server/common/include"
 )
 
 target_link_libraries(StatusServer PRIVATE
@@ -71,6 +72,7 @@ target_link_libraries(StatusServer PRIVATE
   nlohmann_json::nlohmann_json
   hiredis::hiredis
   mysql::concpp-jdbc-static
+  OpenSSL::Crypto
 )
 
 target_compile_features(StatusServer PRIVATE cxx_std_17)

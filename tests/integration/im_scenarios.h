@@ -26,4 +26,7 @@ bool ScenarioImageOffline();// image-offline: sharded upload, UN_UPLOAD exclusio
 // --- Plan 3.1: StatusServer lease-based least-loaded discovery ---
 bool ScenarioStatusDiscovery();// status-discovery: lease selection, rotation, NoAvailableChatServer
 
+// --- Plan 3.2: mTLS ticket / resumable session / Resource auth ---
+bool ScenarioAuthTicket();    // auth-ticket: mTLS, ticket replay/wrong-server, migration, /reconnect, Resource auth
+
 } // namespace imt

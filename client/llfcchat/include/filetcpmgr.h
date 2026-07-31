@@ -60,6 +60,8 @@ private:
     qint64        _bytes_sent;
     //是否正在发送
     bool _pending;
+    //3.2 Resource 鉴权标志：1054 成功前禁止发送任何业务帧
+    bool _authenticated;
     //发送的拥塞窗口，控制发送数量
     int _cwnd_size;
 signals:
@@ -73,6 +75,10 @@ signals:
      void sig_continue_download_file(QString unique_name);
      void sig_update_download_progress(std::shared_ptr<MsgInfo>);
      void sig_download_finish(std::shared_ptr<MsgInfo>,QString file_path);
+     //3.2 Resource 登录(1054)成功信号
+     void sig_resource_login_success();
+     //3.2 Resource 登录(1054)失败信号（携带用户可见错误）
+     void sig_resource_login_failed(QString reason);
 public slots:
     void slot_send_data(ReqId reqId, QByteArray data);
     void slot_tcp_connect(std::shared_ptr<ServerInfo> si);

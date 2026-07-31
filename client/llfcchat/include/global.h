@@ -88,7 +88,9 @@ enum ReqId{
     ID_CHAT_DELIVERY_ACK_REQ      =  1049,    //聊天消息投递ACK请求
     ID_CHAT_DELIVERY_ACK_RSP      =  1050,    //聊天消息投递ACK回复
     ID_PULL_OFFLINE_MSG_REQ       =  1051,    //拉取离线消息请求
-    ID_PULL_OFFLINE_MSG_RSP       =  1052     //拉取离线消息回复
+    ID_PULL_OFFLINE_MSG_RSP       =  1052,    //拉取离线消息回复
+    ID_RESOURCE_LOGIN_REQ         =  1053,    //资源服务器登录请求
+    ID_RESOURCE_LOGIN_RSP         =  1054     //资源服务器登录回复
 };
 Q_DECLARE_METATYPE(ReqId)
 
@@ -131,13 +133,17 @@ extern QString gate_url_prefix;
 struct ServerInfo{
 public:
     ServerInfo() = default;
-    ServerInfo(const ServerInfo& other):_chat_host(other._chat_host),_chat_port(other._chat_port),
-        _token(other._token),_uid(other._uid){}
+    ServerInfo(const ServerInfo& other)
+        : _chat_host(other._chat_host), _chat_port(other._chat_port),
+          _res_host(other._res_host), _res_port(other._res_port),
+          _chat_ticket(other._chat_ticket), _session_token(other._session_token),
+          _uid(other._uid) {}
     QString _chat_host;
     QString _chat_port;
     QString _res_host;
     QString _res_port;
-    QString _token;
+    QString _chat_ticket;   //一次性票据(60s,仅 INITIAL/RESUME 登录 Status 后使用一次)
+    QString _session_token; //持久会话 token(24h,可恢复,Resource 鉴权用)
     int _uid;
 };
 

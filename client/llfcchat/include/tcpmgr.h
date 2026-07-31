@@ -88,6 +88,7 @@ private:
     QTcpSocket _socket;
     QString _host;
     uint16_t _port;
+    std::shared_ptr<ServerInfo> _server_info;  //登录流程保存，Chat 认证后传给 FileTcpMgr
     QByteArray _buffer;
     bool _b_recv_pending;
     quint16 _message_id;
@@ -129,6 +130,8 @@ private:
         int thread_id, int fromuid, int touid, int msg_type,
         const QString& content, qint64 content_size,
         const QString& chat_time, int status);
+    //3.2 一次性净化旧 QSettings 离线队列中的 token 字段（迁移到 auth_payload_version=2）
+    void sanitizeLegacyDeliverySettings();
     //§6.5 ACK 批量发送（取出到期项，发 1049，更新退避，持久化）
     void flushPendingAcks();
     void persistAckPending();
@@ -165,6 +168,8 @@ signals:
     //§6.5：ChatDialog 插入/duplicate 后 emit，queued 回 TCP 线程触发 1049 ACK
     void sig_chat_msg_processed(int message_id);
     void sig_swich_chatdlg();
+    //3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource（携带 ServerInfo）
+    void sig_connect_resource(std::shared_ptr<ServerInfo> si);
     void sig_load_apply_list(QJsonArray json_array);
     void sig_login_failed(int);
     void sig_user_search(std::shared_ptr<SearchInfo>);

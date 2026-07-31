@@ -19,6 +19,17 @@ inline constexpr int SENDER_UID   = 1002;  // fixture sender
 inline constexpr int RECEIVER_UID = 1019;  // fixture receiver
 inline constexpr int THREAD_ID    = 35;    // fixture chat thread
 
+// Fixture credentials (plan 3.2): Gate verifies the password against the DB
+// pwd column directly, so it is sent as-is. Both fixture users share this pwd.
+inline constexpr const char* FIXTURE_SENDER_EMAIL   = "secondtonone1@163.com";
+inline constexpr const char* FIXTURE_RECEIVER_EMAIL = "1017234088@qq.com";
+inline constexpr const char* FIXTURE_PASSWD         = "654321)";
+
+// Resolve the fixture email for a uid (used by LoginUser to POST /user_login).
+inline const char* FixtureEmailForUid(int uid) {
+	return (uid == SENDER_UID) ? FIXTURE_SENDER_EMAIL : FIXTURE_RECEIVER_EMAIL;
+}
+
 // ---- Harness ports (plan Verification.3: fixed suffix ports) ----------------
 // Production defaults (Gate 8080, Chat 8090/8091, Chat gRPC 50055/50056,
 // Status 50052) are NOT used by the harness; these dedicated ports keep the
@@ -56,12 +67,24 @@ inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = 1049;
 inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = 1050;
 inline constexpr short ID_PULL_OFFLINE_MSG_REQ    = 1051;
 inline constexpr short ID_PULL_OFFLINE_MSG_RSP    = 1052;
+// Resource auth (plan 3.2): client presents session_token once per connection;
+// all subsequent file frames are authorized against the bound session.
+inline constexpr short ID_RESOURCE_LOGIN_REQ       = 1053;
+inline constexpr short ID_RESOURCE_LOGIN_RSP       = 1054;
+// A representative Resource business frame (rejected pre-auth).
+inline constexpr short ID_FILE_INFO_SYNC_REQ       = 1041;
+inline constexpr short ID_FILE_INFO_SYNC_RSP       = 1042;
 
 // ---- MsgStatus / ChatMsgType (mirror server const.h / data.h) --------------
 inline constexpr int MSG_STATUS_UN_READ   = 0;
 inline constexpr int MSG_STATUS_UN_UPLOAD = 3;
 inline constexpr int MSG_TYPE_TEXT        = 0;
 inline constexpr int MSG_TYPE_PIC         = 1;
+
+// TicketIntent (mirror status.proto enum): INITIAL = first login after pwd
+// check; RESUME = reconnect holding an existing session token.
+inline constexpr int TICKET_INTENT_INITIAL = 0;
+inline constexpr int TICKET_INTENT_RESUME  = 1;
 
 // ---- Cross-server test proxy port -----------------------------------------
 // The harness places a TCP proxy on this port between chatserver1 and
@@ -71,6 +94,7 @@ inline constexpr int CHAT2_PROXY_GRPC_PORT = 15057;
 // ---- Server-side ErrorCodes (mirror const.h; subset used by tests) ---------
 inline constexpr int ERR_SUCCESS             = 0;
 inline constexpr int ERR_RPC_FAILED          = 1002;
+inline constexpr int ERR_TOKEN_INVALID       = 1010;  // TokenInvalid
 inline constexpr int ERR_UID_INVALID         = 1011;
 inline constexpr int ERR_MESSAGE_STORE_FAILED = 1014;
 inline constexpr int ERR_RECIPIENT_OFFLINE   = 1015;
@@ -106,8 +130,17 @@ inline bool Check(bool cond, const std::string& name, const std::string& detail)
 }
 
 // Total number of message bodies the test should leave on disk/Redis untouched
+// Redis key helpers (plan 3.2): the session lives in the versioned
+// session:token:v2:<uid> key; one-time chat tickets live under
+// chat:ticket:<uuid>. StatusServer migration stamps auth:schema=v2.
 inline std::string ChatLeaseKey(const std::string& name) {
 	return "chatserver:lease:" + name;
+}
+inline std::string SessionTokenKey(int uid) {
+	return "session:token:v2:" + std::to_string(uid);
+}
+inline std::string ChatTicketKey(const std::string& uuid) {
+	return "chat:ticket:" + uuid;
 }
 // by an entire scenario run. Used for the final summary line.
 inline int Failures() { return g_failures.load(); }

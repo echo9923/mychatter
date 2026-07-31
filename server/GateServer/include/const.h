@@ -61,5 +61,6 @@ private:
 };
 
 #define CODEPREFIX  "code_"
+#define SESSION_TOKEN_V2_PREFIX "session:token:v2:"
 
 

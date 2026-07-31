@@ -4,7 +4,7 @@
 #include <QStandardPaths>
 FileTcpMgr::FileTcpMgr(QObject* parent) : QObject(parent),
 _host(""), _port(0), _b_recv_pending(false), _message_id(0), _message_len(0),
-_bytes_sent(0), _pending(false), _cwnd_size(0)
+_bytes_sent(0), _pending(false), _authenticated(false), _cwnd_size(0)
 {
 	registerMetaType();
 	QObject::connect(&_socket, &QTcpSocket::connected, this, [&]() {
@@ -185,6 +185,13 @@ void FileTcpMgr::handleMsg(ReqId id, int len, QByteArray data)
 
 void FileTcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
 {
+	//3.2 鉴权前禁止发送任何业务帧（仅允许 1053 登录请求），未鉴权直接丢弃并记日志
+	if (!_authenticated && reqId != ID_RESOURCE_LOGIN_REQ) {
+		qWarning() << "[FileTcpMgr] dropping frame id=" << reqId
+		           << " before resource authentication";
+		return;
+	}
+
 	uint16_t id = reqId;
 
 	// 计算长度（使用网络字节序转换）
@@ -242,6 +249,29 @@ void FileTcpMgr::SendData(ReqId reqId, QByteArray data)
 
 void FileTcpMgr::initHandlers()
 {
+	//3.2 Resource 登录回复（1054）：鉴权成功后才允许发送业务帧
+	_handlers.insert(ID_RESOURCE_LOGIN_RSP, [this](ReqId id, int len, QByteArray data) {
+		Q_UNUSED(len);
+		Q_UNUSED(id);
+		QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+		if (jsonDoc.isNull() || !jsonDoc.isObject()) {
+			_authenticated = false;
+			emit sig_resource_login_failed(tr("资源服务器鉴权响应解析失败"));
+			return;
+		}
+		QJsonObject jsonObj = jsonDoc.object();
+		int err = jsonObj.contains("error") ? jsonObj["error"].toInt() : ErrorCodes::ERR_JSON;
+		if (err != ErrorCodes::SUCCESS) {
+			_authenticated = false;
+			qDebug() << "[FileTcpMgr] resource login failed, error=" << err;
+			emit sig_resource_login_failed(tr("资源服务器鉴权失败"));
+			return;
+		}
+		_authenticated = true;
+		qDebug() << "[FileTcpMgr] resource login success";
+		emit sig_resource_login_success();
+	});
+
 	// 接收上传用户头像回复
 	_handlers.insert(ID_UPLOAD_HEAD_ICON_RSP, [this](ReqId id, int len, QByteArray data) {
 		Q_UNUSED(len);
@@ -276,7 +306,6 @@ void FileTcpMgr::initHandlers()
 		auto md5 = recvObj["md5"].toString();
 		auto seq = recvObj["seq"].toInt();
 		auto trans_size = recvObj["trans_size"].toInt();
-		auto uid = recvObj["uid"].toInt();
 		auto total_size = recvObj["total_size"].toInt();
 		auto name = recvObj["name"].toString();
 
@@ -323,7 +352,6 @@ void FileTcpMgr::initHandlers()
 
 		sendObj["data"] = base64Data;
 		sendObj["last_seq"] = recvObj["last_seq"].toInt();
-		sendObj["uid"] = uid;
 		QJsonDocument doc(sendObj);
 		auto send_data = doc.toJson();
 		SendData(ID_UPLOAD_HEAD_ICON_REQ, send_data);
@@ -796,12 +824,9 @@ void FileTcpMgr::initHandlers()
 			jsonObj_send["seq"] = file_info->_seq;
 			jsonObj_send["trans_size"] = QString::number(file_info->_current_size);
 			jsonObj_send["total_size"] = QString::number(file_info->_total_size);
-			jsonObj_send["token"] = UserMgr::GetInstance()->GetToken();
-			jsonObj_send["sender_id"] = file_info->_sender;
+			//3.2 token/uid/sender_id 由 Resource 从 session 派生，不再发送
 			jsonObj_send["receiver_id"] = file_info->_receiver;
 			jsonObj_send["message_id"] = file_info->_msg_id;
-			auto uid = UserMgr::GetInstance()->GetUid();
-			jsonObj_send["uid"] = uid;
 			QJsonDocument doc(jsonObj_send);
 			auto send_data = doc.toJson();
 			FileTcpMgr::GetInstance()->SendData(ID_IMG_CHAT_DOWN_REQ, send_data);
@@ -874,11 +899,9 @@ void FileTcpMgr::initHandlers()
 		jsonObj_send["seq"] = file_info->_seq;
 		jsonObj_send["trans_size"] = "0";
 		jsonObj_send["total_size"] = QString::number(file_info->_total_size);
-		jsonObj_send["token"] = UserMgr::GetInstance()->GetToken();
-		jsonObj_send["sender_id"] = sender_id;
+		//3.2 token/uid/sender_id 由 Resource 从 session 派生，不再发送
 		jsonObj_send["receiver_id"] = recv_id;
 		jsonObj_send["message_id"] = message_id;
-		jsonObj_send["uid"] = uid;
 		//客户端存储聊天记录，按照如下格式存储C:\Users\secon\AppData\Roaming\llfcchat\chatimg\uid, uid为对方uid
 		QDir chatimgDir(img_path_str);
 		jsonObj["client_path"] = img_path_str;
@@ -977,9 +1000,9 @@ void FileTcpMgr::BatchSend(std::shared_ptr<MsgInfo> msg_info, int sender, int re
 
 		sendObj["data"] = base64Data;
 		sendObj["last_seq"] = msg_info->_max_seq;
-		sendObj["uid"] = UserMgr::GetInstance()->GetUid();
 		sendObj["message_id"] = msg_info->_msg_id;
-		sendObj["sender"] = sender;
+		//3.2 sender/uid 由 Resource 从 session 派生，不再发送；receiver 是业务字段保留
+		Q_UNUSED(sender)
 		sendObj["receiver"] = receiver;
 		QJsonDocument doc(sendObj);
 		auto send_data = doc.toJson();
@@ -1045,7 +1068,7 @@ void FileTcpMgr::slot_continue_upload_file(QString unique_name) {
 		msg_info->_current_size = buffer.size() + (msg_info->_seq - 1) * MAX_FILE_LEN;
 		sendObj["trans_size"] = msg_info->_current_size;
 		sendObj["total_size"] = msg_info->_total_size;
-		sendObj["sender"] = msg_info->_sender;
+		//3.2 sender/uid 由 Resource 从 session 派生，不再发送；receiver 是业务字段保留
 		sendObj["receiver"] = msg_info->_receiver;
 		sendObj["message_id"] = msg_info->_msg_id;
 
@@ -1060,7 +1083,6 @@ void FileTcpMgr::slot_continue_upload_file(QString unique_name) {
 
 		sendObj["data"] = base64Data;
 		sendObj["last_seq"] = msg_info->_max_seq;
-		sendObj["uid"] = UserMgr::GetInstance()->GetUid();
 		QJsonDocument doc(sendObj);
 		auto send_data = doc.toJson();
 		//直接发送，其实是放入tcpmgr发送队列
@@ -1092,12 +1114,9 @@ void FileTcpMgr::slot_continue_download_file(QString unique_name) {
 	jsonObj_send["seq"] = file_info->_seq;
 	jsonObj_send["trans_size"] = QString::number(file_info->_current_size);
 	jsonObj_send["total_size"] = QString::number(file_info->_total_size);
-	jsonObj_send["token"] = UserMgr::GetInstance()->GetToken();
-	jsonObj_send["sender_id"] = file_info->_sender;
+	//3.2 token/uid/sender_id 由 Resource 从 session 派生，不再发送
 	jsonObj_send["receiver_id"] = file_info->_receiver;
 	jsonObj_send["message_id"] = file_info->_msg_id;
-	auto uid = UserMgr::GetInstance()->GetUid();
-	jsonObj_send["uid"] = uid;
 	QJsonDocument doc(jsonObj_send);
 	auto send_data = doc.toJson();
 	FileTcpMgr::GetInstance()->SendData(ID_IMG_CHAT_DOWN_REQ, send_data);
@@ -1114,8 +1133,7 @@ void FileTcpMgr::SendDownloadInfo(std::shared_ptr<DownloadInfo> download, QStrin
 	jsonObj["seq"] = download->_seq;
 	jsonObj["trans_size"] = 0;
 	jsonObj["total_size"] = 0;
-	jsonObj["token"] = UserMgr::GetInstance()->GetToken();
-	jsonObj["uid"] = UserMgr::GetInstance()->GetUid();
+	//3.2 token/uid 由 Resource 从 session 派生，不再发送
 	jsonObj["client_path"] = download->_client_path;
 	jsonObj["req_type"] = req_type;
 	QJsonDocument doc(jsonObj);

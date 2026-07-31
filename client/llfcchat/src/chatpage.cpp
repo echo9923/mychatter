@@ -512,7 +512,7 @@ void ChatPage::on_send_btn_clicked() {
             textObj["thread_id"] = thread_id;
             textObj["md5"] = msgList[i]->_md5;
             textObj["name"] = msgList[i]->_unique_name;
-            textObj["token"] = UserMgr::GetInstance()->GetToken();
+            //3.2 不再发送 token（Chat 由 session:token:v2 鉴权，避免会话 token 落入离线队列）
             textObj["unique_id"] = uuidString;
             textObj["text_or_url"] = msgList[i]->_text_or_url;
             textObj["content_size"] = QString::number(msgList[i]->_total_size);

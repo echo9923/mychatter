@@ -10,6 +10,7 @@
 #include "CServer.h"
 #include "ConfigMgr.h"
 #include "utils.h"
+#include "SecurityUtil.h"
 #include <vector>
 #include <set>
 #include <algorithm>
@@ -17,6 +18,14 @@
 using namespace std;
 
 namespace {
+/// mTLS 一次性票据的原子消费脚本：GET 后立即 DEL，保证票据只能被消费一次（防重放）。
+/// 返回票据原始值（字符串）或 nil（不存在/已消费）。
+constexpr const char* GETDEL_LUA =
+	"local v=redis.call('get',KEYS[1]); if v then redis.call('del',KEYS[1]) end return v";
+
+/// 可恢复会话令牌 TTL（秒），登录写入/续期均为 24 小时
+constexpr int SESSION_TOKEN_TTL = 86400;
+
 /// 从 [Concurrency] 读取 worker 数量；缺失/非数字/0/>64 一律回退 4（计划1.2）
 std::size_t ReadWorkerCount(const std::string& key) {
 	const std::size_t fallback = 4;
@@ -156,6 +165,24 @@ void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
 			}
 			return;
 		}
+
+		//每帧校验可恢复令牌：与 Redis 中 session:token:v2:<uid> 常量时间比较。
+		//令牌被异地覆盖（重新登录轮换）或已过期时，立即回 TokenInvalid 并关闭连接（fail closed）。
+		std::string stored_token;
+		bool tok_ok = RedisMgr::GetInstance()->Get(
+			SESSION_TOKEN_V2_PREFIX + std::to_string(user_uid), stored_token);
+		if (!tok_ok || !security::ConstantTimeEquals(stored_token, session->GetSessionToken())) {
+			json err;
+			err["error"] = ErrorCodes::TokenInvalid;
+			short rsp_id = ReqToRspId(msg_id);
+			if (rsp_id != 0) {
+				session->SendAndClose(err.dump(4), rsp_id);
+			}
+			else {
+				session->Close();
+			}
+			return;
+		}
 	}
 
 	auto call_back_iter = _fun_callbacks.find(msg_id);
@@ -207,36 +234,111 @@ void LogicSystem::RegisterCallBacks() {
 
 void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
 	auto root = json::parse(msg_data, nullptr, false);
-	auto uid = root["uid"].get<int>();
-	auto token = root["token"].get<std::string>();
-	std::cout << "user login uid is  " << uid << " user token  is "
-		<< token << endl;
 
 	json  rtvalue;
-	Defer defer([this, &rtvalue, session]() {
+	Defer defer([&rtvalue, session]() {
 		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, MSG_CHAT_LOGIN_RSP);
 		});
 
-
-	//从redis获取用户token是否正确
-	std::string uid_str = std::to_string(uid);
-	std::string token_key = USERTOKENPREFIX + uid_str;
-	std::string token_value = "";
-	bool success = RedisMgr::GetInstance()->Get(token_key, token_value);
-	if (!success) {
-		rtvalue["error"] = ErrorCodes::UidInvalid;
-		return ;
-	}
-
-	if (token_value != token) {
+	//请求 JSON 非法 → fail closed，不绑定 session
+	if (root.is_discarded()) {
 		rtvalue["error"] = ErrorCodes::TokenInvalid;
-		return ;
+		return;
 	}
 
-	rtvalue["error"] = ErrorCodes::Success;
+	//解析请求 {uid, chat_ticket[, session_token]}（不再读取明文 token/pwd）
+	int uid = 0;
+	std::string chat_ticket;
+	try {
+		uid = root.at("uid").get<int>();
+		chat_ticket = root.at("chat_ticket").get<std::string>();
+	}
+	catch (...) {
+		rtvalue["error"] = ErrorCodes::TokenInvalid;
+		return;
+	}
+	std::string req_session_token;
+	if (root.contains("session_token") && root["session_token"].is_string()) {
+		req_session_token = root["session_token"].get<std::string>();
+	}
 
+	std::string uid_str = std::to_string(uid);
 
+	//原子消费一次性 mTLS 票据（GETDEL），防止重放；空值表示过期/已用/不存在
+	std::string ticket_value = RedisMgr::GetInstance()->Eval(
+		GETDEL_LUA, { CHAT_TICKET_PREFIX + chat_ticket }, {});
+	if (ticket_value.empty()) {
+		rtvalue["error"] = ErrorCodes::TokenInvalid;
+		return;
+	}
+
+	//解析票据 JSON：{uid:int, server:string, intent:0|1[, session_token_sha256:hex]}
+	auto ticket = json::parse(ticket_value, nullptr, false);
+	if (ticket.is_discarded() || !ticket.is_object()) {
+		rtvalue["error"] = ErrorCodes::TokenInvalid;
+		return;
+	}
+	int t_uid = 0, t_intent = 0;
+	std::string t_server, t_token_sha;
+	try {
+		t_uid = ticket.at("uid").get<int>();
+		t_server = ticket.at("server").get<std::string>();
+		t_intent = ticket.at("intent").get<int>();
+	}
+	catch (...) {
+		rtvalue["error"] = ErrorCodes::TokenInvalid;
+		return;
+	}
+	if (ticket.contains("session_token_sha256") && ticket["session_token_sha256"].is_string()) {
+		t_token_sha = ticket["session_token_sha256"].get<std::string>();
+	}
+
+	//票据 uid 必须与请求 uid 一致，且票据签发给本服务器
+	auto self_name = ConfigMgr::Inst().GetValue("SelfServer", "Name");
+	if (t_uid != uid || t_server != self_name) {
+		rtvalue["error"] = ErrorCodes::TokenInvalid;
+		return;
+	}
+
+	//决定要绑定并回传的令牌（INITIAL 生成新令牌，RESUME 沿用原令牌）
+	std::string bound_token;
+
+	if (t_intent == 0) {
+		//INITIAL：生成新的可恢复令牌并写入 Redis
+		std::string token = security::GenerateSessionToken();
+		if (token.empty()) {
+			//RAND_bytes 失败，无法继续
+			rtvalue["error"] = ErrorCodes::RPCFailed;
+			return;
+		}
+		RedisMgr::GetInstance()->SetEx(
+			SESSION_TOKEN_V2_PREFIX + uid_str, SESSION_TOKEN_TTL, token);
+		bound_token = token;
+	}
+	else {
+		//RESUME：校验请求令牌与票据 SHA、Redis 存值三者一致，一致才续期（不轮换）
+		if (req_session_token.empty()) {
+			rtvalue["error"] = ErrorCodes::TokenInvalid;
+			return;
+		}
+		std::string req_sha = security::Sha256Hex(req_session_token);
+		std::string stored;
+		bool ok = RedisMgr::GetInstance()->Get(
+			SESSION_TOKEN_V2_PREFIX + uid_str, stored);
+		if (req_sha.empty() || !ok ||
+			!security::ConstantTimeEquals(t_token_sha, req_sha) ||
+			!security::ConstantTimeEquals(stored, req_session_token)) {
+			rtvalue["error"] = ErrorCodes::TokenInvalid;
+			return;
+		}
+		//令牌仍有效，刷新 TTL（异地覆盖会令 stored 变化，此处不匹配即不续期）
+		RedisMgr::GetInstance()->SetEx(
+			SESSION_TOKEN_V2_PREFIX + uid_str, SESSION_TOKEN_TTL, req_session_token);
+		bound_token = req_session_token;
+	}
+
+	//加载用户基础信息（两种 intent 共用，失败一律 UidInvalid 且不绑定）
 	std::string base_key = USER_BASE_INFO + uid_str;
 	auto user_info = std::make_shared<UserInfo>();
 	bool b_base = GetBaseInfo(base_key, uid, user_info);
@@ -244,15 +346,17 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 		rtvalue["error"] = ErrorCodes::UidInvalid;
 		return;
 	}
+
+	//构造响应：保留原有用户字段，但移除 pwd 与明文 token，改回 session_token
+	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["uid"] = uid;
-	rtvalue["pwd"] = user_info->pwd;
 	rtvalue["name"] = user_info->name;
 	rtvalue["email"] = user_info->email;
 	rtvalue["nick"] = user_info->nick;
 	rtvalue["desc"] = user_info->desc;
 	rtvalue["sex"] = user_info->sex;
 	rtvalue["icon"] = user_info->icon;
-	rtvalue["token"] = token;
+	rtvalue["session_token"] = bound_token;
 
 	//从数据库获取申请列表
 	std::vector<std::shared_ptr<ApplyInfo>> apply_list;
@@ -286,58 +390,52 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 		rtvalue["friend_list"].push_back(obj);
 	}
 
-	auto server_name = ConfigMgr::Inst().GetValue("SelfServer", "Name");
+	//分布式锁内执行踢人（仅 INITIAL）+ 绑定 session / 设置 uip_/usession_
 	{
-		//此处添加分布式锁，让该线程独占登录
-		//拼接用户ip对应的key
 		auto lock_key = LOCK_PREFIX + uid_str;
 		auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-		//利用defer解锁
 		Defer defer2([this, identifier, lock_key]() {
 			RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
 			});
-		//此处判断该用户是否在别处或者本服务器登录
+		if (identifier.empty()) {
+			//未能获取登录锁，fail closed 不绑定 session
+			rtvalue["error"] = ErrorCodes::RPCFailed;
+			return;
+		}
 
-		std::string uid_ip_value = "";
-		auto uid_ip_key = USERIPPREFIX + uid_str;
-		bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
-		//说明用户已经登录了，此处应该踢掉之前的用户登录状态
-		if (b_ip) {
-			//获取当前服务器ip信息
-			auto& cfg = ConfigMgr::Inst();
-			auto self_name = cfg["SelfServer"]["Name"];
-			//如果之前登录的服务器和当前相同，则直接在本服务器踢掉
-			if (uid_ip_value == self_name) {
-				//查找旧有的连接
-				auto old_session = UserMgr::GetInstance()->GetSession(uid);
-
-				//此处应该发送踢人消息
-				if (old_session) {
-					old_session->NotifyOffline(uid);
-					//清除旧的连接
-					_p_server->ClearSession(old_session->GetSessionId());
+		//INITIAL 需踢掉旧连接；RESUME 是同用户网络恢复，不触发踢人
+		if (t_intent == 0) {
+			std::string uid_ip_value = "";
+			auto uid_ip_key = USERIPPREFIX + uid_str;
+			bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
+			if (b_ip) {
+				if (uid_ip_value == self_name) {
+					//旧登录就在本服务器：直接发踢人帧并清除旧连接
+					auto old_session = UserMgr::GetInstance()->GetSession(uid);
+					if (old_session && old_session != session) {
+						old_session->NotifyOffline(uid);
+						_p_server->ClearSession(old_session->GetSessionId());
+					}
 				}
-
-			}
-			else {
-				//如果不是本服务器，则通知grpc通知其他服务器踢掉
-				//发送通知
-				KickUserReq kick_req;
-				kick_req.set_uid(uid);
-				ChatGrpcClient::GetInstance()->NotifyKickUser(uid_ip_value, kick_req);
+				else {
+					//旧登录在其它服务器：经 gRPC 通知踢人
+					KickUserReq kick_req;
+					kick_req.set_uid(uid);
+					ChatGrpcClient::GetInstance()->NotifyKickUser(uid_ip_value, kick_req);
+				}
 			}
 		}
 
-		//session绑定用户uid
+		//session 绑定用户 uid 与令牌
 		session->SetUserId(uid);
-		//为用户设置登录ip server的名字
+		session->SetSessionToken(bound_token);
+		//为用户设置登录 ip server 的名字
 		std::string  ipkey = USERIPPREFIX + uid_str;
-		RedisMgr::GetInstance()->Set(ipkey, server_name);
-		//uid和session绑定管理,方便以后踢人操作
+		RedisMgr::GetInstance()->Set(ipkey, self_name);
+		//uid 和 session 绑定管理,方便以后踢人操作
 		UserMgr::GetInstance()->SetUserSession(uid, session);
 		std::string  uid_session_key = USER_SESSION_PREFIX + uid_str;
 		RedisMgr::GetInstance()->Set(uid_session_key, session->GetSessionId());
-
 	}
 
 	return;
