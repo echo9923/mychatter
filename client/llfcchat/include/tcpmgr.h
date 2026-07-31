@@ -36,6 +36,31 @@ struct AckPending {
     qint64 next_send_epoch_ms; // 下次发送时刻（epoch ms）
 };
 
+//§6.2 纠错：跨线程 replay DTO（TCP 线程解析内存 pending 构造，queued 传到 GUI 线程）
+//禁止携带裸指针；仅含值类型字段。文本 pending 摘要
+struct TextReplayDTO {
+    int thread_id;
+    int fromuid;
+    QStringList unique_ids;   // 仍 pending 的 unique_id（与 contents 一一对应）
+    QStringList contents;     // 对应文本内容
+};
+//图片 pending 摘要
+struct ImageReplayDTO {
+    int thread_id;
+    int fromuid;              // sender
+    int touid;                // receiver
+    QString name;             // 文件唯一名（UserMgr::AddTransFile key）
+    QString md5;
+    qint64 content_size;
+    QString text_or_url;      // 本地文件路径
+    QString unique_id;
+};
+
+Q_DECLARE_METATYPE(TextReplayDTO)
+Q_DECLARE_METATYPE(ImageReplayDTO)
+Q_DECLARE_METATYPE(std::vector<TextReplayDTO>)
+Q_DECLARE_METATYPE(std::vector<ImageReplayDTO>)
+
 class TcpMgr:public QObject, public Singleton<TcpMgr>,
         public std::enable_shared_from_this<TcpMgr>
 {
@@ -46,7 +71,7 @@ public:
     void SendData(ReqId reqId, QByteArray data);
     //可靠发送：payload + unique_ids 进入持久 pending，按退避无限重传直到 1018/1036 或冲突（§6.1）
     void SendReliableChat(ReqId id, QByteArray payload, const QStringList& unique_ids);
-    //§6.2 纠错：仅 emit queued signal，TCP 线程 slot 在 GUI thread models 建好后执行 rebuild+重发
+    //§6.2 纠错：仅 emit queued signal，TCP 线程 slot 解析 pending→DTO→emit 给 GUI 线程重建
     void StartPendingReplay();
     //§6.6：仅 emit queued signal，TCP 线程 slot 启动离线 pull 循环
     void StartOfflinePull();
@@ -99,8 +124,6 @@ private:
     void removePendingByUniqueId(const QString& unique_id);
     void handleTextConflict(int thread_id, int fromuid, const QStringList& conflict_ids);
     void handleImageConflict(const QString& conflict_id);
-    bool rebuildImagePending(PendingRequest& req);
-    void rebuildTextPending(const PendingRequest& req);
     //§6.4 统一 envelope 分发（1019/1039/1052 共用）：文本走 sig_text_chat_msg，图片走 sig_img_chat_msg+下载
     void dispatchIncomingMessage(int message_id, const QString& unique_id,
         int thread_id, int fromuid, int touid, int msg_type,
@@ -117,6 +140,7 @@ public slots:
     void slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
     void slot_retry_timeout();
     void slot_start_pending_replay();
+    void slot_replay_done(QStringList failed_unique_ids);
     void slot_start_offline_pull();
     void slot_offline_pull_timeout();
     void slot_msg_processed(int message_id);
@@ -132,6 +156,10 @@ signals:
     void sig_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
     //§6.2：公有 StartPendingReplay 只 emit 此信号，slot_start_pending_replay 在 TCP 线程执行
     void sig_start_pending_replay();
+    //§6.2 纠错：TCP 线程解析 pending → DTO，queued 到 GUI 线程重建 bubble/MsgInfo/QPixmap
+    void sig_replay_pending(std::vector<TextReplayDTO> texts, std::vector<ImageReplayDTO> images);
+    //§6.2 纠错：GUI 重建完成后回执，queued 回 TCP 线程（failed_unique_ids=文件缺失需删除的项）
+    void sig_replay_result(QStringList failed_unique_ids);
     //§6.6：公有 StartOfflinePull 只 emit 此信号，slot_start_offline_pull 在 TCP 线程执行
     void sig_start_offline_pull();
     //§6.5：ChatDialog 插入/duplicate 后 emit，queued 回 TCP 线程触发 1049 ACK

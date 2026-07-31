@@ -150,6 +150,10 @@ ChatDialog::ChatDialog(QWidget* parent) :
 	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat_msg,
 		this, &ChatDialog::slot_text_chat_msg);
 
+	//§6.2 纠错：TCP 线程解析 pending DTO → GUI 线程重建 bubble/MsgInfo/QPixmap（queued）
+	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_replay_pending,
+		this, &ChatDialog::slot_replay_pending);
+
 	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_img_chat_msg,
 		this, &ChatDialog::slot_img_chat_msg);
 
@@ -339,6 +343,55 @@ void ChatDialog::slot_img_chat_msg(std::shared_ptr<ImgChatData> imgchat) {
 	emit TcpMgr::GetInstance()->sig_chat_msg_processed(msg_id);
 }
 
+//§6.2 纠错：GUI 线程重建未响应 bubble（文本）与 MsgInfo+QPixmap（图片）。
+//QPixmap 只能在 GUI 线程创建；ChatThreadData::_msg_unrsp_map 只能在 GUI 线程修改（GUI 可并发访问）。
+//完成后 emit sig_replay_result 回执给 TCP 线程，附带文件缺失的 unique_id 列表。
+void ChatDialog::slot_replay_pending(std::vector<TextReplayDTO> texts, std::vector<ImageReplayDTO> images)
+{
+	QStringList failed_unique_ids;
+
+	//文本：为每个 pending item 重建未响应 bubble（AppendUnRspMsg）
+	for (const auto& dto : texts) {
+		auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
+		if (!thread_data) {
+			//thread 尚未加载（重启后首次登录），1018 响应到达时由 MoveMsg/AddMsg 处理
+			continue;
+		}
+		for (int j = 0; j < dto.unique_ids.size(); ++j) {
+			const QString& unique_id = dto.unique_ids[j];
+			const QString& content = dto.contents[j];
+			auto txt_msg = std::make_shared<TextChatData>(unique_id, dto.thread_id,
+				ChatFormType::PRIVATE, ChatMsgType::TEXT, content, dto.fromuid, MsgStatus::UN_READ);
+			thread_data->AppendUnRspMsg(unique_id, txt_msg);
+		}
+	}
+
+	//图片：QFile::exists 判定本地文件缺失→标 SEND_FAILED，否则重建 MsgInfo + AddTransFile
+	for (const auto& dto : images) {
+		if (!QFile::exists(dto.text_or_url)) {
+			qWarning() << "[Delivery] Image file missing on restore, dropping pending:" << dto.text_or_url;
+			//创建占位 MsgInfo 标 SEND_FAILED（null QPixmap 在 GUI 线程安全构造）
+			auto file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, dto.text_or_url,
+				QPixmap(), dto.name, 0, dto.md5);
+			auto img_msg = std::make_shared<ImgChatData>(file_info, dto.unique_id, dto.thread_id,
+				ChatFormType::PRIVATE, ChatMsgType::PIC, dto.fromuid, MsgStatus::SEND_FAILED);
+			//已在 GUI 线程，直接调用 slot_add_img_msg（MoveMsg→AddMsg 添加 SEND_FAILED bubble）
+			slot_add_img_msg(dto.thread_id, img_msg);
+			failed_unique_ids.append(dto.unique_id);
+			continue;
+		}
+		//重建 MsgInfo 并加入 UserMgr（否则 1036 handler 找不到 GetTransFileByName）
+		QPixmap pixmap(dto.text_or_url);
+			auto file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, dto.text_or_url,
+			pixmap, dto.name, dto.content_size, dto.md5);
+		file_info->_transfer_type = TransferType::Upload;
+		file_info->_transfer_state = TransferState::None;
+		UserMgr::GetInstance()->AddTransFile(dto.name, file_info);
+	}
+
+	//回执：告诉 TCP 线程哪些项失败了（需删除 pending）
+	emit TcpMgr::GetInstance()->sig_replay_result(failed_unique_ids);
+}
 
 bool ChatDialog::eventFilter(QObject* watched, QEvent* event)
 {
