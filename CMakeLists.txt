@@ -29,5 +29,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# CTest is required so tests/CMakeLists.txt can register add_test() entries.
+# Configured before add_subdirectory(tests) so enable_testing() is in scope.
+include(CTest)
+
+# Integration tests require live Redis + MySQL and spawned server processes;
+# off by default so the full-suite build never fails for missing externals.
+# worker_pool_tests is always registered regardless of this option.
+option(LLFC_RUN_INTEGRATION_TESTS "Enable integration tests requiring live Redis/MySQL and spawned server processes" OFF)
+
 add_subdirectory(server)
 add_subdirectory(client/llfcchat)
+add_subdirectory(tests)
