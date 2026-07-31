@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: Season_2
 nodes_managed: true
-exported_at: "2026-07-30T12:34:11Z"
+exported_at: "2026-07-31T03:03:15Z"
 modules:
     "":
-        dir_name: llfcchat 项目根配置与构建系统
-        title: llfcchat 项目根配置与构建系统
+        dir_name: llfcchat 项目根（CMake + vcpkg 构建编排）
+        title: llfcchat 项目根（CMake + vcpkg 构建编排）
         scope:
             - .gitignore
             - AGENTS.md
@@ -18,6 +18,40 @@ modules:
             - vcpkg.json
             - 更新记录.md
             - 第三季待做事件.md
+        source_files: []
+        children:
+            - tests
+        depends_on: []
+        related_to: []
+    tests:
+        dir_name: IM 测试套件（单元测试 + 集成测试）
+        title: IM 测试套件（单元测试 + 集成测试）
+        scope:
+            - tests/CMakeLists.txt
+            - tests/worker_pool_tests.cpp
+        source_files: []
+        children:
+            - tests/integration
+        depends_on: []
+        related_to: []
+    tests/integration:
+        dir_name: IM 系统集成测试框架
+        title: IM 系统集成测试框架
+        scope:
+            - tests/integration/im_common.h
+            - tests/integration/im_frame.h
+            - tests/integration/im_harness.cpp
+            - tests/integration/im_harness.h
+            - tests/integration/im_http_client.cpp
+            - tests/integration/im_http_client.h
+            - tests/integration/im_mysql.cpp
+            - tests/integration/im_mysql.h
+            - tests/integration/im_redis.cpp
+            - tests/integration/im_redis.h
+            - tests/integration/im_scenarios.cpp
+            - tests/integration/im_scenarios.h
+            - tests/integration/im_tcp_client.cpp
+            - tests/integration/im_tcp_client.h
         source_files: []
         children: []
         depends_on: []

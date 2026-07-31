@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: ""
-title: llfcchat 项目根配置与构建系统
+title: llfcchat 项目根（CMake + vcpkg 构建编排）
 scope:
     - .gitignore
     - AGENTS.md

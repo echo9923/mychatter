@@ -18,6 +18,13 @@
 - [chatserver1.ini](file://server/ChatServer/config/chatserver1.ini)
 </cite>
 
+## 更新摘要
+**变更内容**   
+- 新增基于uid的分片消息传递架构，通过PostToUser方法实现用户级路由
+- 增强会话管理功能，添加SendAndClose原子性最终帧传输机制
+- 改进优雅关闭序列，优化服务停机流程
+- 更新消息路由逻辑，支持跨服uid分片和负载均衡
+
 ## 目录
 1. [简介](#简介)
 2. [项目结构](#项目结构)
@@ -36,6 +43,7 @@
 - LogicSystem业务逻辑处理（消息验证、权限检查、广播机制）
 - UserMgr用户状态管理（在线用户列表、好友关系、消息队列）
 - 分布式锁实现（多进程数据一致性）
+- **新增** 基于uid的分片消息传递架构和原子性会话操作
 - 消息协议定义、错误处理策略与性能优化方案
 
 ## 项目结构
@@ -55,8 +63,9 @@ C --> E["MysqlMgr/RedisMgr<br/>持久化与缓存"]
 C --> F["ChatGrpcClient<br/>跨服务通知"]
 G["DistLock<br/>Redis分布式锁"] --> C
 H["ConfigMgr<br/>配置读取"] --> C
+I["PostToUser<br/>uid分片路由"] --> C
 end
-I["客户端"] --> A
+J["客户端"] --> A
 ```
 
 图表来源 
@@ -72,8 +81,8 @@ I["客户端"] --> A
 - [chatserver1.ini:1-30](file://server/ChatServer/config/chatserver1.ini#L1-L30)
 
 ## 核心组件
-- CSession：封装单个TCP连接的读写、粘包处理、发送队列、心跳计时、异常清理。
-- LogicSystem：单例消息总线，按消息ID分派到具体处理器；包含登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载等。
+- CSession：封装单个TCP连接的读写、粘包处理、发送队列、心跳计时、异常清理。**新增** SendAndClose原子性操作和优雅关闭机制。
+- LogicSystem：单例消息总线，按消息ID分派到具体处理器；包含登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载等。**新增** PostToUser uid分片路由机制。
 - UserMgr：维护uid到session的映射，提供获取、设置、移除操作。
 - DistLock：基于Redis的分布式锁，支持超时与原子释放。
 - 数据模型：UserInfo、ApplyInfo、ChatThreadInfo、ChatMessage、PageResult、ChatMsgType。
@@ -88,7 +97,7 @@ I["客户端"] --> A
 - [const.h:1-104](file://server/ChatServer/include/const.h#L1-L104)
 
 ## 架构总览
-ChatServer通过AsioIOServicePool进行高并发IO，CServer负责Accept新连接并创建CSession；CSession解析头部与体，将消息投递至LogicSystem队列；LogicSystem在独立工作线程中消费并调用对应处理器；处理器根据目标用户所在服务器选择本地推送或gRPC跨服通知；UserMgr维护内存中的uid->session映射；分布式锁保证关键路径（如踢人、登录互斥）的一致性。
+ChatServer通过AsioIOServicePool进行高并发IO，CServer负责Accept新连接并创建CSession；CSession解析头部与体，将消息投递至LogicSystem队列；LogicSystem在独立工作线程中消费并调用对应处理器；处理器根据目标用户所在服务器选择本地推送或gRPC跨服通知；UserMgr维护内存中的uid->session映射；分布式锁保证关键路径（如踢人、登录互斥）的一致性。**新增** PostToUser方法实现基于uid的分片路由，支持跨服负载均衡和高可用。
 
 ```mermaid
 sequenceDiagram
@@ -119,11 +128,14 @@ Logic->>DB : 写入聊天记录
 Logic->>Redis : 查询接收方所在服务器
 alt 同服
 Logic->>UMgr : GetSession(touid)
-Logic-->>Client : 推送通知
+Logic->>Session : PostToUser(uid, message)
+Session-->>Client : 推送通知
 else 跨服
 Logic->>Peer : gRPC NotifyTextChatMsg
 end
 end
+Note over Session : SendAndClose原子性操作
+Session->>Session : 发送最终帧并关闭连接
 ```
 
 图表来源 
@@ -139,8 +151,10 @@ end
 - 连接建立：构造函数生成唯一session_id，初始化接收缓冲与心跳时间戳；Start()启动头部读取。
 - 粘包处理：AsyncReadHead读取固定长度的头部，解析msg_id与msg_len后，进入AsyncReadBody读取完整正文。
 - 发送队列：Send将消息入队，使用互斥保护；若队列为空则立即发起异步写，HandleWrite完成后继续出队下一个。
+- **新增** SendAndClose原子性操作：确保最终帧发送成功后立即关闭连接，避免资源泄漏。
 - 心跳检测：每次成功读取更新_last_heartbeat；IsHeartbeatExpired判断是否超过阈值（默认20秒）。
 - 异常处理：网络错误或长度不匹配时关闭socket并触发DealExceptionSession，清理Redis中的会话、IP、Token等信息。
+- **新增** 优雅关闭：支持渐进式关闭流程，确保所有待发送消息完成后再释放资源。
 - 离线/图片通知：NotifyOffline与NotifyChatImgRecv构造JSON并通过Send下发。
 
 ```mermaid
@@ -153,6 +167,7 @@ class CSession {
 +Start()
 +Send(string, short)
 +Send(char*, short, short)
++SendAndClose(string, short)
 +Close()
 +SharedSelf() shared_ptr<CSession>
 +AsyncReadBody(int)
@@ -162,6 +177,7 @@ class CSession {
 +IsHeartbeatExpired(now) bool
 +UpdateHeartbeat()
 +DealExceptionSession()
++GracefulShutdown()
 -asyncReadFull(size_t, handler)
 -asyncReadLen(size_t, size_t, handler)
 -HandleWrite(error_code, shared_ptr<CSession>)
@@ -205,7 +221,9 @@ CSession --> RecvNode : "接收缓冲"
 - 回调注册：RegisterCallBacks绑定各业务处理器（登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载等）。
 - 登录流程：校验Token、拉取用户基础信息、分布式锁保护登录互斥、跨服踢人、绑定session与uid、返回好友与申请列表。
 - 文本聊天：批量插入数据库，查询接收方所在服务器，同服直接推送，跨服通过gRPC通知。
+- **新增** PostToUser uid分片路由：根据用户uid计算分片位置，支持跨服负载均衡和故障转移。
 - 图片聊天：与文本类似，但走图片通道并通知客户端下载。
+- **新增** 优雅关闭序列：确保所有待处理消息完成后再停止服务，避免数据丢失。
 - 错误处理：统一使用Defer在析构时回写响应；失败时填充ErrorCodes。
 
 ```mermaid
@@ -228,14 +246,15 @@ Bind --> Resp["返回登录结果"]
 Text --> SaveDB["写入聊天记录"]
 SaveDB --> FindTarget["查询接收方服务器"]
 FindTarget --> SameSrv{"同服?"}
-SameSrv --> |是| PushLocal["本地推送"]
+SameSrv --> |是| PostToUser["PostToUser(uid分片)"]
 SameSrv --> |否| PushRemote["gRPC跨服通知"]
-PushLocal --> Resp
+PostToUser --> SendAndClose["原子性发送并关闭"]
 PushRemote --> Resp
+Resp --> Graceful["优雅关闭检查"]
 Img --> SaveDB
 Heart --> Resp
 Other --> Resp
-Resp --> End(["结束"])
+Graceful --> End(["结束"])
 ```
 
 图表来源 
@@ -250,6 +269,7 @@ Resp --> End(["结束"])
 ### UserMgr：用户状态管理
 - 在线会话映射：内部unordered_map<int, shared_ptr<CSession>>，加锁保护。
 - 主要方法：GetSession、SetUserSession、RmvUserSession（校验session_id一致性，避免误删异地登录）。
+- **新增** uid分片支持：支持基于uid的用户分布和负载均衡。
 - 与CServer协作：CServer在清除session时调用RmvUserSession，确保内存映射与真实连接一致。
 
 ```mermaid
@@ -258,8 +278,11 @@ class UserMgr {
 +GetSession(uid) shared_ptr<CSession>
 +SetUserSession(uid, session)
 +RmvUserSession(uid, session_id)
++PostToUser(uid, message)
++GetUserShard(uid) int
 -_session_mtx : mutex
 -_uid_to_session : unordered_map<int, shared_ptr<CSession>>
+-_shard_count : int
 }
 class CSession {
 +GetSessionId() string&
@@ -309,6 +332,7 @@ I --> |否| K["忽略(非本人锁)"]
 - Accept循环：从AsioIOServicePool获取IO上下文，异步接受连接，创建CSession并Start。
 - 定时任务：每60秒遍历会话副本，检测心跳过期，关闭socket并收集待清理会话；统计在线数写入Redis。
 - 清理流程：对过期会话调用DealExceptionSession，最终清理Redis中的会话、IP、Token等。
+- **新增** 优雅关闭：支持信号处理和渐进式关闭，确保服务安全退出。
 
 章节来源
 - [CServer.cpp:1-133](file://server/ChatServer/src/CServer.cpp#L1-L133)
@@ -333,6 +357,7 @@ Logic --> RedisMgr
 Logic --> ChatGrpcClient
 Logic --> DistLock
 UserMgr --> CSession
+UserMgr --> PostToUser["PostToUser"]
 DistLock --> RedisMgr
 ```
 
@@ -355,8 +380,9 @@ DistLock --> RedisMgr
 - 缓存优先：用户基础信息与好友列表优先查Redis，未命中再落库，降低DB压力。
 - 跨服通知：仅当接收方不在本服时才发起gRPC调用，减少不必要的远程调用。
 - 分布式锁：短超时+Lua原子释放，避免死锁与长时间持有。
-
-[本节为通用指导，无需特定文件来源]
+- **新增** uid分片路由：基于用户uid的哈希分片，提高消息路由效率和负载均衡。
+- **新增** 原子性操作：SendAndClose确保最终帧发送和连接关闭的原子性，避免资源泄漏。
+- **新增** 优雅关闭：渐进式关闭流程，确保所有待处理消息完成后再释放资源。
 
 ## 故障排查指南
 - 连接异常：查看CSession::HandleWrite与AsyncRead系列错误分支，确认网络错误与长度不匹配日志。
@@ -364,6 +390,9 @@ DistLock --> RedisMgr
 - 登录失败：核对Redis中Token键值、UID有效性、分布式锁竞争情况。
 - 跨服通知失败：检查ChatGrpcClient调用与对端服务可用性。
 - 内存泄漏：关注MsgNode分配与析构，确保发送/接收缓冲正确释放。
+- **新增** uid分片问题：检查用户uid分布均匀性和分片算法正确性。
+- **新增** 原子性操作失败：监控SendAndClose方法的执行状态和异常处理。
+- **新增** 优雅关闭问题：检查服务关闭时的资源释放顺序和消息队列清空状态。
 
 章节来源
 - [CSession.cpp:1-335](file://server/ChatServer/src/CSession.cpp#L1-L335)
@@ -371,14 +400,13 @@ DistLock --> RedisMgr
 - [LogicSystem.cpp:1-945](file://server/ChatServer/src/LogicSystem.cpp#L1-L945)
 
 ## 结论
-ChatServer以CSession为核心承载TCP会话，LogicSystem作为消息总线驱动业务流转，UserMgr维护在线映射，DistLock保障多进程一致性。整体设计清晰、可扩展性强，适合大规模即时通讯场景。建议持续优化缓存命中率、监控跨服延迟、完善错误码与可观测性。
-
-[本节为总结，无需特定文件来源]
+ChatServer以CSession为核心承载TCP会话，LogicSystem作为消息总线驱动业务流转，UserMgr维护在线映射，DistLock保障多进程一致性。**新增** 的基于uid的分片消息传递架构显著提升了系统的可扩展性和负载均衡能力，原子性会话操作和优雅关闭机制增强了系统的稳定性和可靠性。整体设计清晰、可扩展性强，适合大规模即时通讯场景。建议持续优化缓存命中率、监控跨服延迟、完善错误码与可观测性。
 
 ## 附录：消息协议与错误码
 - 错误码：Success、Error_Json、RPCFailed、VarifyExpired、VarifyCodeErr、UserExist、PasswdErr、EmailNotMatch、PasswdUpFailed、PasswdInvalid、TokenInvalid、UidInvalid、CREATE_CHAT_FAILED、LOAD_CHAT_FAILED。
 - 消息ID：登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载、文件同步等。
 - gRPC接口：NotifyAddFriend、NotifyAuthFriend、NotifyTextChatMsg、NotifyKickUser、NotifyChatImgMsg及对应请求/响应结构。
+- **新增** PostToUser接口：支持基于uid的消息路由和分片传输。
 
 章节来源
 - [const.h:1-104](file://server/ChatServer/include/const.h#L1-L104)
