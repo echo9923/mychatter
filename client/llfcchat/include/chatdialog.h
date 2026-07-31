@@ -11,6 +11,7 @@
 #include "userdata.h"
 #include <QListWidgetItem>
 #include "loadingdlg.h"
+#include "tcpmgr.h"
 namespace Ui {
 class ChatDialog;
 }
@@ -76,6 +77,8 @@ public slots:
     void slot_item_clicked(QListWidgetItem *item);
     void slot_text_chat_msg(std::vector<std::shared_ptr<TextChatData>> msglists);
     void slot_img_chat_msg(std::shared_ptr<ImgChatData> imgchat);
+    //§6.2 纠错：TCP 线程解析 pending DTO → GUI 线程重建未响应 bubble（文本）与 MsgInfo+QPixmap（图片）
+    void slot_replay_pending(std::vector<TextReplayDTO> texts, std::vector<ImageReplayDTO> images);
     void slot_load_chat_thread(bool load_more, int last_thread_id,
         std::vector<std::shared_ptr<ChatThreadInfo>> chat_threads);
 

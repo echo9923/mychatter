@@ -149,6 +149,8 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
         connect(this, &TcpMgr::sig_send_reliable_chat, this, &TcpMgr::slot_send_reliable_chat);
         //§6.2：StartPendingReplay 公有 API → TCP 线程 slot（GUI thread models 建好后执行）
         connect(this, &TcpMgr::sig_start_pending_replay, this, &TcpMgr::slot_start_pending_replay);
+        //§6.2 纠错：GUI 重建回执 → TCP 线程清理失效项 + 重发 + 定时器
+        connect(this, &TcpMgr::sig_replay_result, this, &TcpMgr::slot_replay_done);
         //§6.5：ChatDialog 插入/duplicate 后 emit → queued 回 TCP 线程触发 1049
         connect(this, &TcpMgr::sig_chat_msg_processed, this, &TcpMgr::slot_msg_processed);
         //§6.6：StartOfflinePull 公有 API → TCP 线程 slot
@@ -194,6 +196,12 @@ void TcpMgr::registerMetaType() {
     qRegisterMetaType<ReqId>("ReqId");
     qRegisterMetaType<std::shared_ptr<ImgChatData>>("std::shared_ptr<ImgChatData>");
     qRegisterMetaType<std::vector<std::shared_ptr<ChatDataBase>>>("std::vector<std::shared_ptr<ChatDataBase>>");
+
+    //§6.2 纠错：跨线程 replay DTO 元类型注册
+    qRegisterMetaType<TextReplayDTO>("TextReplayDTO");
+    qRegisterMetaType<ImageReplayDTO>("ImageReplayDTO");
+    qRegisterMetaType<std::vector<TextReplayDTO>>("std::vector<TextReplayDTO>");
+    qRegisterMetaType<std::vector<ImageReplayDTO>>("std::vector<ImageReplayDTO>");
 }
 
 void TcpMgr::CloseConnection(){
@@ -1592,59 +1600,58 @@ void TcpMgr::loadPendingFromDisk(int uid)
 
 void TcpMgr::slot_start_pending_replay()
 {
-    //§6.2：此时 GUI thread models（ChatThreadData）已由 slot_load_chat_thread 建好。
-    //先 rebuild 内存状态（bubble/MsgInfo），再逐条重发并启动扫描定时器。
+    //§6.2 纠错：TCP 线程只做解析 → DTO → emit（不在 TCP 线程触碰 ChatThreadData/_msg_unrsp_map
+    //或 QPixmap，前者 GUI 可并发访问，后者只能 GUI 线程创建）。
+    //GUI 线程收到 sig_replay_pending 后重建 bubble/MsgInfo/QPixmap，再 emit sig_replay_result 回执。
+    //回执到达 slot_replay_done 后才删除失效项、persistPendingRequests、重发保留项 + 启动扫描定时器。
 
-    //§6.5：同时恢复 ACK pending（随重启恢复，同一点触发）
+    //§6.5：同时恢复 ACK pending（随重启恢复，同一点触发；纯 message_id 状态，无 GUI 对象）
     if (_delivery_uid != 0 && _pending_ack.isEmpty()) {
         loadAckPendingFromDisk(_delivery_uid);
     }
 
-    if (!_pending_requests.isEmpty()) {
-        QList<PendingRequest> restored;
-        for (int i = 0; i < _pending_requests.size(); ++i) {
-            PendingRequest& req = _pending_requests[i];
-            //恢复前重建内存状态
-            if (req.id == ID_TEXT_CHAT_MSG_REQ) {
-                rebuildTextPending(req);
-                restored.append(req);
-            } else if (req.id == ID_IMG_CHAT_MSG_REQ) {
-                if (rebuildImagePending(req)) {
-                    restored.append(req);
-                }
-                // rebuildImagePending 返回 false 时已删除 pending 并标 SEND_FAILED
-            }
-        }
-
-        _pending_requests = restored;
-
-        if (!_pending_requests.isEmpty()) {
-            //立即重发所有恢复的请求
-            qint64 now = QDateTime::currentMSecsSinceEpoch();
-            for (int i = 0; i < _pending_requests.size(); ++i) {
-                PendingRequest& req = _pending_requests[i];
-                if (_socket.state() == QAbstractSocket::ConnectedState) {
-                    slot_send_data(req.id, req.payload);
-                    req.next_send_epoch_ms = now + _retry_initial_ms;
+    //解析 sender pending → 跨线程 DTO
+    std::vector<TextReplayDTO> texts;
+    std::vector<ImageReplayDTO> images;
+    for (int i = 0; i < _pending_requests.size(); ++i) {
+        const PendingRequest& req = _pending_requests[i];
+        QJsonDocument doc = QJsonDocument::fromJson(req.payload);
+        QJsonObject obj = doc.object();
+        if (req.id == ID_TEXT_CHAT_MSG_REQ) {
+            TextReplayDTO dto;
+            dto.thread_id = obj["thread_id"].toInt();
+            dto.fromuid = obj["fromuid"].toInt();
+            QJsonArray arr = obj["text_array"].toArray();
+            for (int j = 0; j < arr.size(); ++j) {
+                QJsonObject item = arr.at(j).toObject();
+                QString uid = item["unique_id"].toString();
+                if (req.unique_ids.contains(uid)) {
+                    dto.unique_ids.append(uid);
+                    dto.contents.append(item["content"].toString());
                 }
             }
-            //持久化（可能因文件缺失删除了部分）
-            persistPendingRequests();
-        } else {
-            persistPendingRequests(); //清除已失效的持久记录
+            if (!dto.unique_ids.isEmpty()) {
+                texts.push_back(dto);
+            }
+        } else if (req.id == ID_IMG_CHAT_MSG_REQ) {
+            ImageReplayDTO dto;
+            dto.thread_id = obj["thread_id"].toInt();
+            dto.fromuid = obj["fromuid"].toInt();
+            dto.touid = obj["touid"].toInt();
+            dto.name = obj["name"].toString();
+            dto.md5 = obj["md5"].toString();
+            dto.text_or_url = obj["text_or_url"].toString();
+            dto.content_size = 0;
+            if (obj.contains("content_size")) {
+                dto.content_size = obj["content_size"].toString().toLongLong();
+            }
+            dto.unique_id = req.unique_ids.isEmpty() ? QString() : req.unique_ids.first();
+            images.push_back(dto);
         }
     }
 
-    //§6.5：重发恢复的 ACK
-    if (!_pending_ack.isEmpty()) {
-        flushPendingAcks();
-    }
-
-    //启动定时器（sender pending 或 ACK pending 任一非空）
-    if (!_retry_timer->isActive() && _socket.state() == QAbstractSocket::ConnectedState
-        && (!_pending_requests.isEmpty() || !_pending_ack.isEmpty())) {
-        _retry_timer->start();
-    }
+    //总是 emit（即使两个列表都为空，GUI 仍会回执以便 TCP 完成 ACK flush + 定时器启动）
+    emit sig_replay_pending(texts, images);
 }
 
 void TcpMgr::removePendingByUniqueId(const QString& unique_id)
@@ -1782,77 +1789,36 @@ void TcpMgr::handleImageConflict(const QString& conflict_id)
     persistPendingRequests();
 }
 
-bool TcpMgr::rebuildImagePending(PendingRequest& req)
+//§6.2 纠错：GUI 重建完成回执（queued 回 TCP 线程）。
+//删除文件缺失的失效项、persistPendingRequests、重发保留项 + 启动 250ms 扫描定时器。
+//ACK pending 恢复已在 slot_start_pending_replay 加载，此处 flush + 启动定时器。
+void TcpMgr::slot_replay_done(QStringList failed_unique_ids)
 {
-    QJsonDocument doc = QJsonDocument::fromJson(req.payload);
-    QJsonObject obj = doc.object();
-
-    QString file_path = obj["text_or_url"].toString();
-    QString name = obj["name"].toString();
-    QString md5 = obj["md5"].toString();
-
-    //content_size 为十进制字符串（§5.3）
-    qint64 total_size = 0;
-    if (obj.contains("content_size")) {
-        total_size = obj["content_size"].toString().toLongLong();
+    //删除失效项（GUI 已标 SEND_FAILED）
+    for (int i = 0; i < failed_unique_ids.size(); ++i) {
+        removePendingByUniqueId(failed_unique_ids[i]);
     }
+    persistPendingRequests();
 
-    int thread_id = obj["thread_id"].toInt();
-    int fromuid = obj["fromuid"].toInt();
-    QString unique_id;
-    if (!req.unique_ids.isEmpty()) {
-        unique_id = req.unique_ids.first();
-    }
-
-    //检查本地文件是否存在
-    if (!QFile::exists(file_path)) {
-        qWarning() << "[Delivery] Image file missing on restore, dropping pending:" << file_path;
-        //创建占位 MsgInfo 标 SEND_FAILED
-        auto file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, file_path,
-            QPixmap(), name, 0, md5);
-        auto img_msg = std::make_shared<ImgChatData>(file_info, unique_id, thread_id,
-            ChatFormType::PRIVATE, ChatMsgType::PIC, fromuid, MsgStatus::SEND_FAILED);
-        emit sig_chat_img_rsp(thread_id, img_msg);
-        return false;
-    }
-
-    //重建 MsgInfo 并加入 UserMgr（否则 1036 handler 找不到 GetTransFileByName）
-    QPixmap pixmap(file_path);
-    auto file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, file_path,
-        pixmap, name, total_size, md5);
-    file_info->_transfer_type = TransferType::Upload;
-    file_info->_transfer_state = TransferState::None;
-    UserMgr::GetInstance()->AddTransFile(name, file_info);
-
-    return true;
-}
-
-void TcpMgr::rebuildTextPending(const PendingRequest& req)
-{
-    QJsonDocument doc = QJsonDocument::fromJson(req.payload);
-    QJsonObject obj = doc.object();
-
-    int thread_id = obj["thread_id"].toInt();
-    int fromuid = obj["fromuid"].toInt();
-
-    auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-    if (!thread_data) {
-        //thread 尚未加载（重启后首次登录），1018 响应到达时由 MoveMsg/UpdateChatStatus 处理
-        return;
-    }
-
-    QJsonArray text_arr = obj["text_array"].toArray();
-    for (int j = 0; j < text_arr.size(); ++j) {
-        QJsonObject item = text_arr.at(j).toObject();
-        QString unique_id = item["unique_id"].toString();
-        //只为仍在 pending 列表中的 item 重建 bubble
-        if (!req.unique_ids.contains(unique_id)) {
-            continue;
+    //重发所有保留的 sender pending（GUI 已重建 bubble/MsgInfo，可安全重发）
+    if (_socket.state() == QAbstractSocket::ConnectedState) {
+        qint64 now = QDateTime::currentMSecsSinceEpoch();
+        for (int i = 0; i < _pending_requests.size(); ++i) {
+            PendingRequest& req = _pending_requests[i];
+            slot_send_data(req.id, req.payload);
+            req.next_send_epoch_ms = now + _retry_initial_ms;
         }
-        QString content = item["content"].toString();
-        auto txt_msg = std::make_shared<TextChatData>(unique_id, thread_id,
-            ChatFormType::PRIVATE, ChatMsgType::TEXT, content, fromuid, MsgStatus::UN_READ);
-        thread_data->AppendUnRspMsg(unique_id, txt_msg);
+    }
+
+    //§6.5：重发恢复的 ACK pending
+    if (!_pending_ack.isEmpty()) {
+        flushPendingAcks();
+    }
+
+    //启动定时器（sender pending 或 ACK pending 任一非空）
+    if (!_retry_timer->isActive() && _socket.state() == QAbstractSocket::ConnectedState
+        && (!_pending_requests.isEmpty() || !_pending_ack.isEmpty())) {
+        _retry_timer->start();
     }
 }
 
