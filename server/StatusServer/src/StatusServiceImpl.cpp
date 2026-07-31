@@ -167,11 +167,3 @@ ChatServer StatusServiceImpl::getChatServer() {
 	}
 	return best;
 }
-
-Status StatusServiceImpl::Login(ServerContext* context, const LoginReq* request, LoginRsp* reply)
-{
-	// v2 认证迁移后旧 utoken_ 存储已被清除且不再写入；此 Login RPC 为遗留死路径
-	//（计划 3.3 整体删除），任何调用一律 fail closed，绝不回查已废弃的旧令牌存储。
-	reply->set_error(ErrorCodes::TokenInvalid);
-	return Status::OK;
-}

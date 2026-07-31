@@ -5,7 +5,6 @@ package message;
 // StatusServer 实现，GateServer 作为客户端调用（mTLS）
 service StatusService {
   rpc GetChatServer (GetChatServerReq) returns (GetChatServerRsp) {}
-  rpc Login (LoginReq) returns (LoginRsp) {}
 }
 
 // 票据意图：INITIAL = 密码验证后的首次登录；RESUME = 持有效 session token 的恢复登录
@@ -28,15 +27,4 @@ message GetChatServerRsp {
   string port = 4;
   // 一次性 chat 票据（60s TTL，ChatServer 原子消费）
   string chat_ticket = 5;
-}
-
-message LoginReq {
-  int32 uid = 1;
-  string token = 2;
-}
-
-message LoginRsp {
-  int32 error = 1;
-  int32 uid = 2;
-  string token = 3;
 }

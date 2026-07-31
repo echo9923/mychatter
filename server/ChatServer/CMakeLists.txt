@@ -49,7 +49,6 @@ add_executable(ChatServer
   src/MysqlDao.cpp
   src/MysqlMgr.cpp
   src/RedisMgr.cpp
-  src/StatusGrpcClient.cpp
   src/UserMgr.cpp
   src/utils.cpp
   include/AsioIOServicePool.h
@@ -68,7 +67,6 @@ add_executable(ChatServer
   include/MysqlMgr.h
   include/RedisMgr.h
   include/Singleton.h
-  include/StatusGrpcClient.h
   include/UserMgr.h
   include/utils.h
 )
