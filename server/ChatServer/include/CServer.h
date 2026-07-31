@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <boost/asio.hpp>
 #include "CSession.h"
 #include <memory.h>
@@ -62,6 +62,9 @@ public:
 	/// 停止心跳定时器
 	void StopTimer();
 
+	void StartHeartbeat();
+	void StopHeartbeat();
+
 private:
 	/**
 	 * @brief 处理新连接接受完成的回调
@@ -69,6 +72,8 @@ private:
 	 * @param error 接受操作的错误码
 	 */
 	void HandleAccept(shared_ptr<CSession>, const boost::system::error_code & error);
+
+	void on_heartbeat(const boost::system::error_code& ec);
 
 	/// 发起下一次异步接受连接操作
 	void StartAccept();
@@ -85,5 +90,6 @@ private:
 	std::mutex _mutex;
 	/// 稳态定时器，用于执行周期性任务（心跳检测、超时断开等）
 	boost::asio::steady_timer _timer;
+	boost::asio::steady_timer _heartbeat_timer;
 };
 

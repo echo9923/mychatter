@@ -163,6 +163,12 @@ inline short ReqToRspId(short req_id) {
 #define LOCK_TIME_OUT 10
 /// 分布式锁的获取重试超时时间（秒），超过此时间未获取到锁则放弃
 #define ACQUIRE_TIME_OUT 5
+/// Redis中ChatServer节点注册信息的Hash键名，field为节点名，value为JSON
+#define CHATSERVER_INFO_KEY         "chatserver:info"
+/// Redis中ChatServer心跳键前缀，完整键为 "chatserver:heartbeat:" + 节点名
+#define CHATSERVER_HEARTBEAT_PREFIX "chatserver:heartbeat:"
+/// 心跳TTL（秒），心跳间隔10秒，TTL为间隔的3倍
+#define HEARTBEAT_TTL_SECONDS       30
 
 /**
  * @brief 聊天消息状态枚举

@@ -1,12 +1,14 @@
-﻿#include "CServer.h"
+#include "CServer.h"
 #include <iostream>
+#include <ctime>
 #include "AsioIOServicePool.h"
 #include "UserMgr.h"
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
 
 CServer::CServer(boost::asio::io_context& io_context, short port):_io_context(io_context), _port(port),
-_acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _timer(_io_context, std::chrono::seconds(60))
+_acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _timer(_io_context, std::chrono::seconds(60)),
+_heartbeat_timer(_io_context, std::chrono::seconds(10))
 {
 	cout << "Server start success, listen on port : " << _port << endl;
 
@@ -126,7 +128,38 @@ void CServer::StartTimer()
 		});
 }
 
+void CServer::StartHeartbeat()
+{
+	auto self(shared_from_this());
+	_heartbeat_timer.async_wait([self](boost::system::error_code ec) {
+		self->on_heartbeat(ec);
+		});
+}
+
+void CServer::StopHeartbeat()
+{
+	_heartbeat_timer.cancel();
+}
+
+void CServer::on_heartbeat(const boost::system::error_code& ec) {
+	if (ec) {
+		return;
+	}
+	auto& cfg = ConfigMgr::Inst();
+	auto self_name = cfg["SelfServer"]["Name"];
+	std::string hb_key = CHATSERVER_HEARTBEAT_PREFIX + self_name;
+	auto now = std::to_string(std::time(nullptr));
+	RedisMgr::GetInstance()->SetWithExpire(hb_key, now, HEARTBEAT_TTL_SECONDS);
+
+	_heartbeat_timer.expires_after(std::chrono::seconds(10));
+	auto self(shared_from_this());
+	_heartbeat_timer.async_wait([self](boost::system::error_code ec) {
+		self->on_heartbeat(ec);
+		});
+}
+
 void CServer::StopTimer()
 {
 	_timer.cancel();
+	_heartbeat_timer.cancel();
 }

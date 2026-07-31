@@ -280,6 +280,7 @@ public:
 	bool HDel(const std::string& key, const std::string& field);
 	bool Del(const std::string &key);
 	bool ExistsKey(const std::string &key);
+	bool HGetAll(const std::string& key, std::unordered_map<std::string, std::string>& result);
 	void Close() {
 		_con_pool->Close();
 		_con_pool->ClearConnections();

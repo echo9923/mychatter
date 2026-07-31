@@ -1,4 +1,4 @@
-﻿#include "RedisMgr.h"
+#include "RedisMgr.h"
 #include "const.h"
 #include "ConfigMgr.h"
 #include "DistLock.h"
@@ -424,6 +424,33 @@ bool RedisMgr::releaseLock(const std::string& lockName,
 		});
 
 	return DistLock::Inst().releaseLock(connect, lockName, identifier);
+}
+
+bool RedisMgr::HGetAll(const std::string& key, std::unordered_map<std::string, std::string>& result) {
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) {
+		return false;
+	}
+	auto reply = (redisReply*)redisCommand(connect, "HGETALL %s", key.c_str());
+	if (reply == nullptr) {
+		std::cout << "Execute command [ HGETALL " << key << " ] failure!" << std::endl;
+		_con_pool->returnConnection(connect);
+		return false;
+	}
+	if (reply->type != REDIS_REPLY_ARRAY) {
+		std::cout << "Execute command [ HGETALL " << key << " ] failure!" << std::endl;
+		freeReplyObject(reply);
+		_con_pool->returnConnection(connect);
+		return false;
+	}
+	for (size_t i = 0; i + 1 < reply->elements; i += 2) {
+		std::string field(reply->element[i]->str, reply->element[i]->len);
+		std::string value(reply->element[i + 1]->str, reply->element[i + 1]->len);
+		result[field] = value;
+	}
+	freeReplyObject(reply);
+	_con_pool->returnConnection(connect);
+	return true;
 }
 
 

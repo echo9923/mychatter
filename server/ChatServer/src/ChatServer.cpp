@@ -5,12 +5,16 @@
 #include <csignal>
 #include <thread>
 #include <mutex>
+#include <ctime>
+#include <nlohmann/json.hpp>
 #include "AsioIOServicePool.h"
 #include "CServer.h"
 #include "ConfigMgr.h"
 #include "RedisMgr.h"
 #include "ChatServiceImpl.h"
 #include "const.h"
+
+using json = nlohmann::json;
 
 using namespace std;
 bool bstop = false;
@@ -21,12 +25,30 @@ int main()
 {
 	auto& cfg = ConfigMgr::Inst();
 	auto server_name = cfg["SelfServer"]["Name"];
+	auto server_register_host = cfg["SelfServer"]["RegisterHost"];
+	if (server_register_host.empty()) {
+		server_register_host = cfg["SelfServer"]["Host"];
+	}
+	auto server_port = cfg["SelfServer"]["Port"];
 	try {
 		auto pool = AsioIOServicePool::GetInstance();
+		//注册节点元数据到Redis（服务注册）
+		json server_info;
+		server_info["name"] = server_name;
+		server_info["host"] = server_register_host;
+		server_info["port"] = server_port;
+		RedisMgr::GetInstance()->HSet(CHATSERVER_INFO_KEY, server_name, server_info.dump());
+
+		//立即发送一次心跳
+		std::string hb_key = CHATSERVER_HEARTBEAT_PREFIX + server_name;
+		RedisMgr::GetInstance()->SetWithExpire(hb_key, std::to_string(std::time(nullptr)), HEARTBEAT_TTL_SECONDS);
+
 		//将登录数设置为0
 		RedisMgr::GetInstance()->HSet(LOGIN_COUNT, server_name, "0");
 		Defer derfer ([server_name]() {
 				RedisMgr::GetInstance()->HDel(LOGIN_COUNT, server_name);
+				RedisMgr::GetInstance()->Del(CHATSERVER_HEARTBEAT_PREFIX + server_name);
+				RedisMgr::GetInstance()->HDel(CHATSERVER_INFO_KEY, server_name);
 				RedisMgr::GetInstance()->Close();
 			});
 
@@ -36,6 +58,7 @@ int main()
 		auto pointer_server = std::make_shared<CServer>(io_context, atoi(port_str.c_str()));
 		//启动定时器
 		pointer_server->StartTimer();
+		pointer_server->StartHeartbeat();
 
 		//定义一个GrpcServer
 
