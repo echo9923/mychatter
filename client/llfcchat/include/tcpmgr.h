@@ -40,6 +40,8 @@ public:
     void SendData(ReqId reqId, QByteArray data);
     //可靠发送：payload + unique_ids 进入持久 pending，按退避无限重传直到 1018/1036 或冲突（§6.1）
     void SendReliableChat(ReqId id, QByteArray payload, const QStringList& unique_ids);
+    //§6.2 纠错：仅 emit queued signal，TCP 线程 slot 在 GUI thread models 建好后执行 rebuild+重发
+    void StartPendingReplay();
 
 private:
     friend class Singleton<TcpMgr>;
@@ -77,6 +79,7 @@ private:
     void addPendingRequest(ReqId id, QByteArray payload, QStringList unique_ids);
     void persistPendingRequests();
     void restorePendingRequests(int uid);
+    void loadPendingFromDisk(int uid);
     void removePendingByUniqueId(const QString& unique_id);
     void handleTextConflict(int thread_id, int fromuid, const QStringList& conflict_ids);
     void handleImageConflict(const QString& conflict_id);
@@ -88,6 +91,7 @@ public slots:
     void slot_send_data(ReqId reqId, QByteArray data);
     void slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
     void slot_retry_timeout();
+    void slot_start_pending_replay();
     void slot_test() {
         qDebug() << "receve thread is " << QThread::currentThread();
         qDebug() << "slot test......";
@@ -98,6 +102,8 @@ signals:
     void sig_send_data(ReqId reqId, QByteArray data);
     //线程边界信号：公有 API 只 emit 此信号，slot_send_reliable_chat 在 TCP 线程执行
     void sig_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
+    //§6.2：公有 StartPendingReplay 只 emit 此信号，slot_start_pending_replay 在 TCP 线程执行
+    void sig_start_pending_replay();
     void sig_swich_chatdlg();
     void sig_load_apply_list(QJsonArray json_array);
     void sig_login_failed(int);

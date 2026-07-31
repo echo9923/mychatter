@@ -405,6 +405,8 @@ void ChatDialog::slot_load_chat_thread(bool load_more, int last_thread_id,
 	}
 
 	showLoadingDlg(false);
+	//§6.2：GUI thread models 已建好，触发持久 pending replay（rebuild+重发，TCP 线程执行）
+	TcpMgr::GetInstance()->StartPendingReplay();
 	//继续加载聊天数据
 	loadChatMsg();
 }
