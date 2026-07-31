@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <boost/beast/http.hpp>
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
@@ -70,5 +70,8 @@ private:
 #define LOCK_TIME_OUT 10
 //分布式锁的重试时间
 #define ACQUIRE_TIME_OUT 5
+#define CHATSERVER_INFO_KEY         "chatserver:info"
+#define CHATSERVER_HEARTBEAT_PREFIX "chatserver:heartbeat:"
+#define HEARTBEAT_TTL_SECONDS       30
 
 

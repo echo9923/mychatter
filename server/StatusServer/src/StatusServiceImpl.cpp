@@ -1,8 +1,10 @@
-﻿#include "StatusServiceImpl.h"
+#include "StatusServiceImpl.h"
 #include "ConfigMgr.h"
 #include "const.h"
 #include "RedisMgr.h"
 #include <climits>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 
 std::string generate_unique_string() {
 	// 创建UUID对象
@@ -16,8 +18,11 @@ std::string generate_unique_string() {
 
 Status StatusServiceImpl::GetChatServer(ServerContext* context, const GetChatServerReq* request, GetChatServerRsp* reply)
 {
-	std::string prefix("llfc status server has received :  ");
 	const auto& server = getChatServer();
+	if (server.host.empty()) {
+		reply->set_error(ErrorCodes::RPCFailed);
+		return Status::OK;
+	}
 	reply->set_host(server.host);
 	reply->set_port(server.port);
 	reply->set_error(ErrorCodes::Success);
@@ -56,39 +61,50 @@ StatusServiceImpl::StatusServiceImpl()
 
 ChatServer StatusServiceImpl::getChatServer() {
 	std::lock_guard<std::mutex> guard(_server_mtx);
-	auto minServer = _servers.begin()->second;
-	
-	//auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, minServer.name);
-	//if (count_str.empty()) {
-	//	//不存在则默认设置为最大
-	//	minServer.con_count = INT_MAX;
-	//}
-	//else {
-	//	minServer.con_count = std::stoi(count_str);
-	//}
 
+	// 1. 从 Redis 读取所有注册的节点元数据
+	std::unordered_map<std::string, std::string> server_infos;
+	RedisMgr::GetInstance()->HGetAll(CHATSERVER_INFO_KEY, server_infos);
 
-	//// 使用范围基于for循环
-	//for ( auto& server : _servers) {
-	//	
-	//	if (server.second.name == minServer.name) {
-	//		continue;
-	//	}
+	ChatServer best;
+	best.con_count = INT_MAX;
+	bool found = false;
 
-	//	auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, server.second.name);
-	//	if (count_str.empty()) {
-	//		server.second.con_count = INT_MAX;
-	//	}
-	//	else {
-	//		server.second.con_count = std::stoi(count_str);
-	//	}
+	for (auto& [name, json_str] : server_infos) {
+		// 2. 健康检查：心跳 key 是否存在
+		std::string hb_key = CHATSERVER_HEARTBEAT_PREFIX + name;
+		if (!RedisMgr::GetInstance()->ExistsKey(hb_key)) {
+			continue;  // 心跳过期，跳过此节点
+		}
 
-	//	if (server.second.con_count < minServer.con_count) {
-	//		minServer = server.second;
-	//	}
-	//}
+		// 3. 解析节点信息
+		ChatServer cs;
+		try {
+			auto j = json::parse(json_str);
+			cs.name = j["name"].get<std::string>();
+			cs.host = j["host"].get<std::string>();
+			cs.port = j["port"].get<std::string>();
+		} catch (...) {
+			continue;
+		}
 
-	return minServer;
+		// 4. 读取连接计数
+		auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, name);
+		cs.con_count = count_str.empty() ? INT_MAX : std::stoi(count_str);
+
+		// 5. 选最少连接
+		if (cs.con_count < best.con_count) {
+			best = cs;
+			found = true;
+		}
+	}
+
+	// 6. 兜底：如果 Redis 无存活节点，回退到本地静态配置
+	if (!found && !_servers.empty()) {
+		return _servers.begin()->second;
+	}
+
+	return best;
 }
 
 Status StatusServiceImpl::Login(ServerContext* context, const LoginReq* request, LoginRsp* reply)
@@ -100,7 +116,7 @@ Status StatusServiceImpl::Login(ServerContext* context, const LoginReq* request,
 	std::string token_key = USERTOKENPREFIX + uid_str;
 	std::string token_value = "";
 	bool success = RedisMgr::GetInstance()->Get(token_key, token_value);
-	if (success) {
+	if (!success) {
 		reply->set_error(ErrorCodes::UidInvalid);
 		return Status::OK;
 	}

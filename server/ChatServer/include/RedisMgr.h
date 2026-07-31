@@ -316,6 +316,8 @@ public:
 	bool Get(const std::string &key, std::string& value);
 	/// 设置指定键的值
 	bool Set(const std::string &key, const std::string &value);
+	/// 设置指定键的值并设置过期时间（SETEX key seconds value）
+	bool SetWithExpire(const std::string& key, const std::string& value, int expire_seconds);
 	/// 从列表左侧插入元素
 	bool LPush(const std::string &key, const std::string &value);
 	/// 从列表左侧弹出元素

@@ -1,4 +1,4 @@
-﻿#include "RedisMgr.h"
+#include "RedisMgr.h"
 #include "const.h"
 #include "ConfigMgr.h"
 #include "DistLock.h"
@@ -74,6 +74,36 @@ bool RedisMgr::Set(const std::string &key, const std::string &value){
 	//执行成功 释放redisCommand执行后返回的redisReply所占用的内存
 	freeReplyObject(reply);
 	std::cout << "Execut command [ SET " << key << "  " << value << " ] success ! " << std::endl;
+	_con_pool->returnConnection(connect);
+	return true;
+}
+
+bool RedisMgr::SetWithExpire(const std::string& key, const std::string& value, int expire_seconds) {
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) {
+		return false;
+	}
+
+	auto reply = (redisReply*)redisCommand(connect, "SETEX %s %d %s",
+		key.c_str(), expire_seconds, value.c_str());
+
+	if (NULL == reply) {
+		std::cout << "Execute command [ SETEX " << key << " " << expire_seconds
+			<< " " << value << " ] failure!" << std::endl;
+		_con_pool->returnConnection(connect);
+		return false;
+	}
+
+	if (!(reply->type == REDIS_REPLY_STATUS &&
+		(strcmp(reply->str, "OK") == 0 || strcmp(reply->str, "ok") == 0))) {
+		std::cout << "Execute command [ SETEX " << key << " " << expire_seconds
+			<< " " << value << " ] failure!" << std::endl;
+		freeReplyObject(reply);
+		_con_pool->returnConnection(connect);
+		return false;
+	}
+
+	freeReplyObject(reply);
 	_con_pool->returnConnection(connect);
 	return true;
 }
