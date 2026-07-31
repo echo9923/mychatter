@@ -30,6 +30,12 @@ struct PendingRequest {
     qint64 next_send_epoch_ms; // 下次发送时刻（epoch ms）
 };
 
+//§6.5 recipient ACK 重传状态（每个已收到但服务端未确认的 message_id）
+struct AckPending {
+    qint64 retry_delay_ms;     // 当前退避间隔（倍增上限同 sender）
+    qint64 next_send_epoch_ms; // 下次发送时刻（epoch ms）
+};
+
 class TcpMgr:public QObject, public Singleton<TcpMgr>,
         public std::enable_shared_from_this<TcpMgr>
 {
@@ -42,6 +48,8 @@ public:
     void SendReliableChat(ReqId id, QByteArray payload, const QStringList& unique_ids);
     //§6.2 纠错：仅 emit queued signal，TCP 线程 slot 在 GUI thread models 建好后执行 rebuild+重发
     void StartPendingReplay();
+    //§6.6：仅 emit queued signal，TCP 线程 slot 启动离线 pull 循环
+    void StartOfflinePull();
 
 private:
     friend class Singleton<TcpMgr>;
@@ -74,6 +82,14 @@ private:
     int _delivery_uid;                    // 当前加载 pending 的 uid（0=未加载）
     qint64 _retry_initial_ms;             // 初始退避（配置 RequestRetryInitialMs）
     qint64 _retry_max_ms;                 // 退避上限（配置 RequestRetryMaxMs）
+    //—— §6.5 recipient ACK 状态（全部只在 TCP 线程访问）——
+    QSet<int> _pending_ui_ack;            // 已收到、待 ChatDialog 确认 UI 插入的 message_id
+    QMap<int, AckPending> _pending_ack;   // 已确认 UI、待服务端 1050 回复的 message_id
+    qint64 _ack_retry_initial_ms;         // ACK 初始退避（配置 AckRetryInitialMs）
+    //—— §6.6 离线 pull 状态（全部只在 TCP 线程访问）——
+    QTimer* _offline_pull_timer;          // 定时拉取定时器，parent 到 this
+    int _offline_pull_interval_ms;        // 配置 OfflinePullIntervalMs
+    int _offline_pull_batch;              // 配置 OfflinePullBatch
     //可靠重传内部方法（均在 TCP 线程执行）
     void loadDeliveryConfig();
     void addPendingRequest(ReqId id, QByteArray payload, QStringList unique_ids);
@@ -85,6 +101,15 @@ private:
     void handleImageConflict(const QString& conflict_id);
     bool rebuildImagePending(PendingRequest& req);
     void rebuildTextPending(const PendingRequest& req);
+    //§6.4 统一 envelope 分发（1019/1039/1052 共用）：文本走 sig_text_chat_msg，图片走 sig_img_chat_msg+下载
+    void dispatchIncomingMessage(int message_id, const QString& unique_id,
+        int thread_id, int fromuid, int touid, int msg_type,
+        const QString& content, qint64 content_size,
+        const QString& chat_time, int status);
+    //§6.5 ACK 批量发送（取出到期项，发 1049，更新退避，持久化）
+    void flushPendingAcks();
+    void persistAckPending();
+    void loadAckPendingFromDisk(int uid);
 public slots:
     void slot_tcp_close();
     void slot_tcp_connect(std::shared_ptr<ServerInfo> si);
@@ -92,6 +117,9 @@ public slots:
     void slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
     void slot_retry_timeout();
     void slot_start_pending_replay();
+    void slot_start_offline_pull();
+    void slot_offline_pull_timeout();
+    void slot_msg_processed(int message_id);
     void slot_test() {
         qDebug() << "receve thread is " << QThread::currentThread();
         qDebug() << "slot test......";
@@ -104,6 +132,10 @@ signals:
     void sig_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
     //§6.2：公有 StartPendingReplay 只 emit 此信号，slot_start_pending_replay 在 TCP 线程执行
     void sig_start_pending_replay();
+    //§6.6：公有 StartOfflinePull 只 emit 此信号，slot_start_offline_pull 在 TCP 线程执行
+    void sig_start_offline_pull();
+    //§6.5：ChatDialog 插入/duplicate 后 emit，queued 回 TCP 线程触发 1049 ACK
+    void sig_chat_msg_processed(int message_id);
     void sig_swich_chatdlg();
     void sig_load_apply_list(QJsonArray json_array);
     void sig_login_failed(int);

@@ -1,4 +1,4 @@
-﻿#ifndef CHATDIALOG_H
+#ifndef CHATDIALOG_H
 #define CHATDIALOG_H
 
 #include <QDialog>
@@ -39,6 +39,8 @@ private:
     void loadMoreConUser();
     void SetSelectChatItem(int thread_id = 0);
     void SetSelectChatPage(int thread_id = 0);
+    //§6.4 抽取自 slot_create_private_chat：为 thread 不存在时创建 ChatThreadData + 列表项
+    QListWidgetItem* createPrivateChatItem(int other_id, int thread_id);
     Ui::ChatDialog *ui;
     bool _b_loading;
     QList<StateWidget*> _lb_list;
