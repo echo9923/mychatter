@@ -12,7 +12,6 @@
 #include "ConfigMgr.h"
 #include <hiredis/hiredis.h>
 #include "RedisMgr.h"
-#include "MysqlMgr.h"
 #include "AsioIOServicePool.h"
 #include <memory>
 #include <thread>

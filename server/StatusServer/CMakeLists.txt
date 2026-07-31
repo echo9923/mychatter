@@ -39,8 +39,6 @@ add_executable(StatusServer
   src/ChatGrpcClient.cpp
   src/ConfigMgr.cpp
   src/DistLock.cpp
-  src/MysqlDao.cpp
-  src/MysqlMgr.cpp
   src/RedisMgr.cpp
   src/StatusServer.cpp
   src/StatusServiceImpl.cpp
@@ -49,8 +47,6 @@ add_executable(StatusServer
   include/ConfigMgr.h
   include/const.h
   include/DistLock.h
-  include/MysqlDao.h
-  include/MysqlMgr.h
   include/RedisMgr.h
   include/Singleton.h
   include/StatusServiceImpl.h
@@ -71,7 +67,6 @@ target_link_libraries(StatusServer PRIVATE
   Boost::uuid
   nlohmann_json::nlohmann_json
   hiredis::hiredis
-  mysql::concpp-jdbc-static
   OpenSSL::Crypto
 )
 

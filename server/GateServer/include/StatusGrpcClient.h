@@ -12,8 +12,6 @@ using grpc::ClientContext;
 
 using message::GetChatServerReq;
 using message::GetChatServerRsp;
-using message::LoginRsp;
-using message::LoginReq;
 using message::StatusService;
 
 class StatusGrpcClient :public Singleton<StatusGrpcClient>
@@ -29,7 +27,6 @@ public:
 	/// @param session_token_sha256  SHA-256 hex of the session token (RESUME only)
 	GetChatServerRsp GetChatServer(int uid, int intent,
 		const std::string& session_token_sha256);
-	LoginRsp Login(int uid, std::string token);
 private:
 	StatusGrpcClient();
 	std::shared_ptr<Channel> channel_;
