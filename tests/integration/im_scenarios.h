@@ -23,4 +23,7 @@ bool ScenarioPullBytes();  // pull-bytes: ~2KiB msgs, frame < PullMaxBytes/SHRT_
 bool ScenarioCrossServer();// cross-server: gRPC proxy break, retry bounded, restart pull
 bool ScenarioImageOffline();// image-offline: sharded upload, UN_UPLOAD exclusion, PIC pull
 
+// --- Plan 3.1: StatusServer lease-based least-loaded discovery ---
+bool ScenarioStatusDiscovery();// status-discovery: lease selection, rotation, NoAvailableChatServer
+
 } // namespace imt

@@ -62,8 +62,14 @@ public:
 	/// 停止心跳定时器
 	void StopTimer();
 
-	void StartHeartbeat();
-	void StopHeartbeat();
+	/**
+	 * @brief 统计当前已认证（已登录）的会话数量
+	 *
+	 * 加锁拷贝 _sessions 后统计 GetUserId() > 0 的会话，用于 lease 上报负载。
+	 * 刚 accept 尚未登录的连接不计入。
+	 * @return 已认证会话数
+	 */
+	int GetAuthenticatedSessionCount();
 
 private:
 	/**
@@ -72,8 +78,6 @@ private:
 	 * @param error 接受操作的错误码
 	 */
 	void HandleAccept(shared_ptr<CSession>, const boost::system::error_code & error);
-
-	void on_heartbeat(const boost::system::error_code& ec);
 
 	/// 发起下一次异步接受连接操作
 	void StartAccept();
@@ -90,6 +94,5 @@ private:
 	std::mutex _mutex;
 	/// 稳态定时器，用于执行周期性任务（心跳检测、超时断开等）
 	boost::asio::steady_timer _timer;
-	boost::asio::steady_timer _heartbeat_timer;
 };
 

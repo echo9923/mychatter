@@ -20,7 +20,7 @@ Status StatusServiceImpl::GetChatServer(ServerContext* context, const GetChatSer
 {
 	const auto& server = getChatServer();
 	if (server.host.empty()) {
-		reply->set_error(ErrorCodes::RPCFailed);
+		reply->set_error(ErrorCodes::NoAvailableChatServer);
 		return Status::OK;
 	}
 	reply->set_host(server.host);
@@ -55,6 +55,7 @@ StatusServiceImpl::StatusServiceImpl()
 		server.host = cfg[word]["Host"];
 		server.name = cfg[word]["Name"];
 		_servers[server.name] = server;
+		_server_order.push_back(server.name);
 	}
 
 }
@@ -62,48 +63,60 @@ StatusServiceImpl::StatusServiceImpl()
 ChatServer StatusServiceImpl::getChatServer() {
 	std::lock_guard<std::mutex> guard(_server_mtx);
 
-	// 1. 从 Redis 读取所有注册的节点元数据
-	std::unordered_map<std::string, std::string> server_infos;
-	RedisMgr::GetInstance()->HGetAll(CHATSERVER_INFO_KEY, server_infos);
+	// 1. 按 _server_order（配置出现顺序）逐个读取 lease
+	//    key = chatserver:lease:<name>，value = 已认证会话数（十进制字符串）
+	//    只把存在且可解析为非负整数的节点放入候选集
+	const std::string kLeasePrefix = "chatserver:lease:";
+	struct Candidate { std::string name; int load; };
+	std::vector<Candidate> candidates;
 
-	ChatServer best;
-	best.con_count = INT_MAX;
-	bool found = false;
-
-	for (auto& [name, json_str] : server_infos) {
-		// 2. 健康检查：心跳 key 是否存在
-		std::string hb_key = CHATSERVER_HEARTBEAT_PREFIX + name;
-		if (!RedisMgr::GetInstance()->ExistsKey(hb_key)) {
-			continue;  // 心跳过期，跳过此节点
+	for (const auto& name : _server_order) {
+		std::string val;
+		if (!RedisMgr::GetInstance()->Get(kLeasePrefix + name, val) || val.empty()) {
+			continue;  // lease 缺失：节点未上报或已过期
 		}
-
-		// 3. 解析节点信息
-		ChatServer cs;
-		try {
-			auto j = json::parse(json_str);
-			cs.name = j["name"].get<std::string>();
-			cs.host = j["host"].get<std::string>();
-			cs.port = j["port"].get<std::string>();
-		} catch (...) {
+		// 仅接受全数字（非负整数）的值
+		bool all_digit = true;
+		for (char c : val) {
+			if (c < '0' || c > '9') { all_digit = false; break; }
+		}
+		if (!all_digit) {
 			continue;
 		}
-
-		// 4. 读取连接计数
-		auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, name);
-		cs.con_count = count_str.empty() ? INT_MAX : std::stoi(count_str);
-
-		// 5. 选最少连接
-		if (cs.con_count < best.con_count) {
-			best = cs;
-			found = true;
-		}
+		int load = 0;
+		for (char c : val) { load = load * 10 + (c - '0'); }
+		candidates.push_back({ name, load });
 	}
 
-	// 6. 兜底：如果 Redis 无存活节点，回退到本地静态配置
-	if (!found && !_servers.empty()) {
-		return _servers.begin()->second;
+	if (candidates.empty()) {
+		// 无任何活节点：返回空 host，由 GetChatServer 映射为 NoAvailableChatServer
+		ChatServer none;
+		return none;
 	}
 
+	// 2. 选最小负载
+	int min_load = candidates[0].load;
+	for (const auto& c : candidates) {
+		if (c.load < min_load) min_load = c.load;
+	}
+
+	// 3. 负载相同的候选用原子计数轮转起点，避免配置表第一项长期占优
+	std::vector<Candidate> tied;
+	for (const auto& c : candidates) {
+		if (c.load == min_load) tied.push_back(c);
+	}
+	size_t idx = _rr.fetch_add(1) % tied.size();
+	const std::string chosen = tied[idx].name;
+
+	// 4. 从静态地址簿取 host/port（lease 只携带负载，不含地址）
+	ChatServer best;
+	auto it = _servers.find(chosen);
+	if (it != _servers.end()) {
+		best = it->second;
+		best.con_count = min_load;
+	} else {
+		best.name = chosen;  // 配置缺地址：视为不可用（host 留空）
+	}
 	return best;
 }
 

@@ -41,6 +41,7 @@ enum ErrorCodes {
 	PasswdInvalid = 1009,   //密码更新失败
 	TokenInvalid = 1010,   //Token失效
 	UidInvalid = 1011,  //uid无效
+	NoAvailableChatServer = 1018, //无可用ChatServer节点
 };
 
 

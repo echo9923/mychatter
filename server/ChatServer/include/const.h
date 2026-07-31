@@ -26,6 +26,7 @@ enum ErrorCodes {
 	RECIPIENT_OFFLINE = 1015,    ///< 目标用户当前不在线（无可用 session）
 	SERVER_BUSY = 1016,          ///< 服务端停机/队列拒绝，消息未入队未持久化
 	MESSAGE_CONFLICT = 1017,     ///< unique-id 相同但内容冲突，原消息不变
+	NoAvailableChatServer = 1018, ///< 无可用 ChatServer 节点（所有 lease 缺失或过期）
 };
 
 
@@ -146,8 +147,6 @@ inline short ReqToRspId(short req_id) {
 #define IPCOUNTPREFIX  "ipcount_"
 /// Redis中存储用户基本信息的Hash键前缀，完整键为 "ubaseinfo_" + uid
 #define USER_BASE_INFO "ubaseinfo_"
-/// Redis中存储登录计数器的键名，用于负载均衡统计
-#define LOGIN_COUNT  "logincount"
 /// Redis中存储用户名到uid映射的键前缀，完整键为 "nameinfo_" + name
 #define NAME_INFO  "nameinfo_"
 /// Redis中分布式锁的键前缀，完整键为 "lock_" + 资源名
@@ -163,12 +162,6 @@ inline short ReqToRspId(short req_id) {
 #define LOCK_TIME_OUT 10
 /// 分布式锁的获取重试超时时间（秒），超过此时间未获取到锁则放弃
 #define ACQUIRE_TIME_OUT 5
-/// Redis中ChatServer节点注册信息的Hash键名，field为节点名，value为JSON
-#define CHATSERVER_INFO_KEY         "chatserver:info"
-/// Redis中ChatServer心跳键前缀，完整键为 "chatserver:heartbeat:" + 节点名
-#define CHATSERVER_HEARTBEAT_PREFIX "chatserver:heartbeat:"
-/// 心跳TTL（秒），心跳间隔10秒，TTL为间隔的3倍
-#define HEARTBEAT_TTL_SECONDS       30
 
 /**
  * @brief 聊天消息状态枚举

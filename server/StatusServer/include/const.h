@@ -41,6 +41,7 @@ enum ErrorCodes {
 	PasswdInvalid = 1009,   //密码更新失败
 	TokenInvalid = 1010,   //Token失效
 	UidInvalid = 1011,  //uid无效
+	NoAvailableChatServer = 1018, //无可用ChatServer节点
 };
 
 
@@ -63,15 +64,11 @@ private:
 #define USERTOKENPREFIX  "utoken_"
 #define IPCOUNTPREFIX  "ipcount_"
 #define USER_BASE_INFO "ubaseinfo_"
-#define LOGIN_COUNT  "logincount"
 #define LOCK_COUNT "lockcount"
 
 //分布式锁的持有时间
 #define LOCK_TIME_OUT 10
 //分布式锁的重试时间
 #define ACQUIRE_TIME_OUT 5
-#define CHATSERVER_INFO_KEY         "chatserver:info"
-#define CHATSERVER_HEARTBEAT_PREFIX "chatserver:heartbeat:"
-#define HEARTBEAT_TTL_SECONDS       30
 
 

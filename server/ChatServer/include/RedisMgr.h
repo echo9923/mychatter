@@ -317,7 +317,7 @@ public:
 	/// 设置指定键的值
 	bool Set(const std::string &key, const std::string &value);
 	/// 设置指定键的值并设置过期时间（SETEX key seconds value）
-	bool SetWithExpire(const std::string& key, const std::string& value, int expire_seconds);
+	bool SetEx(const std::string& key, int ttl_seconds, const std::string& value);
 	/// 从列表左侧插入元素
 	bool LPush(const std::string &key, const std::string &value);
 	/// 从列表左侧弹出元素
@@ -372,15 +372,6 @@ public:
 	 */
 	bool releaseLock(const std::string& lockName,
 		const std::string& identifier);
-
-	/// 增加指定服务器的连接计数（用户登录时调用，用于负载均衡）
-	void IncreaseCount(std::string server_name);
-	/// 减少指定服务器的连接计数（用户下线时调用）
-	void DecreaseCount(std::string server_name);
-	/// 初始化指定服务器的连接计数为0
-	void InitCount(std::string server_name);
-	/// 删除指定服务器的连接计数键
-	void DelCount(std::string server_name);
 
 private:
 	/// 私有构造函数，从配置文件读取Redis连接参数并初始化连接池

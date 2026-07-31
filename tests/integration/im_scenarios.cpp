@@ -41,6 +41,7 @@
 #include "im_http_client.h"
 #include "im_mysql.h"
 #include "im_redis.h"
+#include "im_status_client.h"
 #include "im_tcp_client.h"
 
 namespace imt {
@@ -1583,6 +1584,141 @@ bool ScenarioImageOffline() {
 	}
 
 	cS.Close(); cR.Close();
+	cleanup();
+	pm.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// status-discovery (plan 3.1)
+//
+// StatusServer selects the least-loaded live ChatServer by reading each node's
+// chatserver:lease:<name> (value = authenticated session count). This scenario
+// drives GetChatServer directly over gRPC and asserts:
+//   - both ChatServers publish a lease at startup (value "0", bounded TTL);
+//   - equal load round-robins between the two nodes;
+//   - decisive load (3 vs 1) selects the lighter node;
+//   - deleting a node's lease excludes it;
+//   - deleting all leases returns NoAvailableChatServer (1018, empty host).
+//
+// The decisive 3/1 load is seeded directly via Redis SETEX: producing three
+// distinct authenticated sessions on one server is not possible with the two
+// fixture uids (same-uid re-login kicks the prior session, and LoginHandler
+// rejects uids absent from the user store). Seeding the lease value is exactly
+// what the ChatServer timer would publish for that authenticated count, so it
+// exercises the real StatusServer selection path deterministically.
+// ---------------------------------------------------------------------------
+bool ScenarioStatusDiscovery() {
+	std::printf("\n=== scenario: status-discovery ===\n");
+	ProcessManager pm;
+	Redis redis;
+	if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)) {
+		Fail("status-discovery: connect redis", "failed");
+		return false;
+	}
+
+	const std::string lease1 = ChatLeaseKey("chatserver1");
+	const std::string lease2 = ChatLeaseKey("chatserver2");
+	auto cleanup = [&]() {
+		redis.Del(lease1);
+		redis.Del(lease2);
+	};
+
+	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
+		MakeStatusIni(), STATUS_GRPC_PORT }, 15000)) {
+		Fail("status-discovery: start StatusServer", "ready timeout"); cleanup(); return false;
+	}
+	if (!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
+		MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
+		CHAT1_TCP_PORT }, 15000)) {
+		Fail("status-discovery: start chatserver1", "ready timeout"); cleanup(); pm.StopAll(); return false;
+	}
+	if (!pm.Start({ "chatserver2", { "chatserver2", "ChatServer.exe" },
+		MakeChatIni("chatserver2", CHAT2_TCP_PORT, CHAT2_GRPC_PORT, 4),
+		CHAT2_TCP_PORT }, 15000)) {
+		Fail("status-discovery: start chatserver2", "ready timeout"); cleanup(); pm.StopAll(); return false;
+	}
+
+	bool all_ok = true;
+
+	// 1. Poll (<=10s): both leases exist with value "0" and TTL in (0, 8].
+	auto wait_lease = [&](const std::string& key) -> bool {
+		for (int i = 0; i < 100; ++i) {  // 100 * 100ms = 10s
+			std::string v;
+			if (redis.Get(key, v) && v == "0") {
+				int ttl = redis.Ttl(key);
+				if (ttl > 0 && ttl <= 8) return true;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+		return false;
+	};
+	const bool l1 = wait_lease(lease1);
+	const bool l2 = wait_lease(lease2);
+	Check(l1, "status-discovery: chatserver1 lease at startup (0, ttl<=8)",
+		l1 ? "" : "lease missing/wrong/ttl out of range");
+	Check(l2, "status-discovery: chatserver2 lease at startup (0, ttl<=8)",
+		l2 ? "" : "lease missing/wrong/ttl out of range");
+	if (!l1 || !l2) { cleanup(); pm.StopAll(); return false; }
+
+	// 2. Tie rotation: both load 0 -> two calls pick different nodes (error 0).
+	StatusClient sc;
+	if (!sc.Connect("127.0.0.1", STATUS_GRPC_PORT)) {
+		Fail("status-discovery: status client connect", "failed");
+		cleanup(); pm.StopAll(); return false;
+	}
+	int e1 = -1, e2 = -1;
+	std::string h1, p1, t1, h2, p2, t2;
+	bool ok1 = sc.GetChatServer(1, e1, h1, p1, t1);
+	bool ok2 = sc.GetChatServer(1, e2, h2, p2, t2);
+	const std::string port1 = std::to_string(CHAT1_TCP_PORT);
+	const std::string port2 = std::to_string(CHAT2_TCP_PORT);
+	bool tie_ok = ok1 && ok2 && e1 == ERR_SUCCESS && e2 == ERR_SUCCESS
+		&& p1 == port1 && p2 == port2;
+	Check(tie_ok, "status-discovery: tie rotation picks chat1 then chat2 (error 0)",
+		tie_ok ? "" : ("ports=" + p1 + "/" + p2 + " err="
+			+ std::to_string(e1) + "/" + std::to_string(e2)).c_str());
+	if (!tie_ok) all_ok = false;
+
+	// 3. Decisive load: chat1=3, chat2=1 -> must select chat2.
+	// Stop both ChatServers first: their 2s report timer would otherwise race
+	// the seeded lease values (overwrite with real 0/0 mid-assert). The lease
+	// keys survive termination (TTL <= 8s), and StatusServer selection reads
+	// only the lease keys, so steps 3-5 are fully deterministic.
+	pm.StopOne("chatserver1");
+	pm.StopOne("chatserver2");
+	if (!redis.SetEx(lease1, 8, "3") || !redis.SetEx(lease2, 8, "1")) {
+		Fail("status-discovery: seed decisive leases", "SetEx failed");
+		cleanup(); pm.StopAll(); return false;
+	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(300));
+	int e3 = -1; std::string h3, p3, t3;
+	bool ok3 = sc.GetChatServer(1, e3, h3, p3, t3);
+	bool least_ok = ok3 && e3 == ERR_SUCCESS && p3 == port2;
+	Check(least_ok, "status-discovery: least-loaded selects chat2 (3 vs 1)",
+		least_ok ? "" : ("port=" + p3 + " err=" + std::to_string(e3)).c_str());
+	if (!least_ok) all_ok = false;
+
+	// 4. Delete chat2 lease -> must select chat1.
+	redis.Del(lease2);
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	int e4 = -1; std::string h4, p4, t4;
+	bool ok4 = sc.GetChatServer(1, e4, h4, p4, t4);
+	bool excl_ok = ok4 && e4 == ERR_SUCCESS && p4 == port1;
+	Check(excl_ok, "status-discovery: chat2 lease removed -> selects chat1",
+		excl_ok ? "" : ("port=" + p4 + " err=" + std::to_string(e4)).c_str());
+	if (!excl_ok) all_ok = false;
+
+	// 5. Delete chat1 lease -> no candidates -> NoAvailableChatServer.
+	redis.Del(lease1);
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	int e5 = -1; std::string h5, p5, t5;
+	bool ok5 = sc.GetChatServer(1, e5, h5, p5, t5);
+	bool none_ok = ok5 && e5 == ERR_NO_AVAILABLE_CHAT_SERVER && h5.empty();
+	Check(none_ok, "status-discovery: no leases -> NoAvailableChatServer (1018, empty host)",
+		none_ok ? "" : ("err=" + std::to_string(e5) + " host=" + h5).c_str());
+	if (!none_ok) all_ok = false;
+
 	cleanup();
 	pm.StopAll();
 	return all_ok;
