@@ -279,6 +279,8 @@ void ChatDialog::slot_item_clicked(QListWidgetItem* item)
 }
 
 //添加聊天消息, 将消息放到用户区和thread_id关联
+//§6.4 recipient 去重：ContainsMessage 已有 ID 不再加 bubble 但仍视为成功接收，
+//thread 不存在时复用 createPrivateChatItem 先建 ChatThreadData/列表项，禁止空指针。
 void ChatDialog::slot_text_chat_msg(std::vector<std::shared_ptr<TextChatData>> msglists)
 {
 	for (auto& msg : msglists) {
@@ -287,27 +289,54 @@ void ChatDialog::slot_text_chat_msg(std::vector<std::shared_ptr<TextChatData>> m
 		auto thread_id = msg->GetThreadId();
 		auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
 
-		thread_data->AddMsg(msg);
-
-		if (_cur_chat_thread_id != thread_id) {
-			continue;
+		//thread 不存在时复用 createPrivateChatItem 构造逻辑先建 ChatThreadData/列表项
+		if (!thread_data) {
+			createPrivateChatItem(msg->GetSendUid(), thread_id);
+			thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
+		}
+		if (!thread_data) {
+			continue; //safety
 		}
 
-		ui->chat_page->AppendChatMsg(msg);
+		int msg_id = msg->GetMsgId();
+		//去重：已有 ID 不再加 bubble 但仍视为成功接收
+		if (!thread_data->ContainsMessage(msg_id)) {
+			thread_data->AddMsg(msg);
+			if (_cur_chat_thread_id == thread_id) {
+				ui->chat_page->AppendChatMsg(msg);
+			}
+		}
+		//插入成功或识别 duplicate 后通知 TCP 线程可 ACK（queued 回 TCP 线程）
+		emit TcpMgr::GetInstance()->sig_chat_msg_processed(msg_id);
 	}
 
 }
 
+//§6.4 recipient 图片消息去重 + thread 创建 + ACK
 void ChatDialog::slot_img_chat_msg(std::shared_ptr<ImgChatData> imgchat) {
 	//更新数据
 	auto thread_id = imgchat->GetThreadId();
 	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-	thread_data->AddMsg(imgchat);
-	if (_cur_chat_thread_id != thread_id) {
-		return;
+
+	//thread 不存在时复用 createPrivateChatItem 构造逻辑先建 ChatThreadData/列表项
+	if (!thread_data) {
+		createPrivateChatItem(imgchat->GetSendUid(), thread_id);
+		thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
+	}
+	if (!thread_data) {
+		return; //safety
 	}
 
-	ui->chat_page->AppendOtherMsg(imgchat);
+	int msg_id = imgchat->GetMsgId();
+	//去重：已有 ID 不再加 bubble 但仍视为成功接收
+	if (!thread_data->ContainsMessage(msg_id)) {
+		thread_data->AddMsg(imgchat);
+		if (_cur_chat_thread_id == thread_id) {
+			ui->chat_page->AppendOtherMsg(imgchat);
+		}
+	}
+	//插入成功或识别 duplicate 后通知 TCP 线程可 ACK（queued 回 TCP 线程）
+	emit TcpMgr::GetInstance()->sig_chat_msg_processed(msg_id);
 }
 
 
@@ -407,26 +436,15 @@ void ChatDialog::slot_load_chat_thread(bool load_more, int last_thread_id,
 	showLoadingDlg(false);
 	//§6.2：GUI thread models 已建好，触发持久 pending replay（rebuild+重发，TCP 线程执行）
 	TcpMgr::GetInstance()->StartPendingReplay();
+	//§6.6：启动离线 pull 循环（每 OfflinePullIntervalMs 从 after_message_id=0 拉）
+	TcpMgr::GetInstance()->StartOfflinePull();
 	//继续加载聊天数据
 	loadChatMsg();
 }
 
 void ChatDialog::slot_create_private_chat(int uid, int other_id, int thread_id)
 {
-	auto* chat_user_wid = new ChatUserWid();
-	auto chat_thread_data = std::make_shared<ChatThreadData>(other_id, thread_id, 0);
-	if (chat_thread_data == nullptr) {
-		return;
-	}
-	UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, other_id);
-
-	chat_user_wid->SetChatData(chat_thread_data);
-	QListWidgetItem* item = new QListWidgetItem;
-	item->setSizeHint(chat_user_wid->sizeHint());
-	qDebug() << "chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
-	ui->chat_user_list->insertItem(0, item);
-	ui->chat_user_list->setItemWidget(item, chat_user_wid);
-	_chat_thread_items.insert(thread_id, item);
+	createPrivateChatItem(other_id, thread_id);
 
 	ui->side_chat_lb->SetSelected(true);
 	SetSelectChatItem(thread_id);
@@ -434,6 +452,22 @@ void ChatDialog::slot_create_private_chat(int uid, int other_id, int thread_id)
 	SetSelectChatPage(thread_id);
 	slot_side_chat();
 	return;
+}
+
+//§6.4 抽取自 slot_create_private_chat：创建 ChatThreadData + 列表项（供 recipient 消息 thread 不存在时复用）
+QListWidgetItem* ChatDialog::createPrivateChatItem(int other_id, int thread_id)
+{
+	auto* chat_user_wid = new ChatUserWid();
+	auto chat_thread_data = std::make_shared<ChatThreadData>(other_id, thread_id, 0);
+	UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, other_id);
+
+	chat_user_wid->SetChatData(chat_thread_data);
+	QListWidgetItem* item = new QListWidgetItem;
+	item->setSizeHint(chat_user_wid->sizeHint());
+	ui->chat_user_list->insertItem(0, item);
+	ui->chat_user_list->setItemWidget(item, chat_user_wid);
+	_chat_thread_items.insert(thread_id, item);
+	return item;
 }
 
 void ChatDialog::slot_load_chat_msg(int thread_id, int msg_id, bool load_more, 

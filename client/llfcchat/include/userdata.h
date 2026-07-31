@@ -1,4 +1,4 @@
-﻿#ifndef USERDATA_H
+#ifndef USERDATA_H
 #define USERDATA_H
 #include <QString>
 #include <memory>
@@ -261,6 +261,8 @@ public:
     int  GetThreadId();
     QMap<int, std::shared_ptr<ChatDataBase>>&  GetMsgMapRef();
     void AppendMsg(int msg_id, std::shared_ptr<ChatDataBase> base_msg);
+    //§6.4 recipient 去重：message_id 是否已在 _msg_map 中
+    bool ContainsMessage(int msg_id);
     QString GetLastMsg();
     int GetLastMsgId();
     QMap<QString, std::shared_ptr<ChatDataBase>>& GetMsgUnRspRef();

@@ -1,4 +1,4 @@
-﻿#include "userdata.h"
+#include "userdata.h"
 #include <memory>
 
 SearchInfo::SearchInfo(int uid, QString name,
@@ -119,6 +119,10 @@ void ChatThreadData::AppendMsg(int msg_id, std::shared_ptr<ChatDataBase> base_ms
     _msg_map.insert(msg_id, base_msg);
     _last_msg = base_msg->GetMsgContent();
     _last_msg_id = msg_id;
+}
+
+bool ChatThreadData::ContainsMessage(int msg_id) {
+    return _msg_map.contains(msg_id);
 }
 
 QString ChatThreadData::GetLastMsg()
