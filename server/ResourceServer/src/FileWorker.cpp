@@ -457,8 +457,27 @@ void FileWorker::CompleteChatImageUpload(std::shared_ptr<FileTask> task)
 		return;
 	}
 
-	//1) 激活离线 pending：ZADD offline_msg:<recv_uid>（score/member=message_id）+ EXPIRE
-	auto receiver_str = std::to_string(task->_receiver);
+	//MySQL 是真值：按 message_id 读 canonical ChatMessage，Redis key 与路由一律用其 recv_id，
+	//不信任任务字段（task->_receiver 可能与 canonical 分叉，污染错误用户的 ZSET）
+	auto canonical_msg = MysqlMgr::GetInstance()->GetChatMsgById(task->_chat_msg_id);
+	if (canonical_msg == nullptr) {
+		std::cerr << "CompleteChatImageUpload: canonical ChatMessage not found for chat_msg_id="
+		          << task->_chat_msg_id << ", pending not activated, peer not notified" << std::endl;
+		result["error"] = ErrorCodes::RPCFailed; //真值缺失：客户端据此重传上传
+		if (task->_callback) {
+			task->_callback(result);
+		}
+		return;
+	}
+	if (canonical_msg->recv_id != task->_receiver) {
+		//任务字段与真值分叉：记录并一律以 canonical 为准
+		std::cerr << "CompleteChatImageUpload: task receiver " << task->_receiver
+		          << " diverges from canonical recv_id " << canonical_msg->recv_id
+		          << " for msg_id=" << task->_chat_msg_id << ", using canonical" << std::endl;
+	}
+
+	//1) 激活离线 pending：ZADD offline_msg:<canonical recv_id>（score/member=message_id）+ EXPIRE
+	auto receiver_str = std::to_string(canonical_msg->recv_id);
 	auto offline_key = OFFLINE_MSG_PREFIX + receiver_str;
 	auto member = std::to_string(task->_chat_msg_id);
 	int ttl = ReadDeliveryInt("OfflineTtlSeconds", 604800);
