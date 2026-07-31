@@ -1,0 +1,95 @@
+// im_common.h — shared constants, logging and assertion helpers for the IM
+// integration tests (plan Verification.2 / Verification.3 first half).
+//
+// No test framework: every assertion prints [PASS]/[FAIL] plus a case name and
+// diagnostic, and bumps a process-wide failure counter; main() exits non-zero
+// if any failure was recorded. Header-only; included by every scenario TU.
+#pragma once
+
+#include <atomic>
+#include <cstdarg>
+#include <cstdio>
+#include <string>
+
+namespace imt {
+
+// ---- Fixture users / data (plan Verification.5) ----------------------------
+// Reuse existing fixture accounts; never create new ones.
+inline constexpr int SENDER_UID   = 1002;  // fixture sender
+inline constexpr int RECEIVER_UID = 1019;  // fixture receiver
+inline constexpr int THREAD_ID    = 35;    // fixture chat thread
+
+// ---- Harness ports (plan Verification.3: fixed suffix ports) ----------------
+// Production defaults (Gate 8080, Chat 8090/8091, Chat gRPC 50055/50056,
+// Status 50052) are NOT used by the harness; these dedicated ports keep the
+// test isolated from any concurrently running production instances.
+inline constexpr int  GATE_HTTP_PORT    = 18080;
+inline constexpr int  CHAT1_TCP_PORT    = 18090;
+inline constexpr int  CHAT2_TCP_PORT    = 18091;
+inline constexpr int  CHAT1_GRPC_PORT   = 15055;
+inline constexpr int  CHAT2_GRPC_PORT   = 15056;
+inline constexpr int  STATUS_GRPC_PORT  = 15052;
+inline constexpr int  RESOURCE_HTTP_PORT = 18081;
+
+// ---- Live externals (plan Verification.5) ----------------------------------
+inline constexpr const char* MYSQL_HOST   = "127.0.0.1";
+inline constexpr int         MYSQL_PORT   = 3308;
+inline constexpr const char* MYSQL_USER   = "root";
+inline constexpr const char* MYSQL_PASSWD = "123456.";
+inline constexpr const char* MYSQL_SCHEMA = "llfc";
+inline constexpr const char* REDIS_HOST   = "127.0.0.1";
+inline constexpr int         REDIS_PORT   = 6380;
+inline constexpr const char* REDIS_PASSWD = "123456";
+
+// ---- TCP/JSON protocol message IDs (mirror server const.h) -----------------
+inline constexpr short ID_CHAT_LOGIN              = 1005;
+inline constexpr short ID_CHAT_LOGIN_RSP          = 1006;
+inline constexpr short ID_TEXT_CHAT_MSG_REQ       = 1017;
+inline constexpr short ID_TEXT_CHAT_MSG_RSP       = 1018;
+inline constexpr short ID_NOTIFY_TEXT_CHAT_MSG    = 1019;
+inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = 1049;
+inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = 1050;
+inline constexpr short ID_PULL_OFFLINE_MSG_REQ    = 1051;
+inline constexpr short ID_PULL_OFFLINE_MSG_RSP    = 1052;
+
+// ---- Server-side ErrorCodes (mirror const.h; subset used by tests) ---------
+inline constexpr int ERR_SUCCESS             = 0;
+inline constexpr int ERR_RPC_FAILED          = 1002;
+inline constexpr int ERR_UID_INVALID         = 1011;
+inline constexpr int ERR_MESSAGE_STORE_FAILED = 1014;
+inline constexpr int ERR_RECIPIENT_OFFLINE   = 1015;
+inline constexpr int ERR_SERVER_BUSY         = 1016;
+inline constexpr int ERR_MESSAGE_CONFLICT    = 1017;
+
+// ---- Process-wide failure counter ------------------------------------------
+inline std::atomic<int> g_failures{0};
+
+inline void Log(const char* fmt, ...) {
+	va_list ap; va_start(ap, fmt);
+	std::vprintf(fmt, ap); va_end(ap);
+	std::printf("\n");
+	std::fflush(stdout);
+}
+
+inline void Pass(const std::string& name) {
+	std::printf("[PASS] %s\n", name.c_str()); std::fflush(stdout);
+}
+
+inline void Fail(const std::string& name, const std::string& detail) {
+	std::printf("[FAIL] %s : %s\n", name.c_str(), detail.c_str());
+	std::fflush(stdout);
+	++g_failures;
+}
+
+// Records a [PASS]/[FAIL] line for `name` based on `cond`. Returns cond.
+inline bool Check(bool cond, const std::string& name, const std::string& detail) {
+	if (cond) Pass(name);
+	else      Fail(name, detail);
+	return cond;
+}
+
+// Total number of message bodies the test should leave on disk/Redis untouched
+// by an entire scenario run. Used for the final summary line.
+inline int Failures() { return g_failures.load(); }
+
+} // namespace imt
