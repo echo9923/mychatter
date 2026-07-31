@@ -98,7 +98,10 @@ if(LLFC_RUN_INTEGRATION_TESTS)
 
   # One CTest entry per scenario (gtest_discover-style split), all labelled
   # "integration" so `ctest -L integration` selects exactly these.
-  set(_im_scenarios gate-smoke order-n4 order-n1 dedup)
+  set(_im_scenarios
+    gate-smoke order-n4 order-n1 dedup
+    offline lost-ack pull-bytes cross-server image-offline
+  )
   foreach(_scn ${_im_scenarios})
     add_test(NAME im_integration_${_scn}
       COMMAND im_integration_tests --scenario ${_scn})

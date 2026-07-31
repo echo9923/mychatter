@@ -47,10 +47,26 @@ inline constexpr short ID_CHAT_LOGIN_RSP          = 1006;
 inline constexpr short ID_TEXT_CHAT_MSG_REQ       = 1017;
 inline constexpr short ID_TEXT_CHAT_MSG_RSP       = 1018;
 inline constexpr short ID_NOTIFY_TEXT_CHAT_MSG    = 1019;
+inline constexpr short ID_IMG_CHAT_MSG_REQ        = 1035;
+inline constexpr short ID_IMG_CHAT_MSG_RSP        = 1036;
+inline constexpr short ID_IMG_CHAT_UPLOAD_REQ     = 1037;
+inline constexpr short ID_IMG_CHAT_UPLOAD_RSP     = 1038;
+inline constexpr short ID_NOTIFY_IMG_CHAT_MSG     = 1039;
 inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = 1049;
 inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = 1050;
 inline constexpr short ID_PULL_OFFLINE_MSG_REQ    = 1051;
 inline constexpr short ID_PULL_OFFLINE_MSG_RSP    = 1052;
+
+// ---- MsgStatus / ChatMsgType (mirror server const.h / data.h) --------------
+inline constexpr int MSG_STATUS_UN_READ   = 0;
+inline constexpr int MSG_STATUS_UN_UPLOAD = 3;
+inline constexpr int MSG_TYPE_TEXT        = 0;
+inline constexpr int MSG_TYPE_PIC         = 1;
+
+// ---- Cross-server test proxy port -----------------------------------------
+// The harness places a TCP proxy on this port between chatserver1 and
+// chatserver2's gRPC endpoint to deterministically break the live RPC.
+inline constexpr int CHAT2_PROXY_GRPC_PORT = 15057;
 
 // ---- Server-side ErrorCodes (mirror const.h; subset used by tests) ---------
 inline constexpr int ERR_SUCCESS             = 0;
@@ -91,5 +107,9 @@ inline bool Check(bool cond, const std::string& name, const std::string& detail)
 // Total number of message bodies the test should leave on disk/Redis untouched
 // by an entire scenario run. Used for the final summary line.
 inline int Failures() { return g_failures.load(); }
+
+// PullMaxBytes from [Delivery] config; the harness-generated INI sets 30000.
+// Used by pull-bytes to assert the 1052 frame stays under this ceiling.
+inline constexpr int PULL_MAX_BYTES = 30000;
 
 } // namespace imt

@@ -97,6 +97,88 @@ long long Mysql::CountByUniqueIdLike(const std::string& pattern) {
 	}
 }
 
+long long Mysql::CountByUniqueIdLikeAndDelivery(const std::string& pattern,
+                                                   int delivery_status) {
+	if (!con_) return -1;
+	try {
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
+			"SELECT COUNT(*) AS c FROM chat_message WHERE unique_id LIKE ? AND delivery_status = ?"));
+		pstmt->setString(1, pattern);
+		pstmt->setInt(2, delivery_status);
+		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+		if (res->next()) return res->getInt64("c");
+		return 0;
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] CountByUniqueIdLikeAndDelivery failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		return -1;
+	}
+}
+
+std::vector<ChatMessageRow> Mysql::QueryByMessageId(int message_id) {
+	std::vector<ChatMessageRow> out;
+	if (!con_) return out;
+	try {
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
+			"SELECT message_id, thread_id, sender_id, recv_id, unique_id, content, "
+			"created_at AS chat_time, status, msg_type, content_size, delivery_status "
+			"FROM chat_message WHERE message_id = ?"));
+		pstmt->setInt(1, message_id);
+		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+		while (res->next()) {
+			ChatMessageRow r;
+			r.message_id = res->getInt("message_id");
+			r.thread_id  = res->getInt("thread_id");
+			r.sender_id  = res->getInt("sender_id");
+			r.recv_id    = res->getInt("recv_id");
+			r.unique_id  = res->getString("unique_id");
+			r.content    = res->getString("content");
+			r.chat_time  = res->getString("chat_time");
+			r.status     = res->getInt("status");
+			r.msg_type   = res->getInt("msg_type");
+			r.content_size = static_cast<std::uint64_t>(res->getInt64("content_size"));
+			r.delivery_status = res->getInt("delivery_status");
+			out.push_back(std::move(r));
+		}
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] QueryByMessageId failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+	}
+	return out;
+}
+
+std::vector<ChatMessageRow> Mysql::QueryByRecvIdAndDelivery(int recv_id,
+                                                            int delivery_status) {
+	std::vector<ChatMessageRow> out;
+	if (!con_) return out;
+	try {
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
+			"SELECT message_id, thread_id, sender_id, recv_id, unique_id, content, "
+			"created_at AS chat_time, status, msg_type, content_size, delivery_status "
+			"FROM chat_message WHERE recv_id = ? AND delivery_status = ? "
+			"ORDER BY message_id"));
+		pstmt->setInt(1, recv_id);
+		pstmt->setInt(2, delivery_status);
+		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+		while (res->next()) {
+			ChatMessageRow r;
+			r.message_id = res->getInt("message_id");
+			r.thread_id  = res->getInt("thread_id");
+			r.sender_id  = res->getInt("sender_id");
+			r.recv_id    = res->getInt("recv_id");
+			r.unique_id  = res->getString("unique_id");
+			r.content    = res->getString("content");
+			r.chat_time  = res->getString("chat_time");
+			r.status     = res->getInt("status");
+			r.msg_type   = res->getInt("msg_type");
+			r.content_size = static_cast<std::uint64_t>(res->getInt64("content_size"));
+			r.delivery_status = res->getInt("delivery_status");
+			out.push_back(std::move(r));
+		}
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] QueryByRecvIdAndDelivery failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+	}
+	return out;
+}
+
 long long Mysql::DeleteByUniqueIdLike(const std::string& pattern) {
 	if (!con_) return -1;
 	try {

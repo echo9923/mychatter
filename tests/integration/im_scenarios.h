@@ -16,4 +16,11 @@ bool ScenarioOrderN4();
 bool ScenarioOrderN1();
 bool ScenarioDedup();
 
+// --- Verification.6 second half (plan §2-3 后半) ---
+bool ScenarioOffline();     // offline: 100 msgs, paged pull, ACK, DB/Redis cleanup
+bool ScenarioLostAck();    // lost-ack: dropped first ACK, re-pull, second ACK clears
+bool ScenarioPullBytes();  // pull-bytes: ~2KiB msgs, frame < PullMaxBytes/SHRT_MAX
+bool ScenarioCrossServer();// cross-server: gRPC proxy break, retry bounded, restart pull
+bool ScenarioImageOffline();// image-offline: sharded upload, UN_UPLOAD exclusion, PIC pull
+
 } // namespace imt

@@ -148,6 +148,7 @@ bool ProcessManager::Start(const ServiceSpec& spec, int ready_timeout_ms) {
 	CloseHandle(hLog);
 
 	Proc proc;
+	proc.name     = spec.name;
 	proc.hProcess = pi.hProcess;
 	proc.hThread  = pi.hThread;
 	proc.hJob     = hJob;
@@ -192,8 +193,6 @@ bool ProcessManager::WaitForPort(const std::string& host, unsigned short port, i
 void ProcessManager::StopAll() {
 	for (auto& p : procs_) {
 		if (p.hProcess) {
-			// TerminateProcess as a direct hammer; the Job close below also
-			// guarantees tree-wide kill.
 			TerminateProcess(p.hProcess, 1);
 		}
 	}
@@ -203,6 +202,32 @@ void ProcessManager::StopAll() {
 		if (p.hProcess) { CloseHandle(p.hProcess); p.hProcess = nullptr; }
 	}
 	procs_.clear();
+}
+
+bool ProcessManager::StopOne(const std::string& name) {
+	for (auto& p : procs_) {
+		if (p.name == name && p.hProcess) {
+			TerminateProcess(p.hProcess, 1);
+			WaitForSingleObject(p.hProcess, 3000);
+			if (p.hJob)     { CloseHandle(p.hJob);     p.hJob = nullptr; }
+			if (p.hThread)  { CloseHandle(p.hThread);  p.hThread = nullptr; }
+			if (p.hProcess) { CloseHandle(p.hProcess); p.hProcess = nullptr; }
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ProcessManager::IsRunning(const std::string& name) {
+	for (auto& p : procs_) {
+		if (p.name == name && p.hProcess) {
+			DWORD exit_code = 0;
+			if (GetExitCodeProcess(p.hProcess, &exit_code)) {
+				return exit_code == STILL_ACTIVE;
+			}
+		}
+	}
+	return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +275,15 @@ std::string MakeStatusIni() {
 
 std::string MakeChatIni(const std::string& self_name, unsigned short tcp_port,
                         unsigned short rpc_port, int logic_workers) {
+	return MakeChatIniPeer(self_name, tcp_port, rpc_port, logic_workers,
+	                       "", 0, 0);
+}
+
+std::string MakeChatIniPeer(const std::string& self_name, unsigned short tcp_port,
+                            unsigned short rpc_port, int logic_workers,
+                            const std::string& peer_name,
+                            unsigned short peer_tcp_port,
+                            unsigned short peer_rpc_port) {
 	std::string s;
 	s += "[GateServer]\nPort = " + std::to_string(GATE_HTTP_PORT) + "\n";
 	s += "[VarifyServer]\nHost = 127.0.0.1\nPort = 50051\n";
@@ -259,8 +293,13 @@ std::string MakeChatIni(const std::string& self_name, unsigned short tcp_port,
 		+ std::to_string(tcp_port) + "\nRPCPort = " + std::to_string(rpc_port) + "\n";
 	s += MysqlBlock();
 	s += RedisBlock();
-	// Single instance for these scenarios: no peers.
-	s += "[PeerServer]\nServers =\n";
+	if (peer_name.empty()) {
+		s += "[PeerServer]\nServers =\n";
+	} else {
+		s += "[PeerServer]\nServers = " + peer_name + "\n";
+		s += "[" + peer_name + "]\nName = " + peer_name + "\nHost = 127.0.0.1\nPort = "
+			+ std::to_string(peer_rpc_port) + "\n";
+	}
 	s += "[Concurrency]\nLogicWorkers = " + std::to_string(logic_workers)
 		+ "\nDeliveryWorkers = 4\n";
 	s += "[Delivery]\nOfflineTtlSeconds = 604800\nOfflinePullBatch = 100\n";
@@ -279,6 +318,23 @@ std::string MakeGateIni() {
 	s += "[ResServer]\nName = reserver\nHost = 127.0.0.1\nPort = "
 		+ std::to_string(RESOURCE_HTTP_PORT) + "\n";
 	s += "[Concurrency]\nHandlerWorkers = 4\nHandlerQueueCapacity = 1024\n";
+	return s;
+}
+
+std::string MakeResourceIni() {
+	std::string s;
+	s += "[SelfServer]\nName = reserver\nHost = 0.0.0.0\nPort = "
+		+ std::to_string(RESOURCE_HTTP_PORT) + "\n";
+	s += MysqlBlock();
+	s += RedisBlock();
+	s += "[Output]\nPath = bin\n";
+	s += "[Static]\nPath = static\n";
+	s += "[chatserver1]\nName = chatserver1\nHost = 127.0.0.1\nPort = "
+		+ std::to_string(CHAT1_GRPC_PORT) + "\n";
+	s += "[chatserver2]\nName = chatserver2\nHost = 127.0.0.1\nPort = "
+		+ std::to_string(CHAT2_GRPC_PORT) + "\n";
+	s += "[Delivery]\nOfflineTtlSeconds = 604800\nOfflinePullBatch = 100\n";
+	s += "PullMaxBytes = 30000\nRpcDeadlineMs = 3000\nRpcMaxAttempts = 3\nRpcBackoffMs = 100\n";
 	return s;
 }
 

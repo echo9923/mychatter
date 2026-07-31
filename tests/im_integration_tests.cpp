@@ -28,10 +28,15 @@ struct ScenarioEntry {
 };
 
 ScenarioEntry kScenarios[] = {
-	{ "gate-smoke", imt::ScenarioGateSmoke },
-	{ "order-n4",   imt::ScenarioOrderN4   },
-	{ "order-n1",   imt::ScenarioOrderN1   },
-	{ "dedup",      imt::ScenarioDedup     },
+	{ "gate-smoke",    imt::ScenarioGateSmoke    },
+	{ "order-n4",      imt::ScenarioOrderN4      },
+	{ "order-n1",      imt::ScenarioOrderN1      },
+	{ "dedup",         imt::ScenarioDedup        },
+	{ "offline",       imt::ScenarioOffline      },
+	{ "lost-ack",      imt::ScenarioLostAck      },
+	{ "pull-bytes",    imt::ScenarioPullBytes    },
+	{ "cross-server",  imt::ScenarioCrossServer  },
+	{ "image-offline", imt::ScenarioImageOffline },
 };
 
 } // namespace
@@ -44,7 +49,7 @@ int main(int argc, char** argv) {
 		const std::string a = argv[i];
 		if (a == "--scenario" && i + 1 < argc) { scenario = argv[++i]; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup>\n");
+			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|image-offline>\n");
 			return 0;
 		}
 	}
