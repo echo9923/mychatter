@@ -25,30 +25,18 @@ int main()
 {
 	auto& cfg = ConfigMgr::Inst();
 	auto server_name = cfg["SelfServer"]["Name"];
-	auto server_register_host = cfg["SelfServer"]["RegisterHost"];
-	if (server_register_host.empty()) {
-		server_register_host = cfg["SelfServer"]["Host"];
-	}
-	auto server_port = cfg["SelfServer"]["Port"];
 	try {
 		auto pool = AsioIOServicePool::GetInstance();
-		//注册节点元数据到Redis（服务注册）
-		json server_info;
-		server_info["name"] = server_name;
-		server_info["host"] = server_register_host;
-		server_info["port"] = server_port;
-		RedisMgr::GetInstance()->HSet(CHATSERVER_INFO_KEY, server_name, server_info.dump());
 
-		//立即发送一次心跳
-		std::string hb_key = CHATSERVER_HEARTBEAT_PREFIX + server_name;
-		RedisMgr::GetInstance()->SetWithExpire(hb_key, std::to_string(std::time(nullptr)), HEARTBEAT_TTL_SECONDS);
+		// [Discovery] lease 上报配置：缺失/非法值回退默认（间隔 5s，TTL 15s）
+		std::string ri_str = cfg["Discovery"]["ReportIntervalSeconds"];
+		std::string ttl_str = cfg["Discovery"]["LeaseTtlSeconds"];
+		int report_interval = (!ri_str.empty() && atoi(ri_str.c_str()) > 0) ? atoi(ri_str.c_str()) : 5;
+		int lease_ttl = (!ttl_str.empty() && atoi(ttl_str.c_str()) > 0) ? atoi(ttl_str.c_str()) : 15;
 
-		//将登录数设置为0
-		RedisMgr::GetInstance()->HSet(LOGIN_COUNT, server_name, "0");
+		// 优雅退出：删除自己的 lease（chatserver:lease:<name>）并关闭 Redis 连接池
 		Defer derfer ([server_name]() {
-				RedisMgr::GetInstance()->HDel(LOGIN_COUNT, server_name);
-				RedisMgr::GetInstance()->Del(CHATSERVER_HEARTBEAT_PREFIX + server_name);
-				RedisMgr::GetInstance()->HDel(CHATSERVER_INFO_KEY, server_name);
+				RedisMgr::GetInstance()->Del("chatserver:lease:" + server_name);
 				RedisMgr::GetInstance()->Close();
 			});
 
@@ -58,7 +46,27 @@ int main()
 		auto pointer_server = std::make_shared<CServer>(io_context, atoi(port_str.c_str()));
 		//启动定时器
 		pointer_server->StartTimer();
-		pointer_server->StartHeartbeat();
+
+		// lease 上报定时器：启动立即上报一次已认证会话数，此后每 report_interval 秒用
+		// SETEX chatserver:lease:<name> <lease_ttl> <count> 续租。回调以 weak_ptr 防悬挂；
+		// 上报失败只记录 server name 与错误信息（不含 Redis 凭据），下一周期自然重试。
+		auto lease_timer = std::make_shared<boost::asio::steady_timer>(io_context);
+		std::weak_ptr<CServer> server_wp(pointer_server);
+		std::function<void(const boost::system::error_code&)> report_lease;
+		report_lease = [&server_name, report_interval, lease_ttl, server_wp, lease_timer, &report_lease](const boost::system::error_code& ec) {
+			if (ec) {
+				return;
+			}
+			auto sp = server_wp.lock();
+			int auth_count = sp ? sp->GetAuthenticatedSessionCount() : 0;
+			const std::string lease_key = "chatserver:lease:" + server_name;
+			if (!RedisMgr::GetInstance()->SetEx(lease_key, lease_ttl, std::to_string(auth_count))) {
+				std::cerr << "lease report failed for " << server_name << std::endl;
+			}
+			lease_timer->expires_after(std::chrono::seconds(report_interval));
+			lease_timer->async_wait(report_lease);
+		};
+		report_lease(boost::system::error_code{});
 
 		//定义一个GrpcServer
 

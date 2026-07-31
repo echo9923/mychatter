@@ -392,9 +392,13 @@ LogicSystem::LogicSystem() {
 		// 返回值包含：分配的ChatServer的host、port，以及用于TCP连接认证的token
 		auto reply = StatusGrpcClient::GetInstance()->GetChatServer(userInfo.uid);
 		if (reply.error()) {
-			// gRPC调用失败（可能是StatusServer不可用或无可用ChatServer）
-			std::cout << " grpc get chat server failed, error is " << reply.error()<< std::endl;
-			root["error"] = ErrorCodes::RPCFailed;
+			// Status 返回业务错误：NoAvailableChatServer（所有 lease 缺失/过期）
+			// 或其他非零（StatusServer 不可用等 RPC 失败）。均不返回空 host/port。
+			int err = reply.error();
+			root["error"] = (err == ErrorCodes::NoAvailableChatServer)
+				? ErrorCodes::NoAvailableChatServer
+				: ErrorCodes::RPCFailed;
+			std::cout << " grpc get chat server failed, error is " << err << std::endl;
 			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;

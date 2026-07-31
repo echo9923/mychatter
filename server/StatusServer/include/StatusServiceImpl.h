@@ -1,7 +1,9 @@
 #pragma once
 #include <grpcpp/grpcpp.h>
 #include "status.grpc.pb.h"
+#include <atomic>
 #include <mutex>
+#include <vector>
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -45,6 +47,8 @@ private:
 	void insertToken(int uid, std::string token);
 	ChatServer getChatServer();
 	std::unordered_map<std::string, ChatServer> _servers;
+	std::vector<std::string> _server_order;  // 配置中 ChatServer 名称的出现顺序
+	std::atomic<size_t> _rr{0};              // 同负载候选轮转起点，避免配置首项长期占优
 	std::mutex _server_mtx;
 
 };

@@ -76,6 +76,7 @@ inline constexpr int ERR_MESSAGE_STORE_FAILED = 1014;
 inline constexpr int ERR_RECIPIENT_OFFLINE   = 1015;
 inline constexpr int ERR_SERVER_BUSY         = 1016;
 inline constexpr int ERR_MESSAGE_CONFLICT    = 1017;
+inline constexpr int ERR_NO_AVAILABLE_CHAT_SERVER = 1018;
 
 // ---- Process-wide failure counter ------------------------------------------
 inline std::atomic<int> g_failures{0};
@@ -105,6 +106,9 @@ inline bool Check(bool cond, const std::string& name, const std::string& detail)
 }
 
 // Total number of message bodies the test should leave on disk/Redis untouched
+inline std::string ChatLeaseKey(const std::string& name) {
+	return "chatserver:lease:" + name;
+}
 // by an entire scenario run. Used for the final summary line.
 inline int Failures() { return g_failures.load(); }
 

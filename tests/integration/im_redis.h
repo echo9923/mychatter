@@ -23,6 +23,7 @@ public:
 	void Close();
 
 	bool Set(const std::string& key, const std::string& value);
+	bool SetEx(const std::string& key, int ttl, const std::string& value);
 	bool Get(const std::string& key, std::string& value);
 	bool Del(const std::string& key);
 	bool Exists(const std::string& key, bool& out);
@@ -30,6 +31,7 @@ public:
 	// Inspect offline_msg:<uid>: members of the pending ZSET (sorted by score).
 	bool ZRange(const std::string& key, std::vector<std::string>& members);
 	int  ZCard(const std::string& key);
+	int  Ttl(const std::string& key);  // -2 key 不存在, -1 无 TTL, 否则剩余秒
 	bool ZRem(const std::string& key, const std::string& member);
 	bool FlushZSet(const std::string& key);  // remove the whole ZSET key
 

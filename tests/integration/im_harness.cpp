@@ -304,6 +304,7 @@ std::string MakeChatIniPeer(const std::string& self_name, unsigned short tcp_por
 		+ "\nDeliveryWorkers = 4\n";
 	s += "[Delivery]\nOfflineTtlSeconds = 604800\nOfflinePullBatch = 100\n";
 	s += "PullMaxBytes = 30000\nRpcDeadlineMs = 3000\nRpcMaxAttempts = 3\nRpcBackoffMs = 100\n";
+	s += "[Discovery]\nReportIntervalSeconds = 2\nLeaseTtlSeconds = 8\n";
 	return s;
 }
 

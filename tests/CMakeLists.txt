@@ -48,6 +48,12 @@ if(LLFC_RUN_INTEGRATION_TESTS)
   find_package(nlohmann_json CONFIG REQUIRED)
   find_package(hiredis CONFIG REQUIRED)
   find_package(mysql-concpp CONFIG REQUIRED)
+  # Status gRPC client (im_status_client) drives GetChatServer against the
+  # harness StatusServer; mirror StatusServer's proto + gRPC linkage.
+  include(GrpcCodegen)
+  find_package(gRPC CONFIG REQUIRED)
+  find_package(Protobuf CONFIG REQUIRED)
+  llfc_ensure_status_proto()
 
   add_executable(im_integration_tests
     im_integration_tests.cpp
@@ -57,6 +63,7 @@ if(LLFC_RUN_INTEGRATION_TESTS)
     integration/im_mysql.cpp
     integration/im_harness.cpp
     integration/im_scenarios.cpp
+    integration/im_status_client.cpp
     integration/im_common.h
     integration/im_frame.h
     integration/im_tcp_client.h
@@ -65,6 +72,7 @@ if(LLFC_RUN_INTEGRATION_TESTS)
     integration/im_mysql.h
     integration/im_harness.h
     integration/im_scenarios.h
+    integration/im_status_client.h
   )
 
   target_include_directories(im_integration_tests PRIVATE
@@ -77,6 +85,8 @@ if(LLFC_RUN_INTEGRATION_TESTS)
     nlohmann_json::nlohmann_json
     hiredis::hiredis
     mysql::concpp-jdbc-static
+    llfc_status_proto
+    gRPC::grpc++
   )
 
   target_compile_features(im_integration_tests PRIVATE cxx_std_17)
@@ -101,6 +111,7 @@ if(LLFC_RUN_INTEGRATION_TESTS)
   set(_im_scenarios
     gate-smoke order-n4 order-n1 dedup
     offline lost-ack pull-bytes cross-server image-offline
+    status-discovery
   )
   foreach(_scn ${_im_scenarios})
     add_test(NAME im_integration_${_scn}

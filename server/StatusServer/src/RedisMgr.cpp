@@ -79,7 +79,7 @@ bool RedisMgr::Set(const std::string &key, const std::string &value){
 }
 
 
-bool RedisMgr::SetWithExpire(const std::string& key, const std::string& value, int expire_seconds) {
+bool RedisMgr::SetEx(const std::string& key, int ttl_seconds, const std::string& value) {
 	auto connect = _con_pool->getConnection();
 	if (connect == nullptr) {
 		return false;
@@ -87,10 +87,10 @@ bool RedisMgr::SetWithExpire(const std::string& key, const std::string& value, i
 
 	// 使用SETEX命令，同时设置值和过期时间
 	auto reply = (redisReply*)redisCommand(connect, "SETEX %s %d %s",
-		key.c_str(), expire_seconds, value.c_str());
+		key.c_str(), ttl_seconds, value.c_str());
 
 	if (NULL == reply) {
-		std::cout << "Execute command [ SETEX " << key << " " << expire_seconds
+		std::cout << "Execute command [ SETEX " << key << " " << ttl_seconds
 			<< " " << value << " ] failure!" << std::endl;
 		_con_pool->returnConnection(connect);
 		return false;
@@ -98,7 +98,7 @@ bool RedisMgr::SetWithExpire(const std::string& key, const std::string& value, i
 
 	if (!(reply->type == REDIS_REPLY_STATUS &&
 		(strcmp(reply->str, "OK") == 0 || strcmp(reply->str, "ok") == 0))) {
-		std::cout << "Execute command [ SETEX " << key << " " << expire_seconds
+		std::cout << "Execute command [ SETEX " << key << " " << ttl_seconds
 			<< " " << value << " ] failure!" << std::endl;
 		freeReplyObject(reply);
 		_con_pool->returnConnection(connect);
@@ -106,7 +106,7 @@ bool RedisMgr::SetWithExpire(const std::string& key, const std::string& value, i
 	}
 
 	freeReplyObject(reply);
-	std::cout << "Execute command [ SETEX " << key << " " << expire_seconds
+	std::cout << "Execute command [ SETEX " << key << " " << ttl_seconds
 		<< " " << value << " ] success!" << std::endl;
 	_con_pool->returnConnection(connect);
 	return true;

@@ -3,12 +3,9 @@
 #include <ctime>
 #include "AsioIOServicePool.h"
 #include "UserMgr.h"
-#include "RedisMgr.h"
-#include "ConfigMgr.h"
 
 CServer::CServer(boost::asio::io_context& io_context, short port):_io_context(io_context), _port(port),
-_acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _timer(_io_context, std::chrono::seconds(60)),
-_heartbeat_timer(_io_context, std::chrono::seconds(10))
+_acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _timer(_io_context, std::chrono::seconds(60))
 {
 	cout << "Server start success, listen on port : " << _port << endl;
 
@@ -74,13 +71,27 @@ bool CServer::CheckValid(std::string uuid)
 	return false;
 }
 
+int CServer::GetAuthenticatedSessionCount() {
+	std::map<std::string, shared_ptr<CSession>> sessions_copy;
+	{
+		lock_guard<mutex> lock(_mutex);
+		sessions_copy = _sessions;
+	}
+	int count = 0;
+	for (const auto& kv : sessions_copy) {
+		if (kv.second && kv.second->GetUserId() > 0) {
+			count++;
+		}
+	}
+	return count;
+}
+
 void CServer::on_timer(const boost::system::error_code& ec) {
 	if (ec) {
 		std::cout << "timer error: " << ec.message() << std::endl;
 		return;
 	}
 	std::vector<std::shared_ptr<CSession>> _expired_sessions;
-	int session_count = 0;
 	//此处加锁遍历session
 	std::map<std::string, shared_ptr<CSession>> sessions_copy;
 	{
@@ -98,14 +109,7 @@ void CServer::on_timer(const boost::system::error_code& ec) {
 			_expired_sessions.push_back(iter->second);
 			continue;
 		}
-		session_count++;
 	}
-
-	//设置session数量
-	auto& cfg = ConfigMgr::Inst();
-	auto self_name = cfg["SelfServer"]["Name"];
-	auto count_str = std::to_string(session_count);
-	RedisMgr::GetInstance()->HSet(LOGIN_COUNT, self_name, count_str);
 
 	//处理过期session, 单独提出，防止死锁
 	for (auto &session : _expired_sessions) {
@@ -128,38 +132,7 @@ void CServer::StartTimer()
 		});
 }
 
-void CServer::StartHeartbeat()
-{
-	auto self(shared_from_this());
-	_heartbeat_timer.async_wait([self](boost::system::error_code ec) {
-		self->on_heartbeat(ec);
-		});
-}
-
-void CServer::StopHeartbeat()
-{
-	_heartbeat_timer.cancel();
-}
-
-void CServer::on_heartbeat(const boost::system::error_code& ec) {
-	if (ec) {
-		return;
-	}
-	auto& cfg = ConfigMgr::Inst();
-	auto self_name = cfg["SelfServer"]["Name"];
-	std::string hb_key = CHATSERVER_HEARTBEAT_PREFIX + self_name;
-	auto now = std::to_string(std::time(nullptr));
-	RedisMgr::GetInstance()->SetWithExpire(hb_key, now, HEARTBEAT_TTL_SECONDS);
-
-	_heartbeat_timer.expires_after(std::chrono::seconds(10));
-	auto self(shared_from_this());
-	_heartbeat_timer.async_wait([self](boost::system::error_code ec) {
-		self->on_heartbeat(ec);
-		});
-}
-
 void CServer::StopTimer()
 {
 	_timer.cancel();
-	_heartbeat_timer.cancel();
 }

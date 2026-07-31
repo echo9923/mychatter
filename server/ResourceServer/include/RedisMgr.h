@@ -306,10 +306,6 @@ public:
 	bool releaseLock(const std::string& lockName,
 		const std::string& identifier);
 
-	void IncreaseCount(std::string server_name);
-	void DecreaseCount(std::string server_name);
-	void InitCount(std::string server_name);
-	void DelCount(std::string server_name);
 	bool SetFileInfo(const std::string& name, std::shared_ptr<FileInfo>);
 	std::shared_ptr<FileInfo> GetFileInfo(const std::string& name);
 	std::shared_ptr<FileInfo> GetDownloadInfo(const std::string& name);
