@@ -158,6 +158,20 @@ public:
 	/// 更新心跳时间戳为当前时间
 	void UpdateHeartbeat();
 
+	/**
+	 * @brief 设置本会话绑定的可恢复会话令牌（登录/续期成功后调用）
+	 *
+	 * 以 _token_mtx 保护，与 GetSessionToken / on_timer 续期并发安全。
+	 * @param token 由 security::GenerateSessionToken 生成或客户端续期提交的令牌
+	 */
+	void SetSessionToken(const std::string& token);
+
+	/**
+	 * @brief 获取本会话绑定的会话令牌副本
+	 * @return 令牌字符串副本；未登录时为空串
+	 */
+	std::string GetSessionToken() const;
+
 	/// 处理异常会话（连接断开、错误等），清理资源并通知服务器
 	void DealExceptionSession();
 
@@ -215,6 +229,10 @@ private:
 	std::atomic<time_t> _last_heartbeat;
 	/// 会话级别的互斥锁，保护会话状态的并发访问
 	std::mutex _session_mtx;
+	/// 本会话绑定的可恢复会话令牌（session:token:v2:<uid> 的值），由 _token_mtx 保护
+	std::string _session_token;
+	/// 保护 _session_token 的互斥锁，允许 const GetSessionToken 加锁（mutable）
+	mutable std::mutex _token_mtx;
 };
 
 /**

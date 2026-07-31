@@ -76,6 +76,7 @@ add_executable(ResourceServer
 
 target_include_directories(ResourceServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${LLFC_REPO_ROOT}/server/common/include"
 )
 
 target_link_libraries(ResourceServer PRIVATE
@@ -86,6 +87,7 @@ target_link_libraries(ResourceServer PRIVATE
   Boost::property_tree
   Boost::uuid
   nlohmann_json::nlohmann_json
+  OpenSSL::Crypto
   hiredis::hiredis
   mysql::concpp-jdbc-static
 )

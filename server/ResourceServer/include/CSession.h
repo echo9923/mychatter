@@ -5,9 +5,11 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
+#include <atomic>
 #include <queue>
 #include <mutex>
 #include <memory>
+#include <string>
 #include "const.h"
 #include "MsgNode.h"
 using namespace std;
@@ -29,8 +31,10 @@ public:
 	~CSession();
 	tcp::socket& GetSocket();
 	std::string& GetSessionId();
-	void SetUserId(int uid);
-	int GetUserId();
+	void SetAuth(int uid, const std::string& token);
+	bool IsAuthed() const;
+	int GetUserId() const;
+	std::string GetSessionToken() const;
 	void Start();
 	void Send(char* msg,  short max_length, short msgid);
 	void Send(std::string msg, short msgid);
@@ -57,7 +61,10 @@ private:
 	bool _b_head_parse;
 	//收到的头部结构
 	std::shared_ptr<MsgNode> _recv_head_node;
-	int _user_uid;
+	std::atomic<bool> _authed{false};
+	std::atomic<int> _user_uid{0};
+	std::string _session_token;
+	mutable std::mutex _token_mtx;
 };
 
 

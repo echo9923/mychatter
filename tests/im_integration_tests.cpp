@@ -9,13 +9,15 @@
 // all) recorded a failure.
 //
 // Each scenario owns its own ProcessManager (spawns Status/Chat/Gate with
-// generated INIs on dedicated ports, tears them down on exit), seeds Redis
-// utoken_<uid>, connects a headless client, and cleans its own DB/Redis
+// generated INIs on dedicated ports, tears them down on exit), logs a uid in
+// to a ChatServer via a one-time chat ticket, and cleans its own DB/Redis
 // footprint. Built and registered as CTest cases only when
 // LLFC_RUN_INTEGRATION_TESTS=ON (see tests/CMakeLists.txt).
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <windows.h>
 
 #include "integration/im_scenarios.h"
 #include "integration/im_common.h"
@@ -38,6 +40,7 @@ ScenarioEntry kScenarios[] = {
 	{ "cross-server",  imt::ScenarioCrossServer  },
 	{ "image-offline", imt::ScenarioImageOffline },
 	{ "status-discovery", imt::ScenarioStatusDiscovery },
+	{ "auth-ticket",   imt::ScenarioAuthTicket   },
 };
 
 } // namespace
@@ -45,12 +48,33 @@ ScenarioEntry kScenarios[] = {
 int main(int argc, char** argv) {
 	std::printf("=== im_integration_tests (Verification.2-3) ===\n");
 
+	// Inject the mTLS certificate paths into the process environment so the
+	// spawned StatusServer / GateServer children inherit them (plan 3.2). The
+	// servers fail-fast if any of these is missing; the test CA/server/gate certs
+	// live under tests/integration/certs.
+	{
+		const std::string cert_dir = std::string(IM_REPO_ROOT)
+			+ "/tests/integration/certs/";
+		struct EnvCert { const char* env; const char* file; };
+		const EnvCert kCerts[] = {
+			{ "LLFC_STATUS_CA_CERT_PATH",     "ca.crt"     },
+			{ "LLFC_STATUS_SERVER_CERT_PATH", "server.crt" },
+			{ "LLFC_STATUS_SERVER_KEY_PATH",  "server.key" },
+			{ "LLFC_GATE_CLIENT_CERT_PATH",   "gate.crt"   },
+			{ "LLFC_GATE_CLIENT_KEY_PATH",    "gate.key"   },
+		};
+		for (const auto& c : kCerts) {
+			const std::string path = cert_dir + c.file;
+			SetEnvironmentVariableA(c.env, path.c_str());
+		}
+	}
+
 	std::string scenario;
 	for (int i = 1; i < argc; ++i) {
 		const std::string a = argv[i];
 		if (a == "--scenario" && i + 1 < argc) { scenario = argv[++i]; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|image-offline|status-discovery>\n");
+			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|image-offline|status-discovery|auth-ticket>\n");
 			return 0;
 		}
 	}

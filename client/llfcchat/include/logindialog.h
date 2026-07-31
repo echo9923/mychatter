@@ -39,7 +39,6 @@ signals:
     void switchRegister();
     void switchReset();
     void sig_connect_tcp(std::shared_ptr<ServerInfo>);
-    void sig_connect_res_server(std::shared_ptr<ServerInfo>);
     void sig_test();
 };
 

@@ -7,6 +7,8 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QSettings>
+#include <QMessageBox>
+#include <QJsonArray>
 #include <filetcpmgr.h>
 #include <QStandardPaths>
 
@@ -165,6 +167,8 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
         connect(_offline_pull_timer, &QTimer::timeout, this, &TcpMgr::slot_offline_pull_timeout);
         //读取 [Delivery] 配置
         loadDeliveryConfig();
+        //3.2 一次性净化旧 QSettings 离线队列中的 token 字段（迁移到 auth_payload_version=2）
+        sanitizeLegacyDeliverySettings();
         //注册消息
         initHandlers();
 
@@ -281,7 +285,8 @@ void TcpMgr::initHandlers()
         auto user_info = std::make_shared<UserInfo>(uid, name, nick, icon, sex,"",desc);
  
         UserMgr::GetInstance()->SetUserInfo(user_info);
-        UserMgr::GetInstance()->SetToken(jsonObj["token"].toString());
+        //3.2 Chat 登录响应返回 session_token（不再返回 token/pwd）
+        UserMgr::GetInstance()->SetToken(jsonObj["session_token"].toString());
         if(jsonObj.contains("apply_list")){
             UserMgr::GetInstance()->AppendApplyList(jsonObj["apply_list"].toArray());
         }
@@ -294,7 +299,8 @@ void TcpMgr::initHandlers()
         //恢复持久 pending 请求（仅同 uid，不同账号绝不互载）
         restorePendingRequests(uid);
 
-        emit sig_swich_chatdlg();
+        //3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource（UI 切换延迟到 Resource 鉴权成功）
+        emit sig_connect_resource(_server_info);
     });
 
 
@@ -986,13 +992,11 @@ void TcpMgr::initHandlers()
         file_info->_current_size = buffer.size() + (file_info->_seq - 1) * MAX_FILE_LEN;
         file_obj["trans_size"] = QString::number(file_info->_current_size);
         file_obj["total_size"] = QString::number(file_info->_total_size);
-        file_obj["token"] = UserMgr::GetInstance()->GetToken();
         file_obj["md5"] = file_info->_md5;
-        file_obj["uid"] = UserMgr::GetInstance()->GetUid();
+        //3.2 token/uid/sender 由 Resource 从 session 派生，不再发送
         file_obj["data"] = base64Data;
         file_obj["message_id"] = msg_id;
         file_obj["receiver"] = receiver;
-        file_obj["sender"] = sender;
 
         if (buffer.size() + (file_info->_seq - 1) * MAX_FILE_LEN >= file_info->_total_size) {
             file_obj["last"] = 1;
@@ -1153,6 +1157,8 @@ void TcpMgr::slot_tcp_close() {
 void TcpMgr::slot_tcp_connect(std::shared_ptr<ServerInfo> si)
 {
     qDebug()<< "receive tcp connect signal";
+    // 3.2 保存 ServerInfo，Chat 认证成功后传给 FileTcpMgr 连接 Resource
+    _server_info = si;
     // 尝试连接到服务器
     qDebug() << "Connecting to chat server...";
     _host = si->_chat_host;
@@ -1238,17 +1244,15 @@ void TcpMgr::dispatchIncomingMessage(int message_id, const QString& unique_id,
 
         emit sig_img_chat_msg(img_chat_data_ptr);
 
-        //组织下载请求
-        QJsonObject jsonObj_send;
-        jsonObj_send["name"] = img_name;
-        jsonObj_send["seq"] = file_info->_seq;
-        jsonObj_send["trans_size"] = "0";
-        jsonObj_send["total_size"] = QString::number(file_info->_total_size);
-        jsonObj_send["token"] = UserMgr::GetInstance()->GetToken();
-        jsonObj_send["sender_id"] = fromuid;
-        jsonObj_send["receiver_id"] = touid;
-        jsonObj_send["message_id"] = message_id;
-        jsonObj_send["uid"] = uid;
+		//组织下载请求
+		QJsonObject jsonObj_send;
+		jsonObj_send["name"] = img_name;
+		jsonObj_send["seq"] = file_info->_seq;
+		jsonObj_send["trans_size"] = "0";
+		jsonObj_send["total_size"] = QString::number(file_info->_total_size);
+		//3.2 Resource 鉴权后从 session 取 uid，不再发送 token/uid/sender_id
+		jsonObj_send["receiver_id"] = touid;
+		jsonObj_send["message_id"] = message_id;
 
         QDir chatimgDir(img_path_str);
         if (!chatimgDir.exists()) {
@@ -1303,6 +1307,81 @@ void TcpMgr::loadDeliveryConfig()
              << " AckRetryInitialMs=" << _ack_retry_initial_ms
              << " OfflinePullIntervalMs=" << _offline_pull_interval_ms
              << " OfflinePullBatch=" << _offline_pull_batch;
+}
+
+//3.2 一次性净化旧 QSettings 离线队列：删除每条 payload 中的 token 键，无法解析的 record 删除并提示。
+//迁移完成后写入 auth_payload_version=2，后续启动跳过。
+void TcpMgr::sanitizeLegacyDeliverySettings()
+{
+    QSettings delivery_settings(QSettings::IniFormat, QSettings::UserScope,
+                                "llfc", "llfcchat-delivery");
+
+    //已迁移到 v2，跳过
+    if (delivery_settings.value("auth_payload_version").toInt() == 2) {
+        return;
+    }
+
+    bool dirty = false;       //是否有 token 被删除
+    bool dropped_any = false; //是否有无法解析的 record 被删除
+
+    for (const QString& group : delivery_settings.childGroups()) {
+        if (!group.startsWith("uid_")) {
+            continue;
+        }
+        delivery_settings.beginGroup(group);
+        QString req_str = delivery_settings.value("requests").toString();
+        if (req_str.isEmpty()) {
+            delivery_settings.endGroup();
+            continue;
+        }
+        QJsonDocument doc = QJsonDocument::fromJson(req_str.toUtf8());
+        if (!doc.isArray()) {
+            delivery_settings.endGroup();
+            continue;
+        }
+        QJsonArray arr = doc.array();
+        QJsonArray cleaned;
+        bool group_dirty = false;
+        for (int i = 0; i < arr.size(); ++i) {
+            QJsonObject obj = arr.at(i).toObject();
+            QString payload_str = obj["payload"].toString();
+            QJsonDocument pdoc = QJsonDocument::fromJson(payload_str.toUtf8());
+            if (pdoc.isNull() || !pdoc.isObject()) {
+                //无法解析的 record：删除并记录
+                qWarning() << "[Delivery] dropped unparseable pending record in" << group;
+                dropped_any = true;
+                dirty = true;
+                continue;
+            }
+            QJsonObject payload = pdoc.object();
+            if (payload.contains("token")) {
+                //删除 token 键（fromuid/touid 等业务字段保留）
+                payload.remove("token");
+                obj["payload"] = QString::fromUtf8(
+                    QJsonDocument(payload).toJson(QJsonDocument::Compact));
+                group_dirty = true;
+                dirty = true;
+            }
+            cleaned.append(obj);
+        }
+        if (group_dirty) {
+            delivery_settings.setValue("requests",
+                QString::fromUtf8(QJsonDocument(cleaned).toJson(QJsonDocument::Compact)));
+        }
+        delivery_settings.endGroup();
+    }
+
+    if (dirty) {
+        delivery_settings.sync();
+    }
+    //写入 v2 marker（全局顶层 key）
+    delivery_settings.setValue("auth_payload_version", 2);
+    delivery_settings.sync();
+
+    if (dropped_any) {
+        QMessageBox::warning(nullptr, tr("数据迁移"),
+            tr("检测到无法解析的旧离线消息记录，已自动删除以保证安全。"));
+    }
 }
 
 void TcpMgr::slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids)

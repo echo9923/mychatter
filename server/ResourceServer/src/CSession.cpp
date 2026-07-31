@@ -23,14 +23,28 @@ std::string& CSession::GetSessionId() {
 	return _session_id;
 }
 
-void CSession::SetUserId(int uid)
+void CSession::SetAuth(int uid, const std::string& token)
 {
-	_user_uid = uid;
+	_authed.store(true);
+	_user_uid.store(uid);
+	std::lock_guard<std::mutex> lock(_token_mtx);
+	_session_token = token;
 }
 
-int CSession::GetUserId()
+bool CSession::IsAuthed() const
 {
-	return _user_uid;
+	return _authed.load();
+}
+
+int CSession::GetUserId() const
+{
+	return _user_uid.load();
+}
+
+std::string CSession::GetSessionToken() const
+{
+	std::lock_guard<std::mutex> lock(_token_mtx);
+	return _session_token;
 }
 
 void CSession::Start(){

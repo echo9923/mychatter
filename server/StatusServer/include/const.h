@@ -61,10 +61,10 @@ private:
 };
 
 #define USERIPPREFIX  "uip_"
-#define USERTOKENPREFIX  "utoken_"
 #define IPCOUNTPREFIX  "ipcount_"
 #define USER_BASE_INFO "ubaseinfo_"
 #define LOCK_COUNT "lockcount"
+#define CHAT_TICKET_PREFIX "chat:ticket:"
 
 //分布式锁的持有时间
 #define LOCK_TIME_OUT 10

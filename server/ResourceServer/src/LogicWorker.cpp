@@ -5,6 +5,25 @@
 #include "ConfigMgr.h"
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
+#include "SecurityUtil.h"
+
+//将请求消息id映射为对应的回复消息id；无对应回复（通知类）或未知id返回0
+static short ReqToRspId(short msg_id)
+{
+	switch (msg_id) {
+	case ID_TEST_MSG_REQ:                   return ID_TEST_MSG_RSP;
+	case ID_UPLOAD_FILE_REQ:                return ID_UPLOAD_FILE_RSP;
+	case ID_SYNC_FILE_REQ:                  return ID_SYNC_FILE_RSP;
+	case ID_UPLOAD_HEAD_ICON_REQ:           return ID_UPLOAD_HEAD_ICON_RSP;
+	case ID_DOWN_LOAD_FILE_REQ:             return ID_DOWN_LOAD_FILE_RSP;
+	case ID_IMG_CHAT_UPLOAD_REQ:            return ID_IMG_CHAT_UPLOAD_RSP;
+	case ID_FILE_INFO_SYNC_REQ:             return ID_FILE_INFO_SYNC_RSP;
+	case ID_IMG_CHAT_CONTINUE_UPLOAD_REQ:   return ID_IMG_CHAT_CONTINUE_UPLOAD_RSP;
+	case ID_IMG_CHAT_DOWN_INFO_SYNC_REQ:    return ID_IMG_CHAT_DOWN_INFO_SYNC_RSP;
+	case ID_IMG_CHAT_DOWN_REQ:              return ID_IMG_CHAT_DOWN_RSP;
+	default:                                return 0;
+	}
+}
 
 LogicWorker::LogicWorker():_b_stop(false)
 {
@@ -81,7 +100,7 @@ void LogicWorker::RegisterCallBacks()
 			auto last = root["last"].get<int>();
 			auto file_data = root["data"].get<std::string>();
 			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto uid = root["uid"].get<int>();
+			auto uid = session->GetUserId();
 			//转化为字符串
 			auto uid_str = std::to_string(uid);
 			auto file_path_str = (file_path / uid_str/ name).string();
@@ -195,8 +214,7 @@ void LogicWorker::RegisterCallBacks()
 			auto trans_size = root["trans_size"].get<int>();
 			auto last = root["last"].get<int>();
 			auto file_data = root["data"].get<std::string>();
-			auto uid = root["uid"].get<int>();
-			auto token = root["token"].get<std::string>();
+			auto uid = session->GetUserId();
 			auto last_seq = root["last_seq"].get<int>();
 			//转化为字符串
 			auto uid_str = std::to_string(uid);
@@ -219,28 +237,6 @@ void LogicWorker::RegisterCallBacks()
 				std::string return_str = rtvalue.dump(4);
 				session->Send(return_str, ID_UPLOAD_HEAD_ICON_RSP);
 			};
-
-			//第一个包校验一下token是否合理
-			if (seq == 1) {
-				//从redis获取用户token是否正确
-				std::string uid_str = std::to_string(uid);
-				std::string token_key = USERTOKENPREFIX + uid_str;
-				std::string token_value = "";
-				bool success = RedisMgr::GetInstance()->Get(token_key, token_value);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::UidInvalid;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_UPLOAD_HEAD_ICON_RSP);
-					return;
-				}
-
-				if (token_value != token) {
-					rtvalue["error"] = ErrorCodes::TokenInvalid;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_UPLOAD_HEAD_ICON_RSP);
-					return;
-				}
-			}
 
 			// 使用 std::hash 对字符串进行哈希
 			std::hash<std::string> hash_fn;
@@ -302,8 +298,7 @@ void LogicWorker::RegisterCallBacks()
 			auto root = json::parse(msg_data, nullptr, false);
 			auto seq = root["seq"].get<int>();
 			auto name = root["name"].get<std::string>();
-			auto uid = root["uid"].get<int>();
-			auto token = root["token"].get<std::string>();
+			auto uid = session->GetUserId();
 			auto client_path = root["client_path"].get<std::string>();
 			auto req_type = root["req_type"].get<std::string>();
 			//转化为字符串
@@ -322,28 +317,6 @@ void LogicWorker::RegisterCallBacks()
 				std::string return_str = rtvalue.dump(4);
 				session->Send(return_str, ID_DOWN_LOAD_FILE_RSP);
 			};
-
-			//第一个包校验一下token是否合理
-			if (seq == 1) {
-				//从redis获取用户token是否正确
-				std::string uid_str = std::to_string(uid);
-				std::string token_key = USERTOKENPREFIX + uid_str;
-				std::string token_value = "";
-				bool success = RedisMgr::GetInstance()->Get(token_key, token_value);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::UidInvalid;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_DOWN_LOAD_FILE_RSP);
-					return;
-				}
-
-				if (token_value != token) {
-					rtvalue["error"] = ErrorCodes::TokenInvalid;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_DOWN_LOAD_FILE_RSP);
-					return;
-				}
-			}
 
 			// 使用 std::hash 对字符串进行哈希
 			std::hash<std::string> hash_fn;
@@ -371,8 +344,9 @@ void LogicWorker::RegisterCallBacks()
 			auto last = root["last"].get<int>();
 			auto file_data = root["data"].get<std::string>();
 			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto uid = root["uid"].get<int>();
-			auto sender = root["sender"].get<int>();
+			auto uid = session->GetUserId();
+			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
+			auto sender = uid;
 			auto receiver = root["receiver"].get<int>();
 			auto message_id = root["message_id"].get<int>();
 			//转化为字符串
@@ -462,9 +436,10 @@ void LogicWorker::RegisterCallBacks()
 			auto last = root["last"].get<int>();
 			auto file_data = root["data"].get<std::string>();
 			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto uid = root["uid"].get<int>();
+			auto uid = session->GetUserId();
 			auto message_id = root["message_id"].get<int>();
-			auto sender = root["sender"].get<int>();
+			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
+			auto sender = uid;
 			auto receiver = root["receiver"].get<int>();
 			//转化为字符串
 			auto uid_str = std::to_string(uid);
@@ -550,9 +525,10 @@ void LogicWorker::RegisterCallBacks()
 			auto last = root["last"].get<int>();
 			auto file_data = root["data"].get<std::string>();
 			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto uid = root["uid"].get<int>();
+			auto uid = session->GetUserId();
 			auto message_id = root["message_id"].get<int>();
-			auto sender = root["sender"].get<int>();
+			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
+			auto sender = uid;
 			auto receiver = root["receiver"].get<int>();
 			//转化为字符串
 			auto uid_str = std::to_string(uid);
@@ -685,8 +661,7 @@ void LogicWorker::RegisterCallBacks()
 			auto message_id = root["message_id"].get<int>();
 			auto sender = root["sender_id"].get<int>();
 			auto receiver = root["receiver_id"].get<int>();
-			auto token = root["token"].get<std::string>();
-			auto uid = root["uid"].get<int>();
+			auto uid = session->GetUserId();
 			
 			auto callback = [=](const json& result) {
 				// 在异步任务完成后调用
@@ -706,29 +681,6 @@ void LogicWorker::RegisterCallBacks()
 			std::cout << "Hash value: " << hash_value << std::endl;
 
 
-			//第一个包校验一下token是否合理
-			if (seq == 1) {
-				//从redis获取用户token是否正确
-				std::string uid_str = std::to_string(uid);
-				std::string token_key = USERTOKENPREFIX + uid_str;
-				std::string token_value = "";
-				bool success = RedisMgr::GetInstance()->Get(token_key, token_value);
-				json  rtvalue;
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::UidInvalid;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_IMG_CHAT_DOWN_RSP);
-					return;
-				}
-
-				if (token_value != token) {
-					rtvalue["error"] = ErrorCodes::TokenInvalid;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_IMG_CHAT_DOWN_RSP);
-					return;
-				}
-			}
-
 			auto sender_str = std::to_string(sender);
 			//转化为字符串
 			auto uid_str = std::to_string(uid);
@@ -738,16 +690,95 @@ void LogicWorker::RegisterCallBacks()
 
 			FileSystem::GetInstance()->PostDownloadTaskToQue(down_load_task,index);
 	};
-	
+
+	_fun_callbacks[ID_RESOURCE_LOGIN_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+		const string& msg_data) {
+			auto root = json::parse(msg_data, nullptr, false);
+
+			int uid = 0;
+			std::string session_token;
+			bool parse_ok = root.is_object();
+			if (parse_ok) {
+				try {
+					uid = root["uid"].get<int>();
+					session_token = root["session_token"].get<std::string>();
+				}
+				catch (...) {
+					parse_ok = false;
+				}
+			}
+
+			json rtvalue;
+			//解析失败按未授权处理(fail closed)，不暴露具体差异
+			if (!parse_ok) {
+				rtvalue["error"] = ErrorCodes::TokenInvalid;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
+				return;
+			}
+
+			//校验session token: session:token:v2:<uid>，常量时间比较，失败即返回TokenInvalid
+			std::string stored;
+			bool ok = RedisMgr::GetInstance()->Get(SESSION_TOKEN_V2_PREFIX + std::to_string(uid), stored);
+			if (!ok || !security::ConstantTimeEquals(stored, session_token)) {
+				rtvalue["error"] = ErrorCodes::TokenInvalid;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
+				return;
+			}
+
+			session->SetAuth(uid, session_token);
+			rtvalue["error"] = ErrorCodes::Success;
+			rtvalue["uid"] = uid;
+			session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
+	};
 }
 
 void LogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 {
-	cout << "recv_msg id  is " << task->_recvnode->_msg_id << endl;
-	auto call_back_iter = _fun_callbacks.find(task->_recvnode->_msg_id);
+	auto session = task->_session;
+	short msg_id = task->_recvnode->_msg_id;
+	std::string msg_data(task->_recvnode->_data, task->_recvnode->_cur_len);
+
+	cout << "recv_msg id  is " << msg_id << endl;
+
+	//登录鉴权握手是唯一允许在未认证状态下处理的消息
+	if (msg_id == ID_RESOURCE_LOGIN_REQ) {
+		auto call_back_iter = _fun_callbacks.find(msg_id);
+		if (call_back_iter == _fun_callbacks.end()) {
+			return;
+		}
+		call_back_iter->second(session, msg_id, msg_data);
+		return;
+	}
+
+	//鉴权门控：除登录外所有消息都要求会话已认证，否则返回TokenInvalid并关闭连接
+	if (!session->IsAuthed()) {
+		short rsp_id = ReqToRspId(msg_id);
+		if (rsp_id != 0) {
+			json rtvalue;
+			rtvalue["error"] = ErrorCodes::TokenInvalid;
+			session->Send(rtvalue.dump(4), rsp_id);
+		}
+		session->Close();
+		return;
+	}
+
+	//每请求重验：从Redis读取session:token:v2:<uid>并常量时间比较，失败即关闭(fail closed)
+	std::string stored;
+	bool ok = RedisMgr::GetInstance()->Get(SESSION_TOKEN_V2_PREFIX + std::to_string(session->GetUserId()), stored);
+	if (!ok || !security::ConstantTimeEquals(stored, session->GetSessionToken())) {
+		short rsp_id = ReqToRspId(msg_id);
+		if (rsp_id != 0) {
+			json rtvalue;
+			rtvalue["error"] = ErrorCodes::TokenInvalid;
+			session->Send(rtvalue.dump(4), rsp_id);
+		}
+		session->Close();
+		return;
+	}
+
+	auto call_back_iter = _fun_callbacks.find(msg_id);
 	if (call_back_iter == _fun_callbacks.end()) {
 		return;
 	}
-	call_back_iter->second(task->_session, task->_recvnode->_msg_id,
-		std::string(task->_recvnode->_data, task->_recvnode->_cur_len));
+	call_back_iter->second(session, msg_id, msg_data);
 }

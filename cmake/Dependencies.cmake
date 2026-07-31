@@ -17,6 +17,7 @@ function(llfc_find_server_dependencies)
   find_package(Protobuf CONFIG REQUIRED)
   find_package(hiredis CONFIG REQUIRED)
   find_package(mysql-concpp CONFIG REQUIRED)
+  find_package(OpenSSL REQUIRED)
 endfunction()
 
 function(llfc_find_client_dependencies)

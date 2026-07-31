@@ -453,5 +453,118 @@ bool RedisMgr::HGetAll(const std::string& key, std::unordered_map<std::string, s
 	return true;
 }
 
+std::vector<std::string> RedisMgr::Scan(const std::string& pattern) {
+	std::vector<std::string> result;
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) {
+		return result;
+	}
+
+	Defer defer([&connect, this]() {
+		_con_pool->returnConnection(connect);
+		});
+
+	long long cursor = 0;
+	do {
+		auto reply = (redisReply*)redisCommand(connect, "SCAN %lld MATCH %s COUNT 200",
+			cursor, pattern.c_str());
+		if (reply == nullptr || reply->type != REDIS_REPLY_ARRAY || reply->elements < 2) {
+			if (reply) freeReplyObject(reply);
+			return result;
+		}
+
+		// element[0] = new cursor string, element[1] = key array
+		auto cursor_reply = reply->element[0];
+		if (cursor_reply->type == REDIS_REPLY_STRING) {
+			cursor = std::stoll(std::string(cursor_reply->str, cursor_reply->len));
+		} else if (cursor_reply->type == REDIS_REPLY_INTEGER) {
+			cursor = cursor_reply->integer;
+		} else {
+			freeReplyObject(reply);
+			return result;
+		}
+
+		auto keys_reply = reply->element[1];
+		if (keys_reply->type == REDIS_REPLY_ARRAY) {
+			for (size_t i = 0; i < keys_reply->elements; ++i) {
+				result.emplace_back(keys_reply->element[i]->str, keys_reply->element[i]->len);
+			}
+		}
+
+		freeReplyObject(reply);
+	} while (cursor != 0);
+
+	return result;
+}
+
+bool RedisMgr::SetNx(const std::string& key, const std::string& value, int ttl_seconds) {
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) {
+		return false;
+	}
+
+	Defer defer([&connect, this]() {
+		_con_pool->returnConnection(connect);
+		});
+
+	auto reply = (redisReply*)redisCommand(connect, "SET %s %s NX EX %d",
+		key.c_str(), value.c_str(), ttl_seconds);
+	if (reply == nullptr) {
+		return false;
+	}
+
+	bool success = (reply->type == REDIS_REPLY_STATUS &&
+		reply->str != nullptr &&
+		(strcmp(reply->str, "OK") == 0 || strcmp(reply->str, "ok") == 0));
+	freeReplyObject(reply);
+	return success;
+}
+
+std::string RedisMgr::Eval(const std::string& script,
+	const std::vector<std::string>& keys,
+	const std::vector<std::string>& args) {
+	auto connect = _con_pool->getConnection();
+	if (connect == nullptr) {
+		return "";
+	}
+
+	Defer defer([&connect, this]() {
+		_con_pool->returnConnection(connect);
+		});
+
+	// Build EVAL command: EVAL <script> <numkeys> <key...> <arg...>
+	int argc = static_cast<int>(2 + 1 + keys.size() + args.size());
+	std::vector<const char*> argv(argc);
+	std::vector<size_t> argvlen(argc);
+
+	int idx = 0;
+	argv[idx] = "EVAL";          argvlen[idx] = 4;          ++idx;
+	argv[idx] = script.c_str();   argvlen[idx] = script.size(); ++idx;
+
+	std::string numkeys_str = std::to_string(keys.size());
+	argv[idx] = numkeys_str.c_str(); argvlen[idx] = numkeys_str.size(); ++idx;
+
+	for (const auto& k : keys) {
+		argv[idx] = k.c_str();   argvlen[idx] = k.size();   ++idx;
+	}
+	for (const auto& a : args) {
+		argv[idx] = a.c_str();   argvlen[idx] = a.size();   ++idx;
+	}
+
+	auto reply = (redisReply*)redisCommandArgv(connect, argc, argv.data(), argvlen.data());
+	if (reply == nullptr) {
+		return "";
+	}
+
+	std::string result;
+	if (reply->type == REDIS_REPLY_STRING && reply->str != nullptr) {
+		result.assign(reply->str, reply->len);
+	} else if (reply->type == REDIS_REPLY_INTEGER) {
+		result = std::to_string(reply->integer);
+	}
+	freeReplyObject(reply);
+	return result;
+}
+
 
 

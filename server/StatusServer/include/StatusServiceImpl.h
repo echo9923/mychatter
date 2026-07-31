@@ -44,7 +44,6 @@ public:
 	Status Login(ServerContext* context, const LoginReq* request,
 		LoginRsp* reply) override;
 private:
-	void insertToken(int uid, std::string token);
 	ChatServer getChatServer();
 	std::unordered_map<std::string, ChatServer> _servers;
 	std::vector<std::string> _server_order;  // 配置中 ChatServer 名称的出现顺序

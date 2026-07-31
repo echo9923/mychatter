@@ -141,8 +141,6 @@ inline short ReqToRspId(short req_id) {
 
 /// Redis中存储用户IP地址的键前缀，完整键为 "uip_" + uid
 #define USERIPPREFIX  "uip_"
-/// Redis中存储用户登录Token的键前缀，完整键为 "utoken_" + uid
-#define USERTOKENPREFIX  "utoken_"
 /// Redis中存储各ChatServer节点IP连接数的键前缀，用于负载均衡
 #define IPCOUNTPREFIX  "ipcount_"
 /// Redis中存储用户基本信息的Hash键前缀，完整键为 "ubaseinfo_" + uid
@@ -157,6 +155,10 @@ inline short ReqToRspId(short req_id) {
 #define LOCK_COUNT "lockcount"
 /// Redis中离线消息待投递有序集合的键前缀，完整键为 "offline_msg:" + recv_uid，ZSET member/score 均为十进制 message_id
 #define OFFLINE_MSG_PREFIX "offline_msg:"
+/// Redis中可恢复会话令牌的键前缀，完整键为 "session:token:v2:" + uid（由 ChatServer 写入/刷新，TTL+compare-and-expire 管理）
+#define SESSION_TOKEN_V2_PREFIX "session:token:v2:"
+/// Redis中一次性 mTLS 登录票据的键前缀，完整键为 "chat:ticket:" + uuid（由 StatusServer SETEX 60s 创建，ChatServer GETDEL 原子消费）
+#define CHAT_TICKET_PREFIX "chat:ticket:"
 
 /// 分布式锁的持有超时时间（秒），超时后锁自动释放防止死锁
 #define LOCK_TIME_OUT 10

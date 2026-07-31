@@ -27,6 +27,7 @@
 #include "MysqlMgr.h"          // MySQL管理器，用于用户数据的持久化操作
 #include "StatusGrpcClient.h"  // 状态服务的gRPC客户端（调用StatusServer分配ChatServer）
 #include "ConfigMgr.h"         // 配置读取，用于解析 [Concurrency] worker 数与队列容量
+#include "SecurityUtil.h"      // SHA-256 / constant-time compare for session tokens
 
 /**
  * @brief 从 [Concurrency] 读取一个正整数配置项，缺失/非数字/<=0 时回退
@@ -324,7 +325,7 @@ LogicSystem::LogicSystem() {
 		bool b_up = MysqlMgr::GetInstance()->UpdatePwd(name, pwd);
 		if (!b_up) {
 			// 数据库更新失败（可能是连接异常等原因）
-			std::cout << " update pwd failed" << std::endl;
+			std::cout << " update credentials failed" << std::endl;
 			root["error"] = ErrorCodes::PasswdUpFailed;
 			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
@@ -332,7 +333,7 @@ LogicSystem::LogicSystem() {
 		}
 
 		// 密码重置成功，返回成功响应
-		std::cout << "succeed to update password" << pwd << std::endl;
+		std::cout << "succeed to update credentials" << std::endl;
 		root["error"] = 0;
 		root["email"] = email;
 		root["user"] = name;
@@ -348,17 +349,16 @@ LogicSystem::LogicSystem() {
 	// 处理流程：
 	//   1. 解析请求JSON，提取邮箱和密码
 	//   2. 查询MySQL验证邮箱和密码是否匹配，同时获取用户完整信息
-	//   3. 通过gRPC调用StatusServer，为该用户分配一个可用的ChatServer
-	//      （StatusServer负责负载均衡，返回ChatServer的地址、端口和认证token）
+	//   3. 通过mTLS gRPC调用StatusServer，为该用户分配一个可用的ChatServer
+	//      并签发一次性 chat_ticket（60s TTL，ChatServer 原子消费）
 	//   4. 从配置文件读取ResourceServer的地址信息
 	//   5. 将ChatServer连接信息和ResourceServer信息返回给客户端
 	// 请求体JSON格式: {"email":"...", "passwd":"..."}
-	// 响应体JSON格式: {"error":0, "email":"...", "uid":123, "token":"...", 
+	// 响应体JSON格式: {"error":0, "email":"...", "uid":123, "chat_ticket":"...", 
 	//                  "chathost":"...", "chatport":"...", "reshost":"...", "resport":"..."}
 	RegPost("/user_login", [](std::shared_ptr<HttpConnection> connection) {
-		// 提取并打印请求体
+		// 提取请求体（不打印 body，避免泄露密码）
 		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
-		std::cout << "receive body is " << body_str << std::endl;
 		connection->_response.set(http::field::content_type, "text/json");
 		json root;
 		// 解析请求体JSON
@@ -376,21 +376,18 @@ LogicSystem::LogicSystem() {
 		auto pwd = src_root["passwd"].get<std::string>();   // 用户密码
 		UserInfo userInfo;  // 用于接收从数据库查询到的用户完整信息
 		// 【校验1】查询MySQL验证邮箱和密码是否匹配
-		// CheckPwd内部会根据email查询用户记录，比对密码，并将uid/name/icon等填入userInfo
 		bool pwd_valid = MysqlMgr::GetInstance()->CheckPwd(email, pwd, userInfo);
 		if (!pwd_valid) {
-			// 密码错误或用户不存在
-			std::cout << " user pwd not match" << std::endl;
+			std::cout << " user credentials mismatch" << std::endl;
 			root["error"] = ErrorCodes::PasswdInvalid;
 			std::string jsonstr = root.dump(4);
 			beast::ostream(connection->_response.body()) << jsonstr;
 			return true;
 		}
 
-		// 【步骤2】通过gRPC调用StatusServer，为用户分配一个ChatServer
-		// StatusServer维护所有ChatServer的连接状态，实现负载均衡分配
-		// 返回值包含：分配的ChatServer的host、port，以及用于TCP连接认证的token
-		auto reply = StatusGrpcClient::GetInstance()->GetChatServer(userInfo.uid);
+		// 【步骤2】通过mTLS gRPC调用StatusServer，为用户分配一个ChatServer
+		// 返回值包含：分配的ChatServer的host、port，以及一次性 chat_ticket
+		auto reply = StatusGrpcClient::GetInstance()->GetChatServer(userInfo.uid, 0, "");
 		if (reply.error()) {
 			// Status 返回业务错误：NoAvailableChatServer（所有 lease 缺失/过期）
 			// 或其他非零（StatusServer 不可用等 RPC 失败）。均不返回空 host/port。
@@ -408,12 +405,11 @@ LogicSystem::LogicSystem() {
 		std::cout << "succeed to load userinfo uid is " << userInfo.uid << std::endl;
 		root["error"] = 0;
 		root["email"] = email;
-		root["uid"] = userInfo.uid;         // 用户唯一标识ID
-		root["token"] = reply.token();       // TCP连接认证令牌（由StatusServer生成）
-		root["chathost"] = reply.host();     // 分配的ChatServer的IP地址
-		root["chatport"] = reply.port();     // 分配的ChatServer的端口号
+		root["uid"] = userInfo.uid;             // 用户唯一标识ID
+		root["chat_ticket"] = reply.chat_ticket();  // 一次性 chat 票据（60s TTL）
+		root["chathost"] = reply.host();       // 分配的ChatServer的IP地址
+		root["chatport"] = reply.port();       // 分配的ChatServer的端口号
 		// 【步骤4】从配置文件读取ResourceServer（资源服务器）的地址信息
-		// ResourceServer用于文件传输、图片上传下载等资源服务
 		auto& gCfgMgr = ConfigMgr::Inst();
 		std::string res_port = gCfgMgr["ResServer"]["Port"];
 		std::string res_host = gCfgMgr["ResServer"]["Host"];
@@ -423,6 +419,74 @@ LogicSystem::LogicSystem() {
 		// 序列化JSON并写入HTTP响应体
 		std::string jsonstr = root.dump(4);
 		beast::ostream(connection->_response.body()) << jsonstr;
+		return true;
+		});
+
+	// ==================== POST /reconnect ====================
+	// 断线重连接口（持有效 session token 恢复会话）
+	// 处理流程：
+	//   1. 解析 {uid, session_token}
+	//   2. 常量时间比较 session:token:v2:<uid> 与请求 token
+	//   3. 计算 token SHA-256，通过mTLS gRPC 向 StatusServer 请求 RESUME 票据
+	//   4. 返回 chat/resource 地址和新的一次性 chat_ticket
+	// 请求体JSON格式: {"uid":123, "session_token":"..."}
+	// 响应体JSON格式: {"error":0, "uid":123, "chat_ticket":"...",
+	//                  "chathost":"...", "chatport":"...", "reshost":"...", "resport":"..."}
+	RegPost("/reconnect", [](std::shared_ptr<HttpConnection> connection) {
+		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
+		connection->_response.set(http::field::content_type, "text/json");
+		json root;
+		auto src_root = json::parse(body_str, nullptr, false);
+		if (src_root.is_discarded()) {
+			root["error"] = ErrorCodes::Error_Json;
+			beast::ostream(connection->_response.body()) << root.dump(4);
+			return true;
+		}
+
+		// 提取 uid 和 session_token
+		if (!src_root.contains("uid") || !src_root.contains("session_token")) {
+			root["error"] = ErrorCodes::Error_Json;
+			beast::ostream(connection->_response.body()) << root.dump(4);
+			return true;
+		}
+		auto uid = src_root["uid"].get<int>();
+		auto session_token = src_root["session_token"].get<std::string>();
+
+		// 验证 session token：常量时间比较 Redis 中的 v2 token
+		std::string token_key = SESSION_TOKEN_V2_PREFIX + std::to_string(uid);
+		std::string stored_token;
+		bool got = RedisMgr::GetInstance()->Get(token_key, stored_token);
+		if (!got || !security::ConstantTimeEquals(stored_token, session_token)) {
+			root["error"] = ErrorCodes::TokenInvalid;
+			beast::ostream(connection->_response.body()) << root.dump(4);
+			return true;
+		}
+
+		// 计算 session token SHA-256，随 RESUME 票据下发给 ChatServer 比对
+		std::string sha256 = security::Sha256Hex(session_token);
+
+		// 通过mTLS gRPC 向 StatusServer 请求 RESUME 票据（intent=1）
+		auto reply = StatusGrpcClient::GetInstance()->GetChatServer(uid, 1, sha256);
+		if (reply.error()) {
+			int err = reply.error();
+			root["error"] = (err == ErrorCodes::NoAvailableChatServer)
+				? ErrorCodes::NoAvailableChatServer
+				: ErrorCodes::RPCFailed;
+			std::cout << " reconnect grpc failed, error is " << err << std::endl;
+			beast::ostream(connection->_response.body()) << root.dump(4);
+			return true;
+		}
+
+		// 成功：返回 chat/resource 地址和新的一次性 chat_ticket
+		root["error"] = 0;
+		root["uid"] = uid;
+		root["chat_ticket"] = reply.chat_ticket();
+		root["chathost"] = reply.host();
+		root["chatport"] = reply.port();
+		auto& gCfgMgr = ConfigMgr::Inst();
+		root["reshost"] = gCfgMgr["ResServer"]["Host"];
+		root["resport"] = gCfgMgr["ResServer"]["Port"];
+		beast::ostream(connection->_response.body()) << root.dump(4);
 		return true;
 		});
 

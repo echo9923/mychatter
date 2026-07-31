@@ -16,18 +16,66 @@ std::string generate_unique_string() {
 	return unique_string;
 }
 
+/// Verify that the caller presented a client certificate whose SAN contains
+/// "llfc-gate".  Returns false when no mTLS peer identity or wrong SAN.
+static bool VerifyGateCert(ServerContext* context) {
+	auto auth_ctx = context->auth_context();
+	if (auth_ctx == nullptr) {
+		return false;
+	}
+	auto sans = auth_ctx->FindPropertyValues("x509_subject_alternative_name");
+	for (const auto& san_ref : sans) {
+		std::string san(san_ref.data(), san_ref.length());
+		if (san.find("llfc-gate") != std::string::npos) {
+			return true;
+		}
+	}
+	return false;
+}
+
 Status StatusServiceImpl::GetChatServer(ServerContext* context, const GetChatServerReq* request, GetChatServerRsp* reply)
 {
+	// --- mTLS: require a valid client cert with SAN=llfc-gate ---
+	if (!VerifyGateCert(context)) {
+		return Status(grpc::StatusCode::UNAUTHENTICATED,
+			"client certificate SAN must be llfc-gate");
+	}
+
+	// --- Least-loaded live node selection (3.1) ---
 	const auto& server = getChatServer();
 	if (server.host.empty()) {
 		reply->set_error(ErrorCodes::NoAvailableChatServer);
 		return Status::OK;
 	}
+
+	// --- Issue one-time chat ticket ---
+	std::string ticket_uuid = generate_unique_string();
+
+	json ticket_json;
+	ticket_json["uid"] = request->uid();
+	ticket_json["server"] = server.name;
+	ticket_json["intent"] = static_cast<int>(request->intent());
+
+	// RESUME: embed the session-token SHA-256 so Chat can compare it.
+	if (request->intent() == message::RESUME &&
+		!request->session_token_sha256().empty()) {
+		ticket_json["session_token_sha256"] = request->session_token_sha256();
+	}
+
+	std::string ticket_key = CHAT_TICKET_PREFIX + ticket_uuid;
+	std::string ticket_value = ticket_json.dump();
+
+	if (!RedisMgr::GetInstance()->SetEx(ticket_key, 60, ticket_value)) {
+		// Redis failure: do not return server address.
+		reply->set_error(ErrorCodes::RPCFailed);
+		return Status::OK;
+	}
+
+	reply->set_error(ErrorCodes::Success);
+	reply->set_server_name(server.name);
 	reply->set_host(server.host);
 	reply->set_port(server.port);
-	reply->set_error(ErrorCodes::Success);
-	reply->set_token(generate_unique_string());
-	insertToken(request->uid(), reply->token());
+	reply->set_chat_ticket(ticket_uuid);
 	return Status::OK;
 }
 
@@ -122,32 +170,8 @@ ChatServer StatusServiceImpl::getChatServer() {
 
 Status StatusServiceImpl::Login(ServerContext* context, const LoginReq* request, LoginRsp* reply)
 {
-	auto uid = request->uid();
-	auto token = request->token();
-
-	std::string uid_str = std::to_string(uid);
-	std::string token_key = USERTOKENPREFIX + uid_str;
-	std::string token_value = "";
-	bool success = RedisMgr::GetInstance()->Get(token_key, token_value);
-	if (!success) {
-		reply->set_error(ErrorCodes::UidInvalid);
-		return Status::OK;
-	}
-	
-	if (token_value != token) {
-		reply->set_error(ErrorCodes::TokenInvalid);
-		return Status::OK;
-	}
-	reply->set_error(ErrorCodes::Success);
-	reply->set_uid(uid);
-	reply->set_token(token);
+	// v2 认证迁移后旧 utoken_ 存储已被清除且不再写入；此 Login RPC 为遗留死路径
+	//（计划 3.3 整体删除），任何调用一律 fail closed，绝不回查已废弃的旧令牌存储。
+	reply->set_error(ErrorCodes::TokenInvalid);
 	return Status::OK;
 }
-
-void StatusServiceImpl::insertToken(int uid, std::string token)
-{
-	std::string uid_str = std::to_string(uid);
-	std::string token_key = USERTOKENPREFIX + uid_str;
-	RedisMgr::GetInstance()->Set(token_key, token);
-}
-
