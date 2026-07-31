@@ -11,15 +11,17 @@
 - [config.ini（Gate）](file://server/GateServer/config/config.ini)
 - [config.ini（Status）](file://server/StatusServer/config/config.ini)
 - [redis.js（VarifyServer）](file://server/VarifyServer/redis.js)
+- [LogicSystem.cpp](file://server/ChatServer/src/LogicSystem.cpp)
 - [day35心跳逻辑.md](file://开发文档/day35心跳逻辑.md)
 </cite>
 
 ## 更新摘要
 **变更内容**   
-- 更新了RedisMgr类的详细Doxygen注释说明
-- 增强了连接池管理和分布式锁的功能描述
-- 完善了缓存操作接口的文档说明
-- 补充了实时数据操作的完整功能说明
+- 新增Redis有序集合操作支持：ZAdd()、ZRangeByScore()、ZRem()方法
+- 新增键过期管理功能：Expire()方法
+- 完善了离线消息处理的有序集合实现
+- 增强了二进制安全的数据操作方法
+- 更新了分布式锁和连接池管理的详细注释
 
 ## 目录
 1. [简介](#简介)
@@ -40,7 +42,7 @@
 ## 简介
 本技术文档围绕 LLFCChat 的 Redis 缓存系统，系统性阐述连接池管理、序列化格式、缓存策略设计，以及用户会话缓存、好友关系缓存、在线状态缓存的实现方案。同时给出键命名规范、过期策略、一致性保障机制，覆盖缓存预热、失效处理与故障转移细节，并提供配置调优、内存管理与性能监控的最佳实践，以及在高并发场景下对缓存穿透、雪崩、击穿的解决方案。
 
-**更新** RedisMgr类已添加详细的Doxygen注释，包括缓存和实时数据操作的完整功能说明，为开发者提供了更清晰的API使用指导。
+**更新** RedisMgr类已新增有序集合操作方法和键过期管理功能，包括ZAdd()、ZRangeByScore()、ZRem()、Expire()四个二进制安全方法，为离线消息处理和排序数据存储提供了强大的支持。
 
 ## 项目结构
 LLFCChat 在多个服务中复用统一的 Redis 抽象层：
@@ -80,11 +82,11 @@ VS --> R
 
 ## 核心组件
 - **RedisConPool**：基于 hiredis 的连接池，负责连接创建、认证、获取/归还、空闲检测、异常重连与资源清理。
-- **RedisMgr**：对外暴露 Get/Set/LPush/RPush/HSet/HGet/HDel/Del/ExistsKey 等原子操作，以及分布式锁 acquire/release 和登录计数统计。
+- **RedisMgr**：对外暴露 Get/Set/LPush/RPush/HSet/HGet/HDel/Del/ExistsKey 等原子操作，以及分布式锁 acquire/release、登录计数统计和**新增的有序集合操作**。
 - **DistLock**：基于 SET NX EX + Lua 脚本的分布式锁实现，确保跨进程/跨服务的互斥访问。
-- **常量与配置**：统一键前缀（如 USER_SESSION_PREFIX、USERIPPREFIX、LOGIN_COUNT、LOCK_PREFIX 等）与锁超时参数。
+- **常量与配置**：统一键前缀（如 USER_SESSION_PREFIX、USERIPPREFIX、LOGIN_COUNT、LOCK_PREFIX、OFFLINE_MSG_PREFIX 等）与锁超时参数。
 
-**更新** RedisMgr类现在包含完整的Doxygen注释，详细说明了每个方法的功能、参数和返回值，为开发者提供了清晰的使用指南。
+**更新** RedisMgr类现在包含完整的Doxygen注释，详细说明了每个方法的功能、参数和返回值，特别是新增的ZAdd()、ZRangeByScore()、ZRem()、Expire()四个有序集合操作方法。
 
 **章节来源**
 - [RedisMgr.h](file://server/ChatServer/include/RedisMgr.h)
@@ -94,7 +96,7 @@ VS --> R
 - [const.h](file://server/ChatServer/include/const.h)
 
 ## 架构总览
-整体采用"服务进程内单例 RedisMgr + 连接池"模式，所有 Redis 访问通过统一接口完成；分布式锁由 DistLock 提供；业务侧（如心跳、踢人、登录计数）通过 RedisMgr 调用。
+整体采用"服务进程内单例 RedisMgr + 连接池"模式，所有 Redis 访问通过统一接口完成；分布式锁由 DistLock 提供；业务侧（如心跳、踢人、登录计数、离线消息处理）通过 RedisMgr 调用。
 
 ```mermaid
 classDiagram
@@ -112,6 +114,10 @@ class RedisMgr {
 +LPush/RPush/LPop/RPop(...)
 +HSet/HGet/HDel(...)
 +Del/ExistsKey(...)
++ZAdd(key, score, member) bool
++ZRangeByScore(key, min, limit, members) bool
++ZRem(key, member) bool
++Expire(key, seconds) bool
 +acquireLock(lockName, lockTimeout, acquireTimeout) string
 +releaseLock(lockName, identifier) bool
 +IncreaseCount/DecreaseCount/InitCount/DelCount(server_name)
@@ -198,9 +204,36 @@ Fail --> End
 - **返回值类型校验**（STRING/INTEGER/NIL/STATUS），失败路径打印日志并返回 false/空串。
 - **使用 Defer 模式**确保异常路径也能归还连接。
 
-**更新** RedisMgr类的所有方法现在都包含详细的Doxygen注释，说明了每个缓存操作的具体功能和错误处理机制。
+**更新** RedisMgr类的所有方法现在都包含详细的Doxygen注释，说明了每个缓存操作的具体功能和错误处理机制，特别是新增的有序集合操作方法。
 
 **章节来源**
+- [RedisMgr.cpp](file://server/ChatServer/src/RedisMgr.cpp)
+
+### 有序集合操作与离线消息处理
+- **ZAdd()**：向有序集合添加成员及其分值，使用二进制安全的argv方式传递参数，避免特殊字符问题。
+- **ZRangeByScore()**：按分值范围查询有序集合成员，支持排他下界和LIMIT分页。
+- **ZRem()**：从有序集合移除指定成员，用于消息确认后的清理。
+- **Expire()**：为键设置过期时间，配合有序集合实现自动清理。
+
+**更新** 新增的有序集合操作主要用于离线消息处理场景，通过message_id作为score实现消息的时间顺序存储。
+
+```mermaid
+flowchart TD
+A["离线消息入库"] --> B["ZADD offline_msg:uid message_id message_id"]
+B --> C["消息投递成功"]
+C --> D["ZREM offline_msg:uid message_id"]
+E["客户端拉取离线消息"] --> F["ZRANGEBYSCORE offline_msg:uid after_id +inf LIMIT 0 limit"]
+F --> G["批量删除已消费消息"]
+G --> H["ZREM offline_msg:uid message_id"]
+I["定时清理"] --> J["EXPIRE offline_msg:uid ttl"]
+```
+
+**图表来源**
+- [LogicSystem.cpp](file://server/ChatServer/src/LogicSystem.cpp)
+- [RedisMgr.cpp](file://server/ChatServer/src/RedisMgr.cpp)
+
+**章节来源**
+- [LogicSystem.cpp](file://server/ChatServer/src/LogicSystem.cpp)
 - [RedisMgr.cpp](file://server/ChatServer/src/RedisMgr.cpp)
 
 ### 登录计数与服务器负载统计
@@ -271,12 +304,14 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
   - NAME_INFO：名称索引（nameinfo_）
   - LOGIN_COUNT：各服务登录计数（logincount）
   - LOCK_PREFIX：分布式锁前缀（lock_）
+  - **OFFLINE_MSG_PREFIX**：**离线消息有序集合（offline_msg:）**
 - **过期策略**：
   - 会话与令牌建议使用 EX/PX 设置 TTL，结合心跳刷新。
   - 登录计数为持久型 HASH，不设置过期。
   - 分布式锁通过 EX 自动过期，防止死锁。
+  - **离线消息通过 Expire() 设置 TTL，实现自动清理**。
 
-**更新** 键命名规范现在包含更详细的说明，解释了每种键类型的使用场景和最佳实践。
+**更新** 键命名规范现在包含更详细的说明，解释了每种键类型的使用场景和最佳实践，特别是新增的离线消息有序集合键。
 
 **章节来源**
 - [const.h](file://server/ChatServer/include/const.h)
@@ -286,8 +321,9 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
 - **分布式锁**：加锁-执行业务-解锁三段式，Lua 脚本保证判断与删除原子性。
 - **会话一致性**：心跳周期内以 Redis 中的 session_id 为准，多端登录冲突时以最新为准。
 - **计数一致性**：登录计数更新前加锁，避免并发叠加或丢失。
+- **有序集合一致性**：ZAdd/ZRem操作保证消息顺序的一致性，Expire确保过期数据的自动清理。
 
-**更新** 数据一致性机制现在有更详细的说明，包括分布式锁的原子性保证和并发控制策略。
+**更新** 数据一致性机制现在有更详细的说明，包括分布式锁的原子性保证、并发控制策略和有序集合操作的原子性。
 
 **章节来源**
 - [DistLock.cpp](file://server/ChatServer/src/DistLock.cpp)
@@ -299,7 +335,7 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
 - **失效**：业务变更时主动 Del/HDel 对应键；会话类键通过 TTL 自然失效。
 - **故障转移**：连接池健康检查与自动重连；若 Redis 不可用，上层应降级（如本地缓存或限流）。
 
-**更新** 故障转移策略现在包含更详细的降级方案和恢复机制说明。
+**更新** 故障转移策略现在包含更详细的降级方案和恢复机制说明，特别是有序集合操作的故障处理。
 
 **章节来源**
 - [RedisMgr.h](file://server/ChatServer/include/RedisMgr.h)
@@ -312,20 +348,27 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
   - 过期时间加入随机抖动；热点键采用逻辑过期+后台异步重建。
 - **击穿**（热点键瞬时失效）：
   - 加分布式锁保证只有一线程回源重建；或使用互斥信号量控制重建并发。
+- **有序集合雪崩**：
+  - 为有序集合设置合理的TTL，避免大量有序集合同时过期。
 
 [本节为通用策略说明，不直接分析具体文件]
 
 ## 监控与调优建议
 - **关键指标**：
   - 连接池大小、活跃连接数、命中率、平均/尾延迟、错误率、重连次数。
+  - **有序集合操作成功率、过期键清理效率**。
 - **配置调优**：
   - 连接池大小按峰值 QPS×平均 RT/1s 估算；适当增大以减少等待。
   - 合理设置心跳与健检频率，平衡 CPU 与可靠性。
+  - **离线消息TTL根据业务需求调整，平衡内存占用和数据保留时间**。
 - **监控手段**：
   - 采集 Redis 服务端 stats（connected_clients、keyspace_hits/misses、used_memory）。
   - 应用侧埋点：命令耗时、失败次数、锁等待时长。
+  - **监控有序集合大小变化趋势，及时发现内存增长问题**。
 
 [本节为通用指导，不直接分析具体文件]
 
 ## 结论
-LLFCChat 的 Redis 子系统以连接池为核心，配合分布式锁与统一命令封装，实现了稳定可靠的缓存与状态管理能力。**更新** 随着RedisMgr类添加的详细Doxygen注释，开发者现在可以获得更清晰的API使用指导和功能说明，有助于更好地理解和维护缓存系统。通过规范的键命名、合理的过期策略与健壮的错误处理，支撑了会话、在线状态与计数等关键场景。面向高并发与高可用，建议进一步引入批量/管道、热点键保护、多级缓存与完善的监控告警体系，持续提升系统吞吐与稳定性。
+LLFCChat 的 Redis 子系统以连接池为核心，配合分布式锁与统一命令封装，实现了稳定可靠的缓存与状态管理能力。**更新** 随着RedisMgr类新增的有序集合操作方法和键过期管理功能，系统现在能够高效处理离线消息、排行榜、时间序列等需要排序的数据场景。通过规范的键命名、合理的过期策略与健壮的错误处理，支撑了会话、在线状态、计数和有序集合等关键场景。面向高并发与高可用，建议进一步引入批量/管道、热点键保护、多级缓存与完善的监控告警体系，持续提升系统吞吐与稳定性。
+
+**新增的ZAdd()、ZRangeByScore()、ZRem()、Expire()方法为LLFCChat的离线消息处理提供了强大的支持，通过有序集合实现消息的时间顺序存储和高效查询，配合TTL机制确保数据的自动清理，形成了完整的离线消息解决方案。**
