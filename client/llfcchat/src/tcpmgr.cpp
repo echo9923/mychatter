@@ -142,6 +142,8 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
         connect(this, &TcpMgr::sig_close, this, &TcpMgr::slot_tcp_close);
         //可靠重传信号连接（公有 API → TCP 线程 slot）
         connect(this, &TcpMgr::sig_send_reliable_chat, this, &TcpMgr::slot_send_reliable_chat);
+        //§6.2：StartPendingReplay 公有 API → TCP 线程 slot（GUI thread models 建好后执行）
+        connect(this, &TcpMgr::sig_start_pending_replay, this, &TcpMgr::slot_start_pending_replay);
         //250ms 重传扫描定时器，parent 到 this，随 moveToThread 迁移到 TCP 线程
         _retry_timer = new QTimer(this);
         _retry_timer->setInterval(250);
@@ -195,6 +197,13 @@ void TcpMgr::SendReliableChat(ReqId id, QByteArray payload, const QStringList& u
     //公有 API：只发 signal，实际 pending/发送在 TCP 线程的 slot 中执行
     QStringList ids = unique_ids;
     emit sig_send_reliable_chat(id, payload, ids);
+}
+
+void TcpMgr::StartPendingReplay()
+{
+    //§6.2：公有 API 只 emit queued signal，实际 rebuild+重发在 TCP 线程 slot 执行
+    //调用点：ChatDialog::slot_load_chat_thread 最后一页 load_more=false（GUI thread models 已建好）
+    emit sig_start_pending_replay();
 }
 
 
@@ -1261,18 +1270,23 @@ void TcpMgr::persistPendingRequests()
 
 void TcpMgr::restorePendingRequests(int uid)
 {
-    //同 uid：pending 已在内存，确保定时器运行
-    if (_delivery_uid == uid && !_pending_requests.isEmpty()) {
-        if (!_retry_timer->isActive() && _socket.state() == QAbstractSocket::ConnectedState) {
-            _retry_timer->start();
-        }
+    //§6.2 纠错：本函数只加载持久 pending 到内存（不重建 bubble/MsgInfo、不重发、不启动定时器）。
+    //rebuild+重发+定时器由 StartPendingReplay → slot_start_pending_replay 在 GUI thread models
+    //建好后执行（ChatDialog::slot_load_chat_thread 最后一页 load_more=false 处调用）。
+
+    //同 uid：pending 已在内存，保留不动（内存为权威）
+    if (_delivery_uid == uid) {
         return;
     }
 
     //切换 uid：清空内存，加载新 uid 的持久 pending（不同账号绝不互载）
     _delivery_uid = uid;
     _pending_requests.clear();
+    loadPendingFromDisk(uid);
+}
 
+void TcpMgr::loadPendingFromDisk(int uid)
+{
     QSettings delivery_settings(QSettings::IniFormat, QSettings::UserScope,
                                 "llfc", "llfcchat-delivery");
     QString uid_key = QString("uid_%1").arg(uid);
@@ -1288,14 +1302,13 @@ void TcpMgr::restorePendingRequests(int uid)
     }
     QJsonArray arr = doc.array();
 
-    QList<PendingRequest> restored;
     for (int i = 0; i < arr.size(); ++i) {
         QJsonObject obj = arr.at(i).toObject();
         PendingRequest req;
         req.id = static_cast<ReqId>(obj["id"].toInt());
         req.payload = obj["payload"].toString().toUtf8();
         req.retry_delay_ms = _retry_initial_ms;
-        req.next_send_epoch_ms = 0; //立即发送
+        req.next_send_epoch_ms = 0; //立即发送（由 slot_start_pending_replay 触发）
 
         QJsonArray uid_arr = obj["unique_ids"].toArray();
         for (int j = 0; j < uid_arr.size(); ++j) {
@@ -1306,6 +1319,21 @@ void TcpMgr::restorePendingRequests(int uid)
             continue;
         }
 
+        _pending_requests.append(req);
+    }
+}
+
+void TcpMgr::slot_start_pending_replay()
+{
+    //§6.2：此时 GUI thread models（ChatThreadData）已由 slot_load_chat_thread 建好。
+    //先 rebuild 内存状态（bubble/MsgInfo），再逐条重发并启动扫描定时器。
+    if (_pending_requests.isEmpty()) {
+        return;
+    }
+
+    QList<PendingRequest> restored;
+    for (int i = 0; i < _pending_requests.size(); ++i) {
+        PendingRequest& req = _pending_requests[i];
         //恢复前重建内存状态
         if (req.id == ID_TEXT_CHAT_MSG_REQ) {
             rebuildTextPending(req);
