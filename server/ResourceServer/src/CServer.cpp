@@ -3,8 +3,8 @@
 #include "AsioIOServicePool.h"
 #include "UserMgr.h"
 
-CServer::CServer(boost::asio::io_context& io_context, short port):_io_context(io_context), _port(port),
-_acceptor(io_context, tcp::endpoint(tcp::v4(),port))
+CServer::CServer(boost::asio::io_context& io_context, short port, std::shared_ptr<AsioIOServicePool> pool):_io_context(io_context), _port(port),
+_acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _pool(pool)
 {
 	cout << "Server start success, listen on port : " << _port << endl;
 	StartAccept();
@@ -28,7 +28,7 @@ void CServer::HandleAccept(shared_ptr<CSession> new_session, const boost::system
 }
 
 void CServer::StartAccept() {
-	auto &io_context = AsioIOServicePool::GetInstance()->GetIOService();
+	auto &io_context = _pool->GetIOService();
 	shared_ptr<CSession> new_session = make_shared<CSession>(io_context, this);
 	_acceptor.async_accept(new_session->GetSocket(), std::bind(&CServer::HandleAccept, this, new_session, placeholders::_1));
 }

@@ -26,7 +26,7 @@ int main()
 	auto& cfg = ConfigMgr::Inst();
 	auto server_name = cfg["SelfServer"]["Name"];
 	try {
-		auto pool = AsioIOServicePool::GetInstance();
+		auto pool = std::make_shared<AsioIOServicePool>(std::thread::hardware_concurrency());
 
 		// [Discovery] lease 上报配置：缺失/非法值回退默认（间隔 5s，TTL 15s）
 		std::string ri_str = cfg["Discovery"]["ReportIntervalSeconds"];
@@ -43,7 +43,7 @@ int main()
 		boost::asio::io_context  io_context;
 		auto port_str = cfg["SelfServer"]["Port"];
 		//创建Cserver智能指针
-		auto pointer_server = std::make_shared<CServer>(io_context, atoi(port_str.c_str()));
+		auto pointer_server = std::make_shared<CServer>(io_context, atoi(port_str.c_str()), pool);
 		//启动定时器
 		pointer_server->StartTimer();
 

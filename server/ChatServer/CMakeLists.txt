@@ -35,60 +35,46 @@ llfc_ensure_chat_proto()
 llfc_ensure_status_proto()
 
 add_executable(ChatServer
-  src/AsioIOServicePool.cpp
   src/ChatGrpcClient.cpp
   src/ChatServer.cpp
   src/ChatServiceImpl.cpp
-  src/ConfigMgr.cpp
   src/CServer.cpp
   src/CSession.cpp
-  src/DistLock.cpp
   src/LogicSystem.cpp
-  src/LogicWorker.cpp
   src/MsgNode.cpp
   src/MysqlDao.cpp
   src/MysqlMgr.cpp
   src/RedisMgr.cpp
   src/UserMgr.cpp
   src/utils.cpp
-  include/AsioIOServicePool.h
   include/ChatGrpcClient.h
   include/ChatServiceImpl.h
-  include/ConfigMgr.h
   include/const.h
   include/CServer.h
   include/CSession.h
   include/data.h
-  include/DistLock.h
   include/LogicSystem.h
-  include/LogicWorker.h
   include/MsgNode.h
   include/MysqlDao.h
   include/MysqlMgr.h
   include/RedisMgr.h
-  include/Singleton.h
   include/UserMgr.h
   include/utils.h
 )
 
 target_include_directories(ChatServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
-  "${LLFC_REPO_ROOT}/server/common/include"
 )
 
 target_link_libraries(ChatServer PRIVATE
+  llfc_server_common
+  llfc_server_common_redis
+  llfc_server_common_mysql
   llfc_chat_proto
   llfc_status_proto
-  Boost::asio
   Boost::beast
   Boost::date_time
-  Boost::filesystem
-  Boost::property_tree
-  Boost::uuid
   nlohmann_json::nlohmann_json
-  hiredis::hiredis
-  mysql::concpp-jdbc-static
-  OpenSSL::Crypto
 )
 
 target_compile_features(ChatServer PRIVATE cxx_std_17)

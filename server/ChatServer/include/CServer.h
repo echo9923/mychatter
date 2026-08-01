@@ -1,5 +1,6 @@
 #pragma once
 #include <boost/asio.hpp>
+#include "AsioIOServicePool.h"
 #include "CSession.h"
 #include <memory.h>
 #include <map>
@@ -25,7 +26,7 @@ public:
 	 * @param io_context 主线程的IO上下文，用于acceptor和定时器
 	 * @param port 服务器监听的TCP端口号
 	 */
-	CServer(boost::asio::io_context& io_context, short port);
+	CServer(boost::asio::io_context& io_context, short port, std::shared_ptr<AsioIOServicePool> pool);
 
 	/// 析构函数，停止定时器并清理资源
 	~CServer();
@@ -88,6 +89,8 @@ private:
 	short _port;
 	/// TCP接收器，负责监听指定端口并接受客户端的连接请求
 	tcp::acceptor _acceptor;
+	/// Asio IO 服务池（非单例，由 main 显式构造并传入）
+	std::shared_ptr<AsioIOServicePool> _pool;
 	/// 存储所有活跃客户端会话的映射表，键为用户唯一标识(如uid)，值为会话对象的共享指针
 	std::map<std::string, shared_ptr<CSession>> _sessions;
 	/// 互斥锁，用于保护_sessions等共享数据结构的线程安全访问
