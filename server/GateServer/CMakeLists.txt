@@ -36,8 +36,6 @@ llfc_ensure_status_proto()
 llfc_ensure_verify_proto()
 
 add_executable(GateServer
-  src/AsioIOServicePool.cpp
-  src/ConfigMgr.cpp
   src/CServer.cpp
   src/GateServer.cpp
   src/HandlerExecutor.cpp
@@ -48,8 +46,6 @@ add_executable(GateServer
   src/RedisMgr.cpp
   src/StatusGrpcClient.cpp
   src/VerifyGrpcClient.cpp
-  include/AsioIOServicePool.h
-  include/ConfigMgr.h
   include/const.h
   include/CServer.h
   include/HandlerExecutor.h
@@ -58,28 +54,22 @@ add_executable(GateServer
   include/MysqlDao.h
   include/MysqlMgr.h
   include/RedisMgr.h
-  include/Singleton.h
   include/StatusGrpcClient.h
   include/VerifyGrpcClient.h
 )
 
 target_include_directories(GateServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
-  "${LLFC_REPO_ROOT}/server/common/include"
 )
 
 target_link_libraries(GateServer PRIVATE
+  llfc_server_common
+  llfc_server_common_redis
+  llfc_server_common_mysql
   llfc_status_proto
   llfc_verify_proto
-  Boost::asio
   Boost::beast
-  Boost::filesystem
-  Boost::property_tree
-  Boost::uuid
   nlohmann_json::nlohmann_json
-  hiredis::hiredis
-  mysql::concpp-jdbc-static
-  OpenSSL::Crypto
 )
 
 target_compile_features(GateServer PRIVATE cxx_std_17)

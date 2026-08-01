@@ -135,9 +135,10 @@ int main()
 		auto & gCfgMgr = ConfigMgr::Inst();
 		std::string gate_port_str = gCfgMgr["GateServer"]["Port"];
 		unsigned short gate_port = atoi(gate_port_str.c_str());
+		auto pool = std::make_shared<AsioIOServicePool>(2);
 		net::io_context ioc{ 1 };
 		boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
-		signals.async_wait([&ioc](const boost::system::error_code& error, int signal_number) {
+		signals.async_wait([&ioc, pool](const boost::system::error_code& error, int signal_number) {
 
 			if (error) {
 				return;
@@ -145,10 +146,10 @@ int main()
 			// 计划2.5：先让 worker 池拒绝并排空 handler（排空期间仍可 post-back
 			// 到连接 executor 完成响应），再停连接 IO 线程池，最后停 accept ioc
 			LogicSystem::GetInstance()->Stop();
-			AsioIOServicePool::GetInstance()->Stop();
+			pool->Stop();
 			ioc.stop();
 			});
-		std::make_shared<CServer>(ioc, gate_port)->Start();
+		std::make_shared<CServer>(ioc, gate_port, pool)->Start();
 		std::cout << "Gate Server listen on port: " << gate_port << std::endl;
 		ioc.run();
 		RedisMgr::GetInstance()->Close();

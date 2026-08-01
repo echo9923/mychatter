@@ -18,12 +18,12 @@ cmake_minimum_required(VERSION 3.25)
 
 add_executable(worker_pool_tests
   worker_pool_tests.cpp
-  ../server/ChatServer/src/LogicWorker.cpp
+  ../server/common/src/LogicWorker.cpp
   ../server/GateServer/src/HandlerExecutor.cpp
 )
 
 target_include_directories(worker_pool_tests PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/../server/ChatServer/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../server/common/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/../server/GateServer/include"
 )
 

@@ -19,7 +19,7 @@ int main()
 
 	std::shared_ptr<AsioIOServicePool> pool = nullptr;
 	try {
-		pool = AsioIOServicePool::GetInstance();
+		pool = std::make_shared<AsioIOServicePool>(std::thread::hardware_concurrency());
 
 		boost::asio::io_context  io_context;
 		boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
@@ -28,7 +28,7 @@ int main()
 			pool->Stop();
 			});
 		auto port_str = cfg["SelfServer"]["Port"];
-		CServer s(io_context, atoi(port_str.c_str()));
+		CServer s(io_context, atoi(port_str.c_str()), pool);
 		io_context.run();
 	}
 	catch (std::exception& e) {

@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include "Defer.h"
 
 /**
  * @brief 服务端统一错误码枚举
@@ -30,30 +31,7 @@ enum ErrorCodes {
 };
 
 
-/**
- * @brief 延迟执行工具类（RAII风格）
- * 
- * 在构造时接受一个可调用对象（lambda/函数指针），
- * 在析构时自动执行该函数。常用于确保资源释放、连接归还等操作
- * 不会因异常或提前返回而被遗漏。
- */
-class Defer {
-public:
-	/**
-	 * @brief 构造函数，接受一个延迟执行的函数
-	 * @param func 要在析构时执行的无参无返回值函数
-	 */
-	Defer(std::function<void()> func) : func_(func) {}
-
-	/// 析构函数，执行传入的延迟函数
-	~Defer() {
-		func_();
-	}
-
-private:
-	/// 存储待延迟执行的函数对象
-	std::function<void()> func_;
-};
+// Defer 已迁移至 common/include/Defer.h
 
 /// 单次接收/发送缓冲区的最大字节数 (2KB)
 #define MAX_LENGTH  1024*2

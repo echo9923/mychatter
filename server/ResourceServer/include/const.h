@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include <functional>
+#include "Defer.h"
 
 
 enum ErrorCodes {
@@ -35,20 +36,7 @@ enum MsgStatus {
 	UN_UPLOAD = 3 //未上传完成
 };
 
-// Defer类
-class Defer {
-public:
-	// 接受一个lambda表达式或者函数指针
-	Defer(std::function<void()> func) : func_(func) {}
-
-	// 析构函数中执行传入的函数
-	~Defer() {
-		func_();
-	}
-
-private:
-	std::function<void()> func_;
-};
+// Defer 已迁移至 common/include/Defer.h
 
 #define MAX_LENGTH  1024*50
 //头部总长度

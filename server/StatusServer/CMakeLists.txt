@@ -35,39 +35,27 @@ llfc_ensure_status_proto()
 llfc_ensure_chat_proto()
 
 add_executable(StatusServer
-  src/AsioIOServicePool.cpp
   src/ChatGrpcClient.cpp
-  src/ConfigMgr.cpp
-  src/DistLock.cpp
   src/RedisMgr.cpp
   src/StatusServer.cpp
   src/StatusServiceImpl.cpp
-  include/AsioIOServicePool.h
   include/ChatGrpcClient.h
-  include/ConfigMgr.h
   include/const.h
-  include/DistLock.h
   include/RedisMgr.h
-  include/Singleton.h
   include/StatusServiceImpl.h
 )
 
 target_include_directories(StatusServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
-  "${LLFC_REPO_ROOT}/server/common/include"
 )
 
 target_link_libraries(StatusServer PRIVATE
+  llfc_server_common
+  llfc_server_common_redis
   llfc_status_proto
   llfc_chat_proto
-  Boost::asio
   Boost::beast
-  Boost::filesystem
-  Boost::property_tree
-  Boost::uuid
   nlohmann_json::nlohmann_json
-  hiredis::hiredis
-  OpenSSL::Crypto
 )
 
 target_compile_features(StatusServer PRIVATE cxx_std_17)

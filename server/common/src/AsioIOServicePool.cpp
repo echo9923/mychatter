@@ -1,9 +1,11 @@
-﻿#include "AsioIOServicePool.h"
+#include "AsioIOServicePool.h"
 #include <iostream>
-using namespace std;
-AsioIOServicePool::AsioIOServicePool(std::size_t size):_ioServices(size),
-_works(size), _nextIOService(0){
-	for (std::size_t i = 0; i < size; ++i) {
+
+AsioIOServicePool::AsioIOServicePool(std::size_t size)
+	: _ioServices(size == 0 ? 1 : size),
+	_works(size == 0 ? 1 : size),
+	_nextIOService(0) {
+	for (std::size_t i = 0; i < _ioServices.size(); ++i) {
 		_works[i] = std::make_unique<Work>(boost::asio::make_work_guard(_ioServices[i]));
 	}
 
@@ -16,7 +18,8 @@ _works(size), _nextIOService(0){
 }
 
 AsioIOServicePool::~AsioIOServicePool() {
-	std::cout << "AsioIOServicePool destruct" << endl;
+	Stop();
+	std::cout << "AsioIOServicePool destruct" << std::endl;
 }
 
 boost::asio::io_context& AsioIOServicePool::GetIOService() {
@@ -27,7 +30,12 @@ boost::asio::io_context& AsioIOServicePool::GetIOService() {
 	return service;
 }
 
-void AsioIOServicePool::Stop(){
+void AsioIOServicePool::Stop() {
+	// 原子标志保证重复/并发调用只执行一次停止流程
+	if (_stopped.exchange(true)) {
+		return;
+	}
+
 	// stop contexts then release work guards so run() can exit
 	for (std::size_t i = 0; i < _ioServices.size(); ++i) {
 		_ioServices[i].stop();

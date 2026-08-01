@@ -31,6 +31,7 @@ if(NOT DEFINED LLFC_REPO_ROOT)
   set(LLFC_REPO_ROOT "${LLFC_REPO_ROOT}" CACHE PATH "llfcchat repository root" FORCE)
 endif()
 
+add_subdirectory(common)
 add_subdirectory(GateServer)
 add_subdirectory(StatusServer)
 add_subdirectory(ChatServer)

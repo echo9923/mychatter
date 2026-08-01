@@ -34,13 +34,11 @@ llfc_find_server_dependencies()
 llfc_ensure_chat_proto()
 
 add_executable(ResourceServer
-  src/AsioIOServicePool.cpp
   src/base64.cpp
   src/ChatServerGrpcClient.cpp
   src/ConfigMgr.cpp
   src/CServer.cpp
   src/CSession.cpp
-  src/DistLock.cpp
   src/FileInfo.cpp
   src/FileSystem.cpp
   src/FileWorker.cpp
@@ -52,7 +50,6 @@ add_executable(ResourceServer
   src/RedisMgr.cpp
   src/ResourceServer.cpp
   src/UserMgr.cpp
-  include/AsioIOServicePool.h
   include/base64.h
   include/ChatServerGrpcClient.h
   include/ConfigMgr.h
@@ -60,7 +57,6 @@ add_executable(ResourceServer
   include/CServer.h
   include/CSession.h
   include/data.h
-  include/DistLock.h
   include/FileInfo.h
   include/FileSystem.h
   include/FileWorker.h
@@ -70,26 +66,20 @@ add_executable(ResourceServer
   include/MysqlDao.h
   include/MysqlMgr.h
   include/RedisMgr.h
-  include/Singleton.h
   include/UserMgr.h
 )
 
 target_include_directories(ResourceServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
-  "${LLFC_REPO_ROOT}/server/common/include"
 )
 
 target_link_libraries(ResourceServer PRIVATE
+  llfc_server_common
+  llfc_server_common_redis
+  llfc_server_common_mysql
   llfc_chat_proto
-  Boost::asio
   Boost::beast
-  Boost::filesystem
-  Boost::property_tree
-  Boost::uuid
   nlohmann_json::nlohmann_json
-  OpenSSL::Crypto
-  hiredis::hiredis
-  mysql::concpp-jdbc-static
 )
 
 target_compile_features(ResourceServer PRIVATE cxx_std_17)
