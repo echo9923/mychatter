@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <boost/beast/http.hpp>
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
@@ -49,6 +49,5 @@ enum ErrorCodes {
 // Defer 已迁移至 common/include/Defer.h
 
 #define CODEPREFIX  "code_"
-#define SESSION_TOKEN_V2_PREFIX "session:token:v2:"
 
 

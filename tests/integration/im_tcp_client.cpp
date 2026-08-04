@@ -291,46 +291,27 @@ void ResClient::Close() {
 }
 
 // ---------------------------------------------------------------------------
-// Auth helpers (plan 3.2)
+// Auth helpers
 // ---------------------------------------------------------------------------
-ChatLoginOutcome ChatLoginInitial(TcpClient& c, int uid, const std::string& chat_ticket) {
+ChatLoginOutcome ChatLogin(TcpClient& c, int uid, const std::string& token) {
 	ChatLoginOutcome out;
 	json j;
 	j["uid"] = uid;
-	j["chat_ticket"] = chat_ticket;
+	j["token"] = token;
 	if (!c.Send(ID_CHAT_LOGIN, j.dump())) return out;
 	Frame f;
 	if (!c.Wait(ID_CHAT_LOGIN_RSP, 10000, &f)) return out;
-	auto r = ParseJson(f.body);
-	if (!r.is_object()) return out;
-	out.error = r.value("error", -1);
-	out.session_token = r.value("session_token", "");
-	out.ok = (out.error == ERR_SUCCESS) && !out.session_token.empty();
+	out.response = ParseJson(f.body);
+	if (!out.response.is_object()) return out;
+	out.error = out.response.value("error", -1);
+	out.ok = (out.error == ERR_SUCCESS);
 	return out;
 }
 
-ChatLoginOutcome ChatLoginResume(TcpClient& c, int uid, const std::string& chat_ticket,
-                                 const std::string& session_token) {
-	ChatLoginOutcome out;
+int ResourceLogin(ResClient& r, int uid, const std::string& token) {
 	json j;
 	j["uid"] = uid;
-	j["chat_ticket"] = chat_ticket;
-	j["session_token"] = session_token;
-	if (!c.Send(ID_CHAT_LOGIN, j.dump())) return out;
-	Frame f;
-	if (!c.Wait(ID_CHAT_LOGIN_RSP, 10000, &f)) return out;
-	auto r = ParseJson(f.body);
-	if (!r.is_object()) return out;
-	out.error = r.value("error", -1);
-	out.session_token = r.value("session_token", "");
-	out.ok = (out.error == ERR_SUCCESS) && !out.session_token.empty();
-	return out;
-}
-
-int ResourceLogin(ResClient& r, int uid, const std::string& session_token) {
-	json j;
-	j["uid"] = uid;
-	j["session_token"] = session_token;
+	j["token"] = token;
 	if (!r.Send(ID_RESOURCE_LOGIN_REQ, j.dump())) return -1;
 	Frame f;
 	if (!r.Wait(ID_RESOURCE_LOGIN_RSP, 10000, &f)) return -1;

@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: Season_2
 nodes_managed: true
-exported_at: "2026-07-31T03:03:15Z"
+exported_at: "2026-08-01T10:53:28Z"
 modules:
     "":
-        dir_name: llfcchat 项目根（CMake + vcpkg 构建编排）
-        title: llfcchat 项目根（CMake + vcpkg 构建编排）
+        dir_name: llfcchat 仓库根（构建编排与依赖管理）
+        title: llfcchat 仓库根（构建编排与依赖管理）
         scope:
             - .gitignore
             - AGENTS.md
@@ -20,12 +20,29 @@ modules:
             - 第三季待做事件.md
         source_files: []
         children:
+            - server
             - tests
         depends_on: []
         related_to: []
+    server:
+        dir_name: 服务端多进程架构（网关_聊天_资源_状态服务）
+        title: 服务端多进程架构（网关/聊天/资源/状态服务）
+        scope:
+            - server/CMakeLists.txt
+            - server/common/
+            - server/ChatServer/
+            - server/GateServer/
+            - server/ResourceServer/
+            - server/StatusServer/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: tests
+            - path: tests/integration
     tests:
-        dir_name: IM 测试套件（单元测试 + 集成测试）
-        title: IM 测试套件（单元测试 + 集成测试）
+        dir_name: 测试套件（单元测试与集成测试）
+        title: 测试套件（单元测试与集成测试）
         scope:
             - tests/CMakeLists.txt
             - tests/worker_pool_tests.cpp
@@ -33,10 +50,11 @@ modules:
         children:
             - tests/integration
         depends_on: []
-        related_to: []
+        related_to:
+            - path: server
     tests/integration:
-        dir_name: IM 系统集成测试框架
-        title: IM 系统集成测试框架
+        dir_name: IM 系统集成测试框架（imt）
+        title: IM 系统集成测试框架（imt）
         scope:
             - tests/integration/im_common.h
             - tests/integration/im_frame.h
@@ -55,4 +73,5 @@ modules:
         source_files: []
         children: []
         depends_on: []
-        related_to: []
+        related_to:
+            - path: server

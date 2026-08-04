@@ -1,4 +1,4 @@
-﻿#include "CSession.h"
+#include "CSession.h"
 #include "CServer.h"
 #include <iostream>
 #include <sstream>
@@ -23,12 +23,10 @@ std::string& CSession::GetSessionId() {
 	return _session_id;
 }
 
-void CSession::SetAuth(int uid, const std::string& token)
+void CSession::SetAuth(int uid)
 {
 	_authed.store(true);
 	_user_uid.store(uid);
-	std::lock_guard<std::mutex> lock(_token_mtx);
-	_session_token = token;
 }
 
 bool CSession::IsAuthed() const
@@ -39,12 +37,6 @@ bool CSession::IsAuthed() const
 int CSession::GetUserId() const
 {
 	return _user_uid.load();
-}
-
-std::string CSession::GetSessionToken() const
-{
-	std::lock_guard<std::mutex> lock(_token_mtx);
-	return _session_token;
 }
 
 void CSession::Start(){

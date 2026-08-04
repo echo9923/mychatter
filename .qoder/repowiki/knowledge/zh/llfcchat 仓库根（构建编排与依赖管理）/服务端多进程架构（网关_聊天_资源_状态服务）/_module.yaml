@@ -1,0 +1,15 @@
+schema_version: 1
+module_path: server
+title: 服务端多进程架构（网关/聊天/资源/状态服务）
+scope:
+    - server/CMakeLists.txt
+    - server/common/
+    - server/ChatServer/
+    - server/GateServer/
+    - server/ResourceServer/
+    - server/StatusServer/
+source_files: []
+depends_on: []
+related_to:
+    - path: tests
+    - path: tests/integration

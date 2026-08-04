@@ -136,14 +136,12 @@ public:
     ServerInfo(const ServerInfo& other)
         : _chat_host(other._chat_host), _chat_port(other._chat_port),
           _res_host(other._res_host), _res_port(other._res_port),
-          _chat_ticket(other._chat_ticket), _session_token(other._session_token),
-          _uid(other._uid) {}
+          _token(other._token), _uid(other._uid) {}
     QString _chat_host;
     QString _chat_port;
     QString _res_host;
     QString _res_port;
-    QString _chat_ticket;   //一次性票据(60s,仅 INITIAL/RESUME 登录 Status 后使用一次)
-    QString _session_token; //持久会话 token(24h,可恢复,Resource 鉴权用)
+    QString _token;   //Gate 下发的统一登录 token(24h,Chat/Resource 共用同一 token)
     int _uid;
 };
 

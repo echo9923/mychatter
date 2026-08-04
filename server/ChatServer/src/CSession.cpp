@@ -43,18 +43,6 @@ int CSession::GetUserId() const
 	return _user_uid.load();
 }
 
-void CSession::SetSessionToken(const std::string& token)
-{
-	std::lock_guard<std::mutex> lock(_token_mtx);
-	_session_token = token;
-}
-
-std::string CSession::GetSessionToken() const
-{
-	std::lock_guard<std::mutex> lock(_token_mtx);
-	return _session_token;
-}
-
 bool CSession::BindRoutingUid(int uid)
 {
 	//首 comparing-exchange：从 0 固定为 uid
@@ -478,7 +466,5 @@ void CSession::DealExceptionSession()
 	RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
 	//清除用户登录信息
 	RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
-	//可恢复会话令牌(session:token:v2:<uid>)不由连接拆卸清除：
-	//其生命周期由 TTL + compare-and-expire 管理，续期/异地覆盖会自动使其失效。
 }
 

@@ -9,6 +9,8 @@ _bytes_sent(0), _pending(false), _authenticated(false), _cwnd_size(0)
 	registerMetaType();
 	QObject::connect(&_socket, &QTcpSocket::connected, this, [&]() {
 		qDebug() << "Connected to server!";
+		//连接起点：新连接不允许继承上一连接的鉴权态，发 1053 登录帧前重置
+		_authenticated = false;
 		emit sig_con_success(true);
 		});
 
@@ -95,6 +97,8 @@ _bytes_sent(0), _pending(false), _authenticated(false), _cwnd_size(0)
 	// 处理连接断开
 	QObject::connect(&_socket, &QTcpSocket::disconnected, this, [&]() {
 		qDebug() << "Disconnected from server.";
+		//断线重置鉴权态，避免重连后误以为已登录
+		_authenticated = false;
 		emit sig_connection_closed();
 		});
 
@@ -239,7 +243,8 @@ void FileTcpMgr::slot_tcp_connect(std::shared_ptr<ServerInfo> si)
 
 
 FileTcpMgr::~FileTcpMgr() {
-
+	//析构：确保鉴权态不残留
+	_authenticated = false;
 }
 
 void FileTcpMgr::SendData(ReqId reqId, QByteArray data)
@@ -1019,6 +1024,8 @@ void FileTcpMgr::BatchSend(std::shared_ptr<MsgInfo> msg_info, int sender, int re
 }
 
 void FileTcpMgr::slot_tcp_close() {
+	//主动关闭：重置鉴权态，确保下次连接必须重新登录
+	_authenticated = false;
 	_socket.close();
 }
 

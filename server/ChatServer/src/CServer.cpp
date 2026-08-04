@@ -117,20 +117,6 @@ void CServer::on_timer(const boost::system::error_code& ec) {
 		session->DealExceptionSession();
 	}
 
-	//可恢复令牌续期：每约 3600s（60 个 tick）对在线会话做一次 compare-and-expire。
-	//仅当 Redis 中令牌仍与本会话一致才刷新 TTL；异地重新登录会轮换令牌使旧连接不续期、尽快失效。
-	if (++_token_refresh_tick >= 60) {
-		_token_refresh_tick = 0;
-		for (auto iter = sessions_copy.begin(); iter != sessions_copy.end(); iter++) {
-			auto& s = iter->second;
-			if (s && s->GetUserId() > 0) {
-				RedisMgr::GetInstance()->CompareAndExpire(
-					SESSION_TOKEN_V2_PREFIX + std::to_string(s->GetUserId()),
-					s->GetSessionToken(), 86400);
-			}
-		}
-	}
-	
 	//再次设置，下一个60s检测
 	_timer.expires_after(std::chrono::seconds(60));
 	_timer.async_wait([this](boost::system::error_code ec) {

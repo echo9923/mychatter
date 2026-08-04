@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <functional>
 #include "Defer.h"
 
@@ -91,8 +91,8 @@ enum MSG_IDS {
 
 #define LOCK_PREFIX "lock_"
 #define USER_SESSION_PREFIX "usession_"
-/// 会话令牌Redis键前缀: SESSION_TOKEN_V2_PREFIX + uid（值=32位hex session token，由ChatServer写入，TTL 86400s）
-#define SESSION_TOKEN_V2_PREFIX "session:token:v2:"
+/// Redis中存储用户登录令牌的键前缀，完整键为 "utoken_" + uid（由StatusServer在分配ChatServer时写入，TTL 86400s）
+#define USERTOKENPREFIX "utoken_"
 #define LOCK_COUNT "lockcount"
 /// Redis中离线消息待投递有序集合的键前缀，完整键为 "offline_msg:" + recv_uid，ZSET member/score 均为十进制 message_id
 #define OFFLINE_MSG_PREFIX "offline_msg:"

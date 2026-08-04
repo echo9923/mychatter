@@ -14,7 +14,6 @@
     "grpc",
     "protobuf",
     "hiredis",
-    "openssl",
     {
       "name": "mysql-connector-cpp",
       "features": ["jdbc"]

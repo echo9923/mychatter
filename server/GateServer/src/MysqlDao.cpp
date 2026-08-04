@@ -105,40 +105,39 @@ int MysqlDao::RegUserTransaction(const std::string& name, const std::string& ema
 			return 0;
 		}
 
-		// 准备更新用户id
-		std::unique_ptr<sql::PreparedStatement> pstmt_upid(con->_con->prepareStatement("UPDATE user_id SET id = id + 1"));
+		// 插入user信息（uid 列省略，走 DEFAULT 0，随后回填为自增主键 id）
+		std::unique_ptr<sql::PreparedStatement> pstmt_insert(con->_con->prepareStatement("INSERT INTO user (name, email, pwd, nick, icon) "
+			"VALUES (?, ?, ?, ?, ?)"));
+		pstmt_insert->setString(1, name);
+		pstmt_insert->setString(2, email);
+		pstmt_insert->setString(3, pwd);
+		pstmt_insert->setString(4, name);
+		pstmt_insert->setString(5, icon);
+		//执行插入
+		pstmt_insert->executeUpdate();
 
-		// 执行更新
-		pstmt_upid->executeUpdate();
-
-		// 获取更新后的 id 值
-		std::unique_ptr<sql::PreparedStatement> pstmt_uid(con->_con->prepareStatement("SELECT id FROM user_id"));
-		std::unique_ptr<sql::ResultSet> res_uid(pstmt_uid->executeQuery());
+		// 获取本次插入的自增主键 id（同一连接、同一事务内，LAST_INSERT_ID() 安全）
+		std::unique_ptr<sql::PreparedStatement> pstmt_lastid(con->_con->prepareStatement("SELECT LAST_INSERT_ID() AS id"));
+		std::unique_ptr<sql::ResultSet> res_lastid(pstmt_lastid->executeQuery());
 		int newId = 0;
-		// 处理结果集
-		if (res_uid->next()) {
-			newId = res_uid->getInt("id");
+		if (res_lastid->next()) {
+			newId = res_lastid->getInt("id");
 		}
 		else {
-			std::cout << "select id from user_id failed" << std::endl;
+			std::cout << "select LAST_INSERT_ID failed" << std::endl;
 			con->_con->rollback();
 			return -1;
 		}
 
-		// 插入user信息
-		std::unique_ptr<sql::PreparedStatement> pstmt_insert(con->_con->prepareStatement("INSERT INTO user (uid, name, email, pwd, nick, icon) "
-			"VALUES (?, ?, ?, ?,?,?)"));
-		pstmt_insert->setInt(1,newId);
-		pstmt_insert->setString(2, name);
-		pstmt_insert->setString(3, email);
-		pstmt_insert->setString(4, pwd);
-		pstmt_insert->setString(5, name);
-		pstmt_insert->setString(6, icon);
-		//执行插入
-		pstmt_insert->executeUpdate();
+		// 回填 uid = 自增主键 id（方案A：不再使用独立发号器，uid 直接等于 id）
+		std::unique_ptr<sql::PreparedStatement> pstmt_setuid(con->_con->prepareStatement("UPDATE user SET uid = ? WHERE id = ?"));
+		pstmt_setuid->setInt(1, newId);
+		pstmt_setuid->setInt(2, newId);
+		pstmt_setuid->executeUpdate();
+
 		// 提交事务
 		con->_con->commit();
-		std::cout << "newuser insert into user success" << std::endl;
+		std::cout << "newuser insert into user success, uid = " << newId << std::endl;
 		return newId;
 	}
 	catch (sql::SQLException& e) {

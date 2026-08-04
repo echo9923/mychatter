@@ -21,12 +21,9 @@ public:
 	~StatusGrpcClient() {
 
 	}
-	/// Request a chat server assignment with an mTLS-protected one-time ticket.
-	/// @param uid                   user id
-	/// @param intent                0=INITIAL (after password), 1=RESUME (valid session token)
-	/// @param session_token_sha256  SHA-256 hex of the session token (RESUME only)
-	GetChatServerRsp GetChatServer(int uid, int intent,
-		const std::string& session_token_sha256);
+	/// Request a chat server assignment plus a login token (plain gRPC).
+	/// @param uid  user id
+	GetChatServerRsp GetChatServer(int uid);
 private:
 	StatusGrpcClient();
 	std::shared_ptr<Channel> channel_;

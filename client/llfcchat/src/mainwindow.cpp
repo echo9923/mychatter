@@ -5,6 +5,7 @@
 #include <QLayout>
 #include <QMessageBox>
 #include "filetcpmgr.h"
+#include "usermgr.h"
 
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
@@ -143,6 +144,8 @@ void MainWindow::offlineLogin(){
     if(_ui_status == LOGIN_UI){
         return;
     }
+    //返回登录页清空内存中的登录 token，避免残留凭据
+    UserMgr::GetInstance()->SetToken("");
     //创建一个CentralWidget, 并将其设置为MainWindow的中心部件
     _login_dlg = new LoginDialog(this);
     _login_dlg->setWindowFlags(Qt::CustomizeWindowHint|Qt::FramelessWindowHint);

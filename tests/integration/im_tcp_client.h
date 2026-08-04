@@ -113,30 +113,28 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Auth helpers (plan 3.2)
+// Auth helpers
 //
-// Chat/Resource login are now ticket/session-token based. These helpers send
-// the login frame and parse the response; callers wire the TCP transport.
+// The same per-user login token (issued by Status on password login, stored in
+// Redis as utoken_<uid>) authenticates both Chat and Resource. These helpers
+// send the login frame and parse the response; callers wire the TCP transport.
 // ---------------------------------------------------------------------------
 
-// Outcome of a Chat login (1005→1006). `ok` is true only when error==0 AND a
-// non-empty session_token was returned (INITIAL mints one, RESUME echoes it).
+// Outcome of a Chat login (1005→1006). `ok` is true only when error==0. The
+// parsed 1006 body is kept in `response` so scenarios can assert the server did
+// not leak secret fields (pwd/token/session_token).
 struct ChatLoginOutcome {
-	bool        ok = false;
-	int         error = -1;          // 1006 error field (-1 = transport/parse fail)
-	std::string session_token;       // token returned by the server
+	bool ok      = false;
+	int  error   = -1;     // 1006 error field (-1 = transport/parse fail)
+	json response;         // parsed 1006 body (object on success)
 };
 
-// INITIAL login: {uid, chat_ticket} → expect 1006 error==0 + fresh session_token.
-ChatLoginOutcome ChatLoginInitial(TcpClient& c, int uid, const std::string& chat_ticket);
+// Chat login: sends 1005 {uid, token}, waits for 1006. out.ok = (error==0).
+// The token is the value Gate returned from /user_login (== Redis utoken_<uid>).
+ChatLoginOutcome ChatLogin(TcpClient& c, int uid, const std::string& token);
 
-// RESUME login: {uid, chat_ticket, session_token} → expect 1006 error==0 and the
-// SAME session_token echoed back. Caller compares outcome.session_token.
-ChatLoginOutcome ChatLoginResume(TcpClient& c, int uid, const std::string& chat_ticket,
-                                 const std::string& session_token);
-
-// Resource login (1053→1054): {uid, session_token} → returns the 1054 error
+// Resource login (1053→1054): sends 1053 {uid, token}, returns the 1054 error
 // field (0 = authed, 1010 = TokenInvalid), or -1 on transport/parse failure.
-int ResourceLogin(ResClient& r, int uid, const std::string& session_token);
+int ResourceLogin(ResClient& r, int uid, const std::string& token);
 
 } // namespace imt
