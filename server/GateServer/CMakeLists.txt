@@ -64,6 +64,7 @@ target_include_directories(GateServer PRIVATE
 
 target_link_libraries(GateServer PRIVATE
   llfc_server_common
+  llfc_server_common_crypto
   llfc_server_common_redis
   llfc_server_common_mysql
   llfc_status_proto

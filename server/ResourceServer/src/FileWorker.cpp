@@ -198,7 +198,6 @@ void FileWorker::RegisterHandlers()
 			//将数据库内容写入redis缓存
 			json redis_root;
 			redis_root["uid"] = task->_uid;
-			redis_root["pwd"] = user_info->pwd;
 			redis_root["name"] = user_info->name;
 			redis_root["email"] = user_info->email;
 			redis_root["nick"] = user_info->nick;

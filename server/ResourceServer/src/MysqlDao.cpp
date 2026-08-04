@@ -1,6 +1,7 @@
 #include "MysqlDao.h"
 #include "ConfigMgr.h"
 #include "const.h"
+#include "PasswordHash.h"
 
 MysqlDao::MysqlDao()
 {
@@ -26,10 +27,16 @@ int MysqlDao::RegUser(const std::string& name, const std::string& email, const s
 		}
 		// 准备调用存储过程
 		std::unique_ptr < sql::PreparedStatement > stmt(con->_con->prepareStatement("CALL reg_user(?,?,?,@result)"));
+		// 密码先做 PBKDF2 哈希，DB 只存哈希
+		const std::string hashed = llfc::HashPassword(pwd);
+		if (hashed.empty()) {
+			pool_->returnConnection(std::move(con));
+			return -1;
+		}
 		// 设置输入参数
 		stmt->setString(1, name);
 		stmt->setString(2, email);
-		stmt->setString(3, pwd);
+		stmt->setString(3, hashed);
 
 		// 由于PreparedStatement不直接支持注册输出参数，我们需要使用会话变量或其他方法来获取输出参数的值
 
@@ -101,12 +108,18 @@ bool MysqlDao::UpdatePwd(const std::string& name, const std::string& newpwd) {
 			return false;
 		}
 
+		// 密码先做 PBKDF2 哈希，DB 只存哈希
+		const std::string hashed = llfc::HashPassword(newpwd);
+		if (hashed.empty()) {
+			pool_->returnConnection(std::move(con));
+			return false;
+		}
 		// 准备查询语句
 		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement("UPDATE user SET pwd = ? WHERE name = ?"));
 
 		// 绑定参数
 		pstmt->setString(2, name);
-		pstmt->setString(1, newpwd);
+		pstmt->setString(1, hashed);
 
 		// 执行更新
 		int updateCount = pstmt->executeUpdate();
@@ -148,13 +161,25 @@ bool MysqlDao::CheckPwd(const std::string& name, const std::string& pwd, UserInf
 			break;
 		}
 
-		if (pwd != origin_pwd) {
+		// PBKDF2 恒定时间校验；存量明文行由 VerifyPassword 的 legacy 分支兼容，
+		// 校验通过后由 ShouldRehash 触发 rehash-on-login，把明文平滑升级为哈希。
+		if (!llfc::VerifyPassword(pwd, origin_pwd)) {
 			return false;
 		}
 		userInfo.name = name;
 		userInfo.email = res->getString("email");
 		userInfo.uid = res->getInt("uid");
-		userInfo.pwd = origin_pwd;
+		if (llfc::ShouldRehash(origin_pwd)) {
+			const std::string hashed = llfc::HashPassword(pwd);
+			if (!hashed.empty()) {
+				// 复用同一连接执行 UPDATE，避免二次向连接池取连接
+				std::unique_ptr<sql::PreparedStatement> pstmt_upd(
+					con->_con->prepareStatement("UPDATE user SET pwd = ? WHERE name = ?"));
+				pstmt_upd->setString(1, hashed);
+				pstmt_upd->setString(2, name);
+				pstmt_upd->executeUpdate();
+			}
+		}
 		return true;
 	}
 	catch (sql::SQLException& e) {
@@ -482,7 +507,6 @@ std::shared_ptr<UserInfo> MysqlDao::GetUser(int uid)
 		// 遍历结果集
 		while (res->next()) {
 			user_ptr.reset(new UserInfo);
-			user_ptr->pwd = res->getString("pwd");
 			user_ptr->email = res->getString("email");
 			user_ptr->name = res->getString("name");
 			user_ptr->nick = res->getString("nick");
@@ -524,7 +548,6 @@ std::shared_ptr<UserInfo> MysqlDao::GetUser(std::string name)
 		// 遍历结果集
 		while (res->next()) {
 			user_ptr.reset(new UserInfo);
-			user_ptr->pwd = res->getString("pwd");
 			user_ptr->email = res->getString("email");
 			user_ptr->name = res->getString("name");
 			user_ptr->nick = res->getString("nick");

@@ -68,6 +68,7 @@ target_include_directories(ChatServer PRIVATE
 
 target_link_libraries(ChatServer PRIVATE
   llfc_server_common
+  llfc_server_common_crypto
   llfc_server_common_redis
   llfc_server_common_mysql
   llfc_chat_proto

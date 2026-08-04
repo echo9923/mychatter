@@ -761,17 +761,15 @@ void LogicSystem::GetUserByUid(std::string uid_str, json& rtvalue)
 		auto root = json::parse(info_str, nullptr, false);
 		auto uid = root["uid"].get<int>();
 		auto name = root["name"].get<std::string>();
-		auto pwd = root["pwd"].get<std::string>();
 		auto email = root["email"].get<std::string>();
 		auto nick = root["nick"].get<std::string>();
 		auto desc = root["desc"].get<std::string>();
 		auto sex = root["sex"].get<int>();
 		auto icon = root["icon"].get<std::string>();
 		std::cout << "user  uid is  " << uid << " name  is "
-			<< name << " pwd is " << pwd << " email is " << email <<" icon is " << icon << endl;
+			<< name << " email is " << email <<" icon is " << icon << endl;
 
 		rtvalue["uid"] = uid;
-		rtvalue["pwd"] = pwd;
 		rtvalue["name"] = name;
 		rtvalue["email"] = email;
 		rtvalue["nick"] = nick;
@@ -794,7 +792,6 @@ void LogicSystem::GetUserByUid(std::string uid_str, json& rtvalue)
 	//将数据库内容写入redis缓存
 	json redis_root;
 	redis_root["uid"] = user_info->uid;
-	redis_root["pwd"] = user_info->pwd;
 	redis_root["name"] = user_info->name;
 	redis_root["email"] = user_info->email;
 	redis_root["nick"] = user_info->nick;
@@ -806,7 +803,6 @@ void LogicSystem::GetUserByUid(std::string uid_str, json& rtvalue)
 
 	//返回数据
 	rtvalue["uid"] = user_info->uid;
-	rtvalue["pwd"] = user_info->pwd;
 	rtvalue["name"] = user_info->name;
 	rtvalue["email"] = user_info->email;
 	rtvalue["nick"] = user_info->nick;
@@ -828,17 +824,15 @@ void LogicSystem::GetUserByName(std::string name, json& rtvalue)
 		auto root = json::parse(info_str, nullptr, false);
 		auto uid = root["uid"].get<int>();
 		auto name = root["name"].get<std::string>();
-		auto pwd = root["pwd"].get<std::string>();
 		auto email = root["email"].get<std::string>();
 		auto nick = root["nick"].get<std::string>();
 		auto desc = root["desc"].get<std::string>();
 		auto sex = root["sex"].get<int>();
 		auto icon = root["icon"].get<std::string>();
 		std::cout << "user  uid is  " << uid << " name  is "
-			<< name << " pwd is " << pwd << " email is " << email << endl;
+			<< name << " email is " << email << endl;
 
 		rtvalue["uid"] = uid;
-		rtvalue["pwd"] = pwd;
 		rtvalue["name"] = name;
 		rtvalue["email"] = email;
 		rtvalue["nick"] = nick;
@@ -860,7 +854,6 @@ void LogicSystem::GetUserByName(std::string name, json& rtvalue)
 	//将数据库内容写入redis缓存
 	json redis_root;
 	redis_root["uid"] = user_info->uid;
-	redis_root["pwd"] = user_info->pwd;
 	redis_root["name"] = user_info->name;
 	redis_root["email"] = user_info->email;
 	redis_root["nick"] = user_info->nick;
@@ -872,7 +865,6 @@ void LogicSystem::GetUserByName(std::string name, json& rtvalue)
 	
 	//返回数据
 	rtvalue["uid"] = user_info->uid;
-	rtvalue["pwd"] = user_info->pwd;
 	rtvalue["name"] = user_info->name;
 	rtvalue["email"] = user_info->email;
 	rtvalue["nick"] = user_info->nick;
@@ -890,14 +882,13 @@ bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<Use
 		auto root = json::parse(info_str, nullptr, false);
 		userinfo->uid = root["uid"].get<int>();
 		userinfo->name = root["name"].get<std::string>();
-		userinfo->pwd = root["pwd"].get<std::string>();
 		userinfo->email = root["email"].get<std::string>();
 		userinfo->nick = root["nick"].get<std::string>();
 		userinfo->desc = root["desc"].get<std::string>();
 		userinfo->sex = root["sex"].get<int>();
 		userinfo->icon = root["icon"].get<std::string>();
 		std::cout << "user login uid is  " << userinfo->uid << " name  is "
-			<< userinfo->name << " pwd is " << userinfo->pwd << " email is " << userinfo->email << endl;
+			<< userinfo->name << " email is " << userinfo->email << endl;
 	}
 	else {
 		//redis中没有则查询mysql
@@ -913,7 +904,6 @@ bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<Use
 		//将数据库内容写入redis缓存
 		json redis_root;
 		redis_root["uid"] = uid;
-		redis_root["pwd"] = userinfo->pwd;
 		redis_root["name"] = userinfo->name;
 		redis_root["email"] = userinfo->email;
 		redis_root["nick"] = userinfo->nick;

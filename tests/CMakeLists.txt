@@ -16,6 +16,12 @@ cmake_minimum_required(VERSION 3.25)
 # and only once its harness source exists, so the default full-suite stays green.
 # ---------------------------------------------------------------------------
 
+# password_hash_tests needs libcrypto. Found at top level (not inside the
+# LLFC_RUN_INTEGRATION_TESTS block) so the default full-suite still covers the
+# hash helper. OpenSSL ships transitively via grpc in vcpkg_installed, and is
+# declared directly in vcpkg.json.
+find_package(OpenSSL REQUIRED)
+
 add_executable(worker_pool_tests
   worker_pool_tests.cpp
   ../server/common/src/LogicWorker.cpp
@@ -31,6 +37,27 @@ target_compile_features(worker_pool_tests PRIVATE cxx_std_17)
 llfc_apply_msvc_defaults(worker_pool_tests)
 
 add_test(NAME worker_pool_tests COMMAND worker_pool_tests)
+
+# --- Password hash helper tests ----------------------------------------------
+# Compiles the production PasswordHash.cpp directly and links only libcrypto
+# (mirrors worker_pool_tests), so it runs on any build without externals.
+add_executable(password_hash_tests
+  password_hash_tests.cpp
+  ../server/common/src/PasswordHash.cpp
+)
+
+target_include_directories(password_hash_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../server/common/include"
+)
+
+target_link_libraries(password_hash_tests PRIVATE
+  OpenSSL::Crypto
+)
+
+target_compile_features(password_hash_tests PRIVATE cxx_std_17)
+llfc_apply_msvc_defaults(password_hash_tests)
+
+add_test(NAME password_hash_tests COMMAND password_hash_tests)
 
 # ---------------------------------------------------------------------------
 # Integration tests — headless client + harness (Verification.2-3 first half).

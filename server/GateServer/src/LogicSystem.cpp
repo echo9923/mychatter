@@ -183,9 +183,8 @@ LogicSystem::LogicSystem() {
 	//   5. 注册成功返回用户信息
 	// 请求体JSON格式: {"email":"...", "user":"...", "passwd":"...", "confirm":"...", "icon":"...", "varifycode":"..."}
 	RegPost("/user_register", [](std::shared_ptr<HttpConnection> connection) {
-		// 提取并打印请求体
+		// 提取请求体（不打印，避免泄露密码）
 		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
-		std::cout << "receive body is " << body_str << std::endl;
 		connection->_response.set(http::field::content_type, "text/json");
 		json root;
 		// 解析请求体JSON数据
@@ -251,7 +250,6 @@ LogicSystem::LogicSystem() {
 		root["uid"] = uid;              // 新分配的用户ID
 		root["email"] = email;
 		root ["user"]= name;
-		root["passwd"] = pwd;
 		root["confirm"] = confirm;
 		root["icon"] = icon;
 		root["varifycode"] = src_root["varifycode"].get<std::string>();
@@ -269,9 +267,8 @@ LogicSystem::LogicSystem() {
 	//   4. 更新数据库中的密码
 	// 请求体JSON格式: {"email":"...", "user":"...", "passwd":"...", "varifycode":"..."}
 	RegPost("/reset_pwd", [](std::shared_ptr<HttpConnection> connection) {
-		// 提取并打印请求体
+		// 提取请求体（不打印，避免泄露密码）
 		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
-		std::cout << "receive body is " << body_str << std::endl;
 		connection->_response.set(http::field::content_type, "text/json");
 		json root;
 		// 解析请求体JSON
@@ -336,7 +333,6 @@ LogicSystem::LogicSystem() {
 		root["error"] = 0;
 		root["email"] = email;
 		root["user"] = name;
-		root["passwd"] = pwd;
 		root["varifycode"] = src_root["varifycode"].get<std::string>();
 		std::string jsonstr = root.dump(4);
 		beast::ostream(connection->_response.body()) << jsonstr;
