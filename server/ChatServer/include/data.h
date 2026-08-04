@@ -11,9 +11,8 @@
  */
 struct UserInfo {
 	/// 默认构造函数，初始化所有字段为空/0
-	UserInfo():name(""), pwd(""),uid(0),email(""),nick(""),desc(""),sex(0), icon(""), back("") {}
+	UserInfo():name(""),uid(0),email(""),nick(""),desc(""),sex(0), icon(""), back("") {}
 	std::string name;   ///< 用户名（登录账号）
-	std::string pwd;    ///< 密码（加密存储）
 	int uid;            ///< 用户唯一ID
 	std::string email;  ///< 邮箱地址
 	std::string nick;   ///< 昵称
