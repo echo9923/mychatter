@@ -10,14 +10,18 @@
 - [ConfigMgr.h](file://server/StatusServer/include/ConfigMgr.h)
 - [RedisMgr.h](file://server/StatusServer/include/RedisMgr.h)
 - [RedisMgr.cpp](file://server/StatusServer/src/RedisMgr.cpp)
-- [MysqlMgr.h](file://server/StatusServer/include/MysqlMgr.h)
-- [MysqlMgr.cpp](file://server/StatusServer/src/MysqlMgr.cpp)
 - [const.h](file://server/StatusServer/include/const.h)
-- [ChatServer StatusGrpcClient.h](file://server/ChatServer/include/StatusGrpcClient.h)
-- [ChatServer StatusGrpcClient.cpp](file://server/ChatServer/src/StatusGrpcClient.cpp)
-- [GateServer StatusGrpcClient.h](file://server/GateServer/include/StatusGrpcClient.h)
 - [GateServer StatusGrpcClient.cpp](file://server/GateServer/src/StatusGrpcClient.cpp)
 </cite>
+
+## 更新摘要
+**所做更改**
+- 移除了Login功能和MySQL集成模块
+- 简化了gRPC接口，仅保留GetChatServer功能
+- 增强了mTLS安全认证机制
+- 优化了负载均衡算法，实现最小负载选择
+- 重构了票据系统，使用一次性chat_ticket替代token
+- 更新了架构图和接口说明
 
 ## 目录
 1. [简介](#简介)
@@ -32,170 +36,140 @@
 10. [附录](#附录)
 
 ## 简介
-本技术文档围绕 StatusServer 状态管理服务展开，聚焦以下目标：
-- 用户在线状态管理、设备登录状态维护与全局用户信息缓存
-- gRPC 接口实现（GetChatServer、Login）及调用流程
-- 与 MySQL 的交互模式（当前服务中未直接调用，但提供能力）
-- Redis 在状态缓存中的应用、数据同步与一致性保证
-- 分布式环境下的状态同步、冲突解决与一致性策略
-- 状态监控、健康检查与故障诊断工具建议
+本技术文档围绕 StatusServer 状态管理服务展开，该服务经过重大架构重构，现已专注于单一职责：**ChatServer分配与路由**。主要特性包括：
 
-该服务通过 gRPC 暴露两个核心 RPC：
-- GetChatServer：为客户端分配聊天服务器地址与一次性令牌
-- Login：校验用户登录令牌并返回结果
+- **简化的gRPC接口**：仅提供GetChatServer方法，移除了复杂的Login功能
+- **增强的安全性**：采用mTLS双向证书认证，确保通信安全
+- **智能负载均衡**：基于Redis的实时负载监控，实现最小连接数分配策略
+- **一次性票据机制**：使用chat_ticket替代传统token，提升安全性
+- **Redis缓存优化**：专注于会话票据存储，移除用户状态管理
 
-状态数据主要使用 Redis 进行缓存与持久化（短期），MySQL 作为可选持久层。配置由 INI 文件驱动，支持多 ChatServer 实例的动态发现与选择。
+该服务通过gRPC暴露单一的GetChatServer接口，为客户端分配合适的ChatServer实例并生成一次性访问票据。
 
 ## 项目结构
-StatusServer 位于 server/StatusServer 目录下，包含 gRPC 服务实现、配置管理、Redis/MySQL 管理器以及启动入口。外部调用方（GateServer、ChatServer）通过各自的 StatusGrpcClient 访问该服务。
+StatusServer 位于 server/StatusServer 目录下，经过重构后结构更加简洁：
 
 ```mermaid
 graph TB
 subgraph "客户端"
 Gate["GateServer"]
-Chat["ChatServer"]
 end
 subgraph "状态服务"
 StatusSrv["StatusServer(gRPC)"]
 Impl["StatusServiceImpl"]
 Cfg["ConfigMgr(INI)"]
 Rds["RedisMgr(连接池+命令封装)"]
-Msql["MysqlMgr(用户相关)"]
 end
 subgraph "存储"
 Redis["Redis"]
-MySQL["MySQL"]
 end
-Gate --> |gRPC| StatusSrv
-Chat --> |gRPC| StatusSrv
+Gate --> |gRPC + mTLS| StatusSrv
 StatusSrv --> Impl
 Impl --> Cfg
 Impl --> Rds
-Impl -.-> Msql
 Rds --> Redis
-Msql --> MySQL
 ```
 
-图表来源
-- [StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
-- [StatusServiceImpl.h:1-52](file://server/StatusServer/include/StatusServiceImpl.h#L1-L52)
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
+**图表来源**
+- [StatusServer.cpp:1-198](file://server/StatusServer/src/StatusServer.cpp#L1-L198)
+- [StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
+- [StatusServiceImpl.cpp:1-170](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L170)
 - [config.ini:1-23](file://server/StatusServer/config/config.ini#L1-L23)
-- [RedisMgr.h:1-300](file://server/StatusServer/include/RedisMgr.h#L1-L300)
-- [MysqlMgr.h:1-18](file://server/StatusServer/include/MysqlMgr.h#L1-L18)
+- [RedisMgr.h:1-314](file://server/StatusServer/include/RedisMgr.h#L1-L314)
 
-章节来源
-- [StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+**章节来源**
+- [StatusServer.cpp:1-198](file://server/StatusServer/src/StatusServer.cpp#L1-L198)
 - [config.ini:1-23](file://server/StatusServer/config/config.ini#L1-L23)
 
 ## 核心组件
-- gRPC 服务定义与消息类型
+- **简化的gRPC服务定义**
   - 服务：StatusService
-  - RPC：GetChatServer、Login
-  - 请求/响应：GetChatServerReq/Rsp、LoginReq/Rsp
-- 服务实现类
-  - StatusServiceImpl：实现上述两个 RPC，负责令牌生成与校验、ChatServer 选择、Redis 写入/读取
-- 配置管理
-  - ConfigMgr：解析 INI 配置，提供 SectionInfo 访问接口
-- 存储与缓存
-  - RedisMgr：基于 hiredis 的连接池、常用命令封装、分布式锁辅助
-  - MysqlMgr：用户注册、密码校验等（当前服务未直接使用）
-- 常量与错误码
+  - 唯一RPC：GetChatServer
+  - 请求/响应：GetChatServerReq/Rsp（包含uid、intent、session_token_sha256）
+- **服务实现类**
+  - StatusServiceImpl：实现GetChatServer方法，负责ChatServer选择和票据生成
+- **配置管理**
+  - ConfigMgr：解析INI配置，提供服务器列表访问接口
+- **存储与缓存**
+  - RedisMgr：基于hiredis的连接池、常用命令封装、分布式锁辅助
+- **常量与错误码**
   - const.h：错误码枚举、键前缀常量、分布式锁超时参数
 
-章节来源
-- [status.proto:1-32](file://proto/status_service/status.proto#L1-L32)
-- [StatusServiceImpl.h:1-52](file://server/StatusServer/include/StatusServiceImpl.h#L1-L52)
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
+**章节来源**
+- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
+- [StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
+- [StatusServiceImpl.cpp:1-170](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L170)
 - [ConfigMgr.h:1-84](file://server/StatusServer/include/ConfigMgr.h#L1-L84)
-- [RedisMgr.h:1-300](file://server/StatusServer/include/RedisMgr.h#L1-L300)
-- [MysqlMgr.h:1-18](file://server/StatusServer/include/MysqlMgr.h#L1-L18)
-- [const.h:1-75](file://server/StatusServer/include/const.h#L1-L75)
+- [RedisMgr.h:1-314](file://server/StatusServer/include/RedisMgr.h#L1-L314)
+- [const.h:1-69](file://server/StatusServer/include/const.h#L1-L69)
 
 ## 架构总览
-StatusServer 作为“状态与路由”中心，承担以下职责：
-- 为用户分配 ChatServer 实例（按简单策略选择）
-- 生成一次性 Token 并绑定 uid，供后续登录校验
-- 提供 Login 接口，校验 token 有效性并返回结果
-- 通过 Redis 缓存用户 token、会话信息等；预留 MySQL 用于用户信息持久化
+StatusServer 现在作为纯粹的"ChatServer分配器"，承担以下职责：
+
+- **智能负载均衡**：根据Redis中的实时负载信息选择最优ChatServer
+- **安全认证**：通过mTLS证书验证调用方身份
+- **票据生成**：创建一次性chat_ticket供ChatServer验证
+- **会话支持**：支持INITIAL和RESUME两种票据意图
 
 ```mermaid
 sequenceDiagram
-participant Client as "客户端(Gate/Chat)"
-participant Svc as "StatusService(gRPC)"
+participant Client as "GateServer"
+participant Svc as "StatusService(mTLS)"
 participant Impl as "StatusServiceImpl"
 participant Rds as "RedisMgr"
-participant DB as "MySQL(可选)"
-Note over Client,Svc : 获取聊天服务器与Token
-Client->>Svc : GetChatServer(uid)
-Svc->>Impl : GetChatServer(...)
-Impl->>Impl : getChatServer()
-Impl-->>Client : {host,port,error,token}
-Impl->>Rds : Set("utoken_"+uid, token)
-Note over Client,Svc : 登录校验
-Client->>Svc : Login(uid, token)
-Svc->>Impl : Login(...)
-Impl->>Rds : Get("utoken_"+uid)
-alt 命中且一致
-Rds-->>Impl : token
-Impl-->>Client : {error=Success, uid, token}
-else 未命中或不一致
-Rds-->>Impl : ""/不匹配
-Impl-->>Client : {error=UidInvalid/TokenInvalid}
-end
+Note over Client,Svc : 获取聊天服务器与票据
+Client->>Svc : GetChatServer(uid, intent, session_token_sha256)
+Svc->>Impl : Verify mTLS certificate
+Impl->>Impl : getChatServer() (最小负载选择)
+Impl->>Rds : SetEx("chat : ticket : "+uuid, 60s, JSON)
+Impl-->>Client : {error, server_name, host, port, chat_ticket}
 ```
 
-图表来源
-- [status.proto:1-32](file://proto/status_service/status.proto#L1-L32)
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
-- [RedisMgr.cpp:1-431](file://server/StatusServer/src/RedisMgr.cpp#L1-L431)
+**图表来源**
+- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
+- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
+- [RedisMgr.cpp:82-113](file://server/StatusServer/src/RedisMgr.cpp#L82-L113)
 
-章节来源
-- [StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
+**章节来源**
+- [StatusServer.cpp:106-180](file://server/StatusServer/src/StatusServer.cpp#L106-L180)
+- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
 
 ## 详细组件分析
 
-### gRPC 接口与协议
-- 服务与方法
+### gRPC接口与协议
+- **服务与方法**
   - GetChatServer(GetChatServerReq) -> GetChatServerRsp
-  - Login(LoginReq) -> LoginRsp
-- 字段说明
-  - GetChatServerReq：uid
-  - GetChatServerRsp：error、host、port、token
-  - LoginReq：uid、token
-  - LoginRsp：error、uid、token
-- 错误码
-  - Success、RpcFailed、TokenInvalid、UidInvalid 等
+- **字段说明**
+  - GetChatServerReq：uid、intent（INITIAL/RESUME）、session_token_sha256（仅RESUME时使用）
+  - GetChatServerRsp：error、server_name、host、port、chat_ticket
+- **错误码**
+  - Success、RPCFailed、NoAvailableChatServer等
 
-章节来源
-- [status.proto:1-32](file://proto/status_service/status.proto#L1-L32)
-- [const.h:1-75](file://server/StatusServer/include/const.h#L1-L75)
+**章节来源**
+- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
+- [const.h:25-39](file://server/StatusServer/include/const.h#L25-L39)
 
 ### 服务实现：StatusServiceImpl
-- 构造函数
-  - 从配置加载 chatservers 列表，构建本地 ChatServer 映射
-- GetChatServer
-  - 选择 ChatServer（当前默认取第一个，注释中包含未来按负载选择的思路）
-  - 生成唯一 token（UUID）
-  - 将 uid->token 写入 Redis（key 前缀 USERTOKENPREFIX）
-  - 返回 host/port/token/error
-- Login
-  - 根据 uid 构造 key，从 Redis 读取 token
-  - 若不存在则返回 UidInvalid；若不匹配则返回 TokenInvalid
-  - 否则返回 Success 并回传 uid、token
-- insertToken/getChatServer
-  - insertToken：Redis SET
-  - getChatServer：加互斥锁保护本地 _servers 遍历（当前简化策略）
+- **构造函数**
+  - 从配置加载chatservers列表，构建本地ChatServer映射
+- **GetChatServer方法**
+  - mTLS证书验证：检查客户端证书的SAN字段是否包含"llfc-gate"
+  - ChatServer选择：基于Redis中chatserver:lease:*键的负载值选择最小负载节点
+  - 票据生成：创建UUID作为chat_ticket，JSON格式包含uid、server、intent等信息
+  - Redis存储：使用SetEx设置60秒过期时间的票据
+- **getChatServer方法**
+  - 读取所有chatserver:lease:*键，解析负载值
+  - 选择负载最小的节点，相同负载时轮转选择
+  - 返回完整的ChatServer信息（name、host、port、con_count）
 
 ```mermaid
 classDiagram
 class StatusServiceImpl {
 +Status GetChatServer(context, request, reply)
-+Status Login(context, request, reply)
--void insertToken(uid, token)
 -ChatServer getChatServer()
 -unordered_map~string, ChatServer_ servers
+-vector~string_ _server_order
+-atomic~size_t_ _rr
 -mutex _server_mtx
 }
 class ChatServer {
@@ -207,126 +181,97 @@ class ChatServer {
 StatusServiceImpl --> ChatServer : "管理多个实例"
 ```
 
-图表来源
-- [StatusServiceImpl.h:1-52](file://server/StatusServer/include/StatusServiceImpl.h#L1-L52)
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
+**图表来源**
+- [StatusServiceImpl.h:36-49](file://server/StatusServer/include/StatusServiceImpl.h#L36-L49)
+- [StatusServiceImpl.cpp:82-169](file://server/StatusServer/src/StatusServiceImpl.cpp#L82-L169)
 
-章节来源
-- [StatusServiceImpl.h:1-52](file://server/StatusServer/include/StatusServiceImpl.h#L1-L52)
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
+**章节来源**
+- [StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
+- [StatusServiceImpl.cpp:36-169](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L169)
 
 ### 启动与服务监听
-- 主函数
-  - 读取配置，组装监听地址
-  - 创建 gRPC ServerBuilder，注册服务，启动监听
-  - 使用 Boost.Asio 捕获 SIGINT/SIGTERM，优雅关闭
-  - 进程退出时关闭 Redis 连接池
+- **主函数流程**
+  - 环境变量加载：LLFC_STATUS_CA_CERT_PATH、LLFC_STATUS_SERVER_CERT_PATH、LLFC_STATUS_SERVER_KEY_PATH
+  - 证书文件读取：CA证书、服务器证书、私钥
+  - 数据迁移：清理旧的utoken_*键，标记schema v2
+  - mTLS配置：SSL服务器凭证，要求客户端证书验证
+  - gRPC服务器启动：注册服务，监听端口
+  - 优雅关闭：信号处理，资源清理
 
-章节来源
-- [StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+**章节来源**
+- [StatusServer.cpp:106-180](file://server/StatusServer/src/StatusServer.cpp#L106-L180)
 
 ### 配置管理（INI）
-- 关键配置项
+- **关键配置项**
   - StatusServer：Host、Port
-  - Mysql：Host、Port、User、Passwd、Schema
   - Redis：Host、Port、Passwd
   - chatservers：Name（逗号分隔的服务器名列表）
   - chatserverN：Name、Host、Port
-- 行为
-  - ConfigMgr 单例，按 section/key 取值
-  - StatusServiceImpl 构造时解析 chatservers 列表，初始化本地服务器映射
+- **行为**
+  - ConfigMgr单例，按section/key取值
+  - StatusServiceImpl构造时解析chatservers列表，初始化本地服务器映射
 
-章节来源
+**章节来源**
 - [config.ini:1-23](file://server/StatusServer/config/config.ini#L1-L23)
 - [ConfigMgr.h:1-84](file://server/StatusServer/include/ConfigMgr.h#L1-L84)
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
+- [StatusServiceImpl.cpp:82-109](file://server/StatusServer/src/StatusServiceImpl.cpp#L82-L109)
 
-### Redis 缓存与一致性
-- 连接池
-  - RedisConPool：固定大小连接池，后台线程定期 PING 检测存活，失败自动重连
-  - 提供 getConnection/returnConnection、Close/ClearConnections
-- 命令封装
+### Redis缓存与一致性
+- **连接池**
+  - RedisConPool：固定大小连接池，后台线程定期PING检测存活，失败自动重连
+  - 提供getConnection/returnConnection、Close/ClearConnections
+- **命令封装**
   - Get/Set/SetWithExpire/LPush/LPop/RPush/RPop/HSet/HGet/HDel/Del/ExistsKey
-  - 分布式锁 acquireLock/releaseLock（内部委托 DistLock）
-- 状态缓存策略
-  - 用户 Token：key="utoken_"+uid，value=token（无过期或按需设置）
-  - 登录计数（预留）：hash key="logincount"，field=chatserver.name，value=count（代码中有注释方案）
-- 一致性保证
-  - 单次 GET/SET 操作原子性由 Redis 保障
-  - 登录校验采用“读后比较”，避免并发写导致的脏读
-  - 分布式锁可用于需要跨节点协调的场景（如统计计数更新）
+  - SCAN模式扫描、SETNX原子操作、EVAL Lua脚本执行
+  - 分布式锁acquireLock/releaseLock（内部委托DistLock）
+- **状态缓存策略**
+  - 聊天票据：key="chat:ticket_"+uuid，value=JSON字符串（60秒过期）
+  - 负载信息：key="chatserver:lease:"+name，value=已认证会话数
+- **一致性保证**
+  - SETEX命令保证票据设置的原子性和过期时间
+  - 负载统计通过ChatServer主动上报，避免竞争条件
 
 ```mermaid
 flowchart TD
-Start(["进入 Login"]) --> BuildKey["构造 key = 'utoken_'+uid"]
-BuildKey --> Read["Redis.Get(key)"]
-Read --> Exists{"存在?"}
-Exists -- 否 --> ErrUid["返回 UidInvalid"]
-Exists -- 是 --> Compare{"值等于请求token?"}
-Compare -- 否 --> ErrToken["返回 TokenInvalid"]
-Compare -- 是 --> Ok["返回 Success + uid + token"]
+Start(["进入 GetChatServer"]) --> Verify["mTLS证书验证"]
+Verify --> LoadCheck["读取各ChatServer负载"]
+LoadCheck --> Select["选择最小负载节点"]
+Select --> GenerateTicket["生成UUID票据"]
+GenerateTicket --> StoreTicket["Redis.SetEx存储票据"]
+StoreTicket --> Return["返回服务器信息和票据"]
 ```
 
-图表来源
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
-- [RedisMgr.cpp:1-431](file://server/StatusServer/src/RedisMgr.cpp#L1-L431)
+**图表来源**
+- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
+- [RedisMgr.cpp:82-113](file://server/StatusServer/src/RedisMgr.cpp#L82-L113)
 
-章节来源
-- [RedisMgr.h:1-300](file://server/StatusServer/include/RedisMgr.h#L1-L300)
-- [RedisMgr.cpp:1-431](file://server/StatusServer/src/RedisMgr.cpp#L1-L431)
-- [const.h:1-75](file://server/StatusServer/include/const.h#L1-L75)
+**章节来源**
+- [RedisMgr.h:1-314](file://server/StatusServer/include/RedisMgr.h#L1-L314)
+- [RedisMgr.cpp:1-200](file://server/StatusServer/src/RedisMgr.cpp#L1-L200)
+- [const.h:57-61](file://server/StatusServer/include/const.h#L57-L61)
 
-### MySQL 交互（预留能力）
-- MysqlMgr 提供用户注册、邮箱校验、密码更新与校验等方法
-- 当前 StatusServer 未直接调用这些方法，但具备接入能力（例如将用户基础信息落库）
+### 调用方：GateServer
+- **StatusGrpcClient实现**
+  - 封装对StatusService的GetChatServer调用
+  - 支持intent参数（INITIAL/RESUME）和session_token_sha256
+  - 3秒超时控制，错误处理
+- **连接管理**
+  - 使用gRPC Channel复用连接
+  - 环境变量的证书路径配置
 
-章节来源
-- [MysqlMgr.h:1-18](file://server/StatusServer/include/MysqlMgr.h#L1-L18)
-- [MysqlMgr.cpp:1-30](file://server/StatusServer/src/MysqlMgr.cpp#L1-L30)
-
-### 调用方：GateServer 与 ChatServer
-- 两者均实现 StatusGrpcClient，封装对 StatusService 的调用
-- 连接池：StatusConPool，复用 gRPC Channel/Stub
-- 调用流程：
-  - GetChatServer(uid)：获取 ChatServer 地址与 token
-  - Login(uid, token)：校验 token 有效性
-
-```mermaid
-sequenceDiagram
-participant G as "Gate/Chat"
-participant C as "StatusGrpcClient"
-participant Pool as "StatusConPool"
-participant S as "StatusService"
-G->>C : GetChatServer(uid)
-C->>Pool : getConnection()
-Pool-->>C : Stub
-C->>S : stub->GetChatServer(req)
-S-->>C : rsp
-C-->>G : rsp
-```
-
-图表来源
-- [ChatServer StatusGrpcClient.h:1-99](file://server/ChatServer/include/StatusGrpcClient.h#L1-L99)
-- [ChatServer StatusGrpcClient.cpp:1-53](file://server/ChatServer/src/StatusGrpcClient.cpp#L1-L53)
-- [GateServer StatusGrpcClient.h:1-98](file://server/GateServer/include/StatusGrpcClient.h#L1-L98)
-- [GateServer StatusGrpcClient.cpp:1-53](file://server/GateServer/src/StatusGrpcClient.cpp#L1-L53)
-
-章节来源
-- [ChatServer StatusGrpcClient.h:1-99](file://server/ChatServer/include/StatusGrpcClient.h#L1-L99)
-- [ChatServer StatusGrpcClient.cpp:1-53](file://server/ChatServer/src/StatusGrpcClient.cpp#L1-L53)
-- [GateServer StatusGrpcClient.h:1-98](file://server/GateServer/include/StatusGrpcClient.h#L1-L98)
-- [GateServer StatusGrpcClient.cpp:1-53](file://server/GateServer/src/StatusGrpcClient.cpp#L1-L53)
+**章节来源**
+- [GateServer StatusGrpcClient.cpp:1-48](file://server/GateServer/src/StatusGrpcClient.cpp#L1-L48)
 
 ## 依赖关系分析
-- 组件耦合
-  - StatusServiceImpl 依赖 ConfigMgr（配置）、RedisMgr（缓存）、const（常量）
-  - 启动模块依赖 AsioIOServicePool（信号处理）、RedisMgr（资源释放）
-  - 调用方依赖各自 StatusGrpcClient
-- 外部依赖
+- **组件耦合**
+  - StatusServiceImpl依赖ConfigMgr（配置）、RedisMgr（缓存）、const（常量）
+  - 启动模块依赖AsioIOServicePool（信号处理）、RedisMgr（资源释放）
+  - 调用方依赖各自的StatusGrpcClient
+- **外部依赖**
   - gRPC（通信）
-  - hiredis（Redis 客户端）
-  - MySQL Connector/C++（数据库，当前未直接使用）
+  - hiredis（Redis客户端）
   - Boost（Asio、PropertyTree、UUID）
+  - OpenSSL（mTLS证书处理）
 
 ```mermaid
 graph LR
@@ -335,63 +280,61 @@ Impl --> Rds["RedisMgr"]
 Impl --> Const["const.h"]
 Main["StatusServer.cpp"] --> Impl
 Main --> Rds
-Callers["Gate/Chat StatusGrpcClient"] --> Impl
+Callers["GateServer StatusGrpcClient"] --> Impl
 ```
 
-图表来源
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
-- [StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
-- [ChatServer StatusGrpcClient.cpp:1-53](file://server/ChatServer/src/StatusGrpcClient.cpp#L1-L53)
-- [GateServer StatusGrpcClient.cpp:1-53](file://server/GateServer/src/StatusGrpcClient.cpp#L1-L53)
+**图表来源**
+- [StatusServiceImpl.cpp:1-170](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L170)
+- [StatusServer.cpp:1-198](file://server/StatusServer/src/StatusServer.cpp#L1-L198)
+- [GateServer StatusGrpcClient.cpp:1-48](file://server/GateServer/src/StatusGrpcClient.cpp#L1-L48)
 
-章节来源
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
-- [StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+**章节来源**
+- [StatusServiceImpl.cpp:1-170](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L170)
+- [StatusServer.cpp:1-198](file://server/StatusServer/src/StatusServer.cpp#L1-L198)
 
 ## 性能与可扩展性
-- 连接池
-  - Redis 连接池固定大小，后台线程定时 PING，异常自动重连，降低连接抖动影响
-  - gRPC Channel/Stub 连接池减少握手开销
-- 算法复杂度
-  - GetChatServer：O(N) 遍历本地服务器列表（N 为配置中的服务器数量），当前为简单策略
-  - Login：O(1) Redis 读写
-- 可扩展点
-  - 负载均衡：可结合 Redis 的 logincount hash 做最小连接数选择（代码中有注释方案）
-  - Token 过期：可通过 SetWithExpire 控制有效期，提升安全性
-  - 异步通知：可在 Login 成功后通过队列推送事件给 ChatServer（需扩展）
-
-[本节为通用指导，无需引用具体文件]
+- **连接池优化**
+  - Redis连接池固定大小，后台线程定时PING，异常自动重连，降低连接抖动影响
+  - gRPC Channel连接复用减少握手开销
+- **算法复杂度**
+  - GetChatServer：O(N)遍历本地服务器列表，N为配置中的服务器数量
+  - 负载选择：O(M)读取M个ChatServer的负载信息
+  - 票据生成：O(1) UUID生成 + O(1) Redis SETEX操作
+- **可扩展点**
+  - 负载均衡：当前实现最小负载策略，可扩展为加权轮询或一致性哈希
+  - 票据类型：支持INITIAL和RESUME两种意图，可扩展更多票据类型
+  - 健康检查：可添加ChatServer健康检查机制
 
 ## 故障排查指南
-- 常见问题定位
-  - gRPC 调用失败：检查 StatusGrpcClient 连接池是否可用、网络连通性与端口配置
-  - Token 无效：确认 GetChatServer 是否成功写入 Redis，Login 是否正确读取
-  - Redis 连接异常：查看连接池日志、PING 检测结果与重连逻辑
-  - 配置错误：核对 config.ini 中 StatusServer、Redis、chatservers 等段
-- 诊断建议
-  - 启用详细日志（Redis 命令执行输出）
-  - 监控 Redis 键是否存在（utoken_*）
-  - 观察 ChatServer 选择策略是否符合预期
+- **常见问题定位**
+  - mTLS证书问题：检查环境变量证书路径是否正确，证书SAN字段是否包含"llfc-gate"
+  - Redis连接失败：查看连接池日志、PING检测结果与重连逻辑
+  - 无可用ChatServer：检查Redis中是否存在chatserver:lease:*键，确认ChatServer是否正常上报负载
+  - 票据无效：确认GetChatServer是否成功写入Redis，ChatServer是否正确消费票据
+- **诊断建议**
+  - 启用详细日志（Redis命令执行输出）
+  - 监控Redis键是否存在（chat:ticket_*）
+  - 观察ChatServer选择策略是否符合预期
+  - 检查mTLS证书链完整性
 
-章节来源
-- [RedisMgr.cpp:1-431](file://server/StatusServer/src/RedisMgr.cpp#L1-L431)
-- [StatusServiceImpl.cpp:1-125](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L125)
+**章节来源**
+- [RedisMgr.cpp:1-200](file://server/StatusServer/src/RedisMgr.cpp#L1-L200)
+- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
 - [config.ini:1-23](file://server/StatusServer/config/config.ini#L1-L23)
 
 ## 结论
-StatusServer 以简洁可靠的 gRPC 接口为核心，结合 Redis 缓存与连接池，实现了用户 Token 管理与 ChatServer 路由分配。当前实现聚焦于基本功能与稳定性，具备良好的扩展空间（负载均衡、Token 过期、事件通知等）。建议在后续迭代中完善分布式计数与一致性策略，增强可观测性与容错能力。
-
-[本节为总结性内容，无需引用具体文件]
+StatusServer经过重大架构重构后，已成为一个专注、安全、高效的ChatServer分配服务。通过移除复杂的Login功能和MySQL集成，服务变得更加简洁可靠。新的mTLS安全机制、智能负载均衡算法和一次性票据设计，为整个聊天系统提供了坚实的基础。未来可在负载均衡策略、健康检查和监控方面进一步增强。
 
 ## 附录
-- 健康检查建议
-  - 增加 /health 或 gRPC 健康检查端点，返回服务状态与依赖（Redis/MySQL）可用性
-- 监控指标
-  - gRPC 请求量、延迟、错误率
-  - Redis 命中率、连接池使用率、PING 失败次数
-  - ChatServer 选择分布（各实例连接数）
-- 安全加固
-  - 使用 TLS 替代 InsecureChannelCredentials
-  - Token 加入签名与过期时间，防止伪造与重放
-
-[本节为通用建议，无需引用具体文件]
+- **健康检查建议**
+  - 增加/gRPC健康检查端点，返回服务状态与依赖（Redis）可用性
+  - 添加ChatServer健康状态监控
+- **监控指标**
+  - gRPC请求量、延迟、错误率
+  - Redis命中率、连接池使用率、PING失败次数
+  - ChatServer选择分布（各实例连接数）
+  - 票据生成成功率
+- **安全加固**
+  - 已实现mTLS双向证书认证
+  - 票据短期过期（60秒），防止重放攻击
+  - 建议添加请求频率限制和IP白名单

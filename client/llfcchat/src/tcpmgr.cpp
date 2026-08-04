@@ -285,8 +285,8 @@ void TcpMgr::initHandlers()
         auto user_info = std::make_shared<UserInfo>(uid, name, nick, icon, sex,"",desc);
  
         UserMgr::GetInstance()->SetUserInfo(user_info);
-        //3.2 Chat 登录响应返回 session_token（不再返回 token/pwd）
-        UserMgr::GetInstance()->SetToken(jsonObj["session_token"].toString());
+        //Chat 登录成功后用 Gate 下发的统一 token（_server_info 持有）作为 Resource 鉴权凭据
+        UserMgr::GetInstance()->SetToken(_server_info->_token);
         if(jsonObj.contains("apply_list")){
             UserMgr::GetInstance()->AppendApplyList(jsonObj["apply_list"].toArray());
         }

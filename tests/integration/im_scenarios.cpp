@@ -72,15 +72,15 @@ static std::string RunTag() {
 // Delete every chat_message row + Redis key the scenario may have created.
 // Only touches keys/rows tied to the fixture uids and the "imtest-" prefix.
 //
-// Plan 3.2 clean cutover: the legacy per-uid token key is gone — sessions now
-// live in the versioned `session:token:v2:<uid>` key issued by the ChatServer.
+// The per-user login token lives in utoken_<uid> (written by Status on every
+// password login, TTL 86400); clear it so each scenario starts clean.
 static void CleanupFootprint(Redis& redis, Mysql& mysql) {
 	mysql.DeleteByUniqueIdLike("imtest-%");
 	redis.FlushZSet("offline_msg:" + std::to_string(SENDER_UID));
 	redis.FlushZSet("offline_msg:" + std::to_string(RECEIVER_UID));
 	for (int uid : { SENDER_UID, RECEIVER_UID }) {
 		const std::string u = std::to_string(uid);
-		redis.Del("session:token:v2:" + u);
+		redis.Del(UserTokenKey(uid));
 		redis.Del("uip_"      + u);
 		redis.Del("usession_" + u);
 		redis.Del("ubaseinfo_" + u);
@@ -94,20 +94,19 @@ static void CleanupFootprint(Redis& redis, Mysql& mysql) {
 	redis.Del(ChatLeaseKey("chatserver2"));
 }
 
-// Result of a Gate /user_login call: the one-time chat ticket plus the address
-// of the ChatServer Status selected for this login. The ticket is NOT consumed
-// here — it is only consumed when the client logs in to the ChatServer.
+// Result of a Gate /user_login call: the per-user login token plus the address
+// of the ChatServer Status selected for this login.
 struct GateLoginInfo {
 	bool           ok = false;
 	int            error = -1;
-	std::string    chat_ticket;
+	std::string    token;
 	std::string    chat_host;
 	unsigned short chat_port = 0;
 };
 
 // POST Gate /user_login {email, passwd} for a fixture uid. Verifies the
-// password (Gate checks the DB directly) and obtains a one-time chat ticket
-// plus the assigned ChatServer address. Does not touch the ChatServer.
+// password (Gate checks the DB directly) and obtains the login token plus the
+// assigned ChatServer address. Does not touch the ChatServer.
 static GateLoginInfo GateLogin(int uid) {
 	GateLoginInfo info;
 	json req;
@@ -130,11 +129,11 @@ static GateLoginInfo GateLogin(int uid) {
 		std::printf("[login] /user_login uid=%d error=%d\n", uid, info.error);
 		return info;
 	}
-	info.chat_ticket = j.value("chat_ticket", "");
-	info.chat_host   = j.value("chathost", "");
+	info.token     = j.value("token", "");
+	info.chat_host = j.value("chathost", "");
 	const std::string port_str = j.value("chatport", "0");
-	info.chat_port   = static_cast<unsigned short>(std::atoi(port_str.c_str()));
-	if (info.chat_ticket.empty() || info.chat_host.empty() || info.chat_port == 0) {
+	info.chat_port = static_cast<unsigned short>(std::atoi(port_str.c_str()));
+	if (info.token.empty() || info.chat_host.empty() || info.chat_port == 0) {
 		std::printf("[login] /user_login uid=%d missing chat fields\n", uid);
 		return info;
 	}
@@ -142,13 +141,12 @@ static GateLoginInfo GateLogin(int uid) {
 	return info;
 }
 
-// Full login for a fixture uid: obtain a one-time ticket from Gate /user_login,
-// connect to the returned ChatServer, and run the INITIAL chat login. On success
-// the TcpClient is authenticated and `session_token` holds the v2 session token.
+// Full login for a fixture uid: obtain the login token from Gate /user_login,
+// connect to the returned ChatServer, and run the chat login (1005). On success
+// the TcpClient is authenticated and `token` holds the gate-issued login token.
 struct LoginInfo {
 	bool           ok = false;
-	std::string    session_token;
-	std::string    chat_ticket;
+	std::string    token;
 	std::string    chat_host;
 	unsigned short chat_port = 0;
 };
@@ -162,16 +160,15 @@ static LoginInfo LoginUser(TcpClient& c, int uid) {
 			uid, gl.chat_host.c_str(), gl.chat_port);
 		return info;
 	}
-	auto lo = ChatLoginInitial(c, uid, gl.chat_ticket);
+	auto lo = ChatLogin(c, uid, gl.token);
 	if (!lo.ok) {
 		std::printf("[login] chat login uid=%d error=%d\n", uid, lo.error);
 		return info;
 	}
-	info.ok            = true;
-	info.session_token = lo.session_token;
-	info.chat_ticket   = gl.chat_ticket;
-	info.chat_host     = gl.chat_host;
-	info.chat_port     = gl.chat_port;
+	info.ok        = true;
+	info.token     = gl.token;
+	info.chat_host = gl.chat_host;
+	info.chat_port = gl.chat_port;
 	return info;
 }
 
@@ -191,7 +188,7 @@ static bool LoginUserPinned(TcpClient& c, int uid, Redis& redis,
 					uid, gl.chat_host.c_str(), gl.chat_port);
 				return false;
 			}
-			auto lo = ChatLoginInitial(c, uid, gl.chat_ticket);
+			auto lo = ChatLogin(c, uid, gl.token);
 			if (lo.ok) return true;
 			// 登录失败（如残留分布式锁 RPCFailed）：关闭后重试，残余锁 TTL 10s 内会过期
 			std::printf("[login] pinned chat login uid=%d error=%d, retrying\n", uid, lo.error);
@@ -521,11 +518,11 @@ bool ScenarioProbeCleanup() {
 		int z1 = redis.ZCard("offline_msg:" + std::to_string(SENDER_UID));
 		int z2 = redis.ZCard("offline_msg:" + std::to_string(RECEIVER_UID));
 		bool t1=false, t2=false, u1=false, u2=false;
-		redis.Exists(SessionTokenKey(SENDER_UID), t1);
-		redis.Exists(SessionTokenKey(RECEIVER_UID), t2);
+		redis.Exists(UserTokenKey(SENDER_UID), t1);
+		redis.Exists(UserTokenKey(RECEIVER_UID), t2);
 		redis.Exists("uip_" + std::to_string(SENDER_UID), u1);
 		redis.Exists("uip_" + std::to_string(RECEIVER_UID), u2);
-		std::printf("[probe] offline_msg:%d=%d  offline_msg:%d=%d  session:token:v2 A=%d B=%d  uip A=%d B=%d\n",
+		std::printf("[probe] offline_msg:%d=%d  offline_msg:%d=%d  utoken A=%d B=%d  uip A=%d B=%d\n",
 			SENDER_UID, z1, RECEIVER_UID, z2, (int)t1, (int)t2, (int)u1, (int)u2);
 		if (z1 != 0 || z2 != 0 || t1 || t2 || u1 || u2) clean = false;
 	}
@@ -687,7 +684,7 @@ static std::string BuildPullReq(int uid, int after_message_id, int limit) {
 // Build a 1035 image-chat-metadata body.
 static std::string BuildImgMetaReq(int fromuid, int touid, int thread_id,
                                    const std::string& md5, const std::string& name,
-                                   const std::string& token, const std::string& unique_id,
+                                   const std::string& unique_id,
                                    long long content_size) {
 	json j;
 	j["fromuid"] = fromuid;
@@ -695,7 +692,6 @@ static std::string BuildImgMetaReq(int fromuid, int touid, int thread_id,
 	j["thread_id"] = thread_id;
 	j["md5"]   = md5;
 	j["name"]  = name;
-	j["token"] = token;
 	j["unique_id"] = unique_id;
 	j["content_size"] = std::to_string(content_size);
 	return j.dump();
@@ -1525,7 +1521,7 @@ bool ScenarioImageOffline() {
 	const std::string md5 = "d41d8cd98f00b204e9800998ecf8427e";  // md5 of empty
 	const long long file_size = 1024;
 	std::string meta_body = BuildImgMetaReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
-		md5, img_name, "tokImg-" + tag, uid_str, file_size);
+		md5, img_name, uid_str, file_size);
 	cS.Send(ID_IMG_CHAT_MSG_REQ, meta_body);
 	Frame mrs; bool got_1036 = cS.Wait(ID_IMG_CHAT_MSG_RSP, 10000, &mrs);
 	int msg_id = -1;
@@ -1567,7 +1563,7 @@ bool ScenarioImageOffline() {
 	if (!res.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
 		Fail("image-offline: connect ResourceServer", "connect failed"); all_ok = false;
 	} else {
-		int ra = ResourceLogin(res, SENDER_UID, li.session_token);
+		int ra = ResourceLogin(res, SENDER_UID, li.token);
 		Check(ra == ERR_SUCCESS, "image-offline: ResourceLogin (1053) success",
 			("err=" + std::to_string(ra)).c_str());
 		if (ra != ERR_SUCCESS) all_ok = false;
@@ -1691,12 +1687,11 @@ bool ScenarioStatusDiscovery() {
 
 	const std::string lease1 = ChatLeaseKey("chatserver1");
 	const std::string lease2 = ChatLeaseKey("chatserver2");
-	// Plan 3.2: every successful GetChatServer (INITIAL/RESUME) mints a one-time
-	// chat ticket (SETEX chat:ticket:<uuid> 60). Track them so teardown leaves no
-	// orphaned tickets even though no ChatServer consumes them here.
-	std::vector<std::string> tickets;
+	// Each successful GetChatServer writes the per-user login token to
+	// utoken_<uid> (SETEX TTL 86400). All calls below use uid=1, so a single key
+	// is overwritten each time; clear it on teardown.
 	auto cleanup = [&]() {
-		for (const auto& t : tickets) redis.Del(ChatTicketKey(t));
+		redis.Del(UserTokenKey(1));
 		redis.Del(lease1);
 		redis.Del(lease2);
 	};
@@ -1741,24 +1736,29 @@ bool ScenarioStatusDiscovery() {
 	// 2. Tie rotation: both load 0 -> two calls pick different nodes (error 0).
 	StatusClient sc;
 	if (!sc.Connect("127.0.0.1", STATUS_GRPC_PORT)) {
-		Fail("status-discovery: status client (mTLS) connect", "failed");
+		Fail("status-discovery: status client connect", "failed");
 		cleanup(); pm.StopAll(); return false;
 	}
 	int e1 = -1, e2 = -1;
-	std::string sn1, h1, p1, tk1, sn2, h2, p2, tk2;
-	bool ok1 = sc.GetChatServer(1, TICKET_INTENT_INITIAL, "", e1, sn1, h1, p1, tk1);
-	bool ok2 = sc.GetChatServer(1, TICKET_INTENT_INITIAL, "", e2, sn2, h2, p2, tk2);
-	if (ok1 && !tk1.empty()) tickets.push_back(tk1);
-	if (ok2 && !tk2.empty()) tickets.push_back(tk2);
+	std::string sn1, h1, p1, tok1, sn2, h2, p2, tok2;
+	bool ok1 = sc.GetChatServer(1, e1, sn1, h1, p1, tok1);
+	bool ok2 = sc.GetChatServer(1, e2, sn2, h2, p2, tok2);
 	const std::string port1 = std::to_string(CHAT1_TCP_PORT);
 	const std::string port2 = std::to_string(CHAT2_TCP_PORT);
 	bool tie_ok = ok1 && ok2 && e1 == ERR_SUCCESS && e2 == ERR_SUCCESS
 		&& p1 == port1 && p2 == port2
-		&& !tk1.empty() && !tk2.empty();
-	Check(tie_ok, "status-discovery: tie rotation picks chat1 then chat2 (error 0, ticket)",
+		&& !tok1.empty() && !tok2.empty();
+	Check(tie_ok, "status-discovery: tie rotation picks chat1 then chat2 (error 0, token)",
 		tie_ok ? "" : ("ports=" + p1 + "/" + p2 + " err="
 			+ std::to_string(e1) + "/" + std::to_string(e2)).c_str());
 	if (!tie_ok) all_ok = false;
+
+	// Every successful GetChatServer writes utoken_<uid> with a bounded TTL.
+	int ttl1 = redis.Ttl(UserTokenKey(1));
+	bool ttl_ok = tie_ok && ttl1 >= 1 && ttl1 <= 86400;
+	Check(ttl_ok, "status-discovery: utoken_<uid> TTL in [1, 86400]",
+		ttl_ok ? "" : ("ttl=" + std::to_string(ttl1)).c_str());
+	if (!ttl_ok) all_ok = false;
 
 	// 3. Decisive load: chat1=3, chat2=1 -> must select chat2.
 	// Stop both ChatServers first: their 2s report timer would otherwise race
@@ -1772,10 +1772,9 @@ bool ScenarioStatusDiscovery() {
 		cleanup(); pm.StopAll(); return false;
 	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(300));
-	int e3 = -1; std::string sn3, h3, p3, tk3;
-	bool ok3 = sc.GetChatServer(1, TICKET_INTENT_INITIAL, "", e3, sn3, h3, p3, tk3);
-	if (ok3 && !tk3.empty()) tickets.push_back(tk3);
-	bool least_ok = ok3 && e3 == ERR_SUCCESS && p3 == port2;
+	int e3 = -1; std::string sn3, h3, p3, tok3;
+	bool ok3 = sc.GetChatServer(1, e3, sn3, h3, p3, tok3);
+	bool least_ok = ok3 && e3 == ERR_SUCCESS && p3 == port2 && !tok3.empty();
 	Check(least_ok, "status-discovery: least-loaded selects chat2 (3 vs 1)",
 		least_ok ? "" : ("port=" + p3 + " err=" + std::to_string(e3)).c_str());
 	if (!least_ok) all_ok = false;
@@ -1783,10 +1782,9 @@ bool ScenarioStatusDiscovery() {
 	// 4. Delete chat2 lease -> must select chat1.
 	redis.Del(lease2);
 	std::this_thread::sleep_for(std::chrono::milliseconds(200));
-	int e4 = -1; std::string sn4, h4, p4, tk4;
-	bool ok4 = sc.GetChatServer(1, TICKET_INTENT_INITIAL, "", e4, sn4, h4, p4, tk4);
-	if (ok4 && !tk4.empty()) tickets.push_back(tk4);
-	bool excl_ok = ok4 && e4 == ERR_SUCCESS && p4 == port1;
+	int e4 = -1; std::string sn4, h4, p4, tok4;
+	bool ok4 = sc.GetChatServer(1, e4, sn4, h4, p4, tok4);
+	bool excl_ok = ok4 && e4 == ERR_SUCCESS && p4 == port1 && !tok4.empty();
 	Check(excl_ok, "status-discovery: chat2 lease removed -> selects chat1",
 		excl_ok ? "" : ("port=" + p4 + " err=" + std::to_string(e4)).c_str());
 	if (!excl_ok) all_ok = false;
@@ -1794,8 +1792,8 @@ bool ScenarioStatusDiscovery() {
 	// 5. Delete chat1 lease -> no candidates -> NoAvailableChatServer.
 	redis.Del(lease1);
 	std::this_thread::sleep_for(std::chrono::milliseconds(200));
-	int e5 = -1; std::string sn5, h5, p5, tk5;
-	bool ok5 = sc.GetChatServer(1, TICKET_INTENT_INITIAL, "", e5, sn5, h5, p5, tk5);
+	int e5 = -1; std::string sn5, h5, p5, tok5;
+	bool ok5 = sc.GetChatServer(1, e5, sn5, h5, p5, tok5);
 	bool none_ok = ok5 && e5 == ERR_NO_AVAILABLE_CHAT_SERVER && h5.empty();
 	Check(none_ok, "status-discovery: no leases -> NoAvailableChatServer (1018, empty host)",
 		none_ok ? "" : ("err=" + std::to_string(e5) + " host=" + h5).c_str());
@@ -1807,320 +1805,238 @@ bool ScenarioStatusDiscovery() {
 }
 
 // ---------------------------------------------------------------------------
-// auth-ticket (plan 3.2)
+// simple-auth
 //
-// End-to-end exercise of the mTLS-protected one-time ticket, the versioned
-// resumable session token and Resource auth. Drives GetChatServer directly
-// over mTLS (mirroring status-discovery) and the Chat/Resource login frames via
-// the headless clients. Asserts:
-//   a. an InsecureChannel client is rejected by the mTLS-only StatusServer;
-//   b. INITIAL login succeeds and mints a session token; replaying the SAME
-//      consumed ticket on a second connection is TokenInvalid (1010);
-//   c. a ticket issued for chatserver1 cannot log in on chatserver2 (server
-//      field mismatch → TokenInvalid);
-//   d. a no-TTL legacy utoken_9999 seeded before Status start is deleted by the
-//      v2 migration (auth:schema=v2 stamped), and that legacy value cannot
-//      authenticate anywhere;
-//   e. /reconnect with a valid session token returns a RESUME ticket whose
-//      ChatLoginResume echoes the SAME token; /reconnect with a forged token is
-//      TokenInvalid;
-//   f. an unauthenticated Resource business frame (1041) is rejected; a forged
-//      ResourceLogin is TokenInvalid; a real session token authenticates (0).
+// End-to-end exercise of the shared per-user login token (utoken_<uid>), issued
+// by Status on password login and presented unchanged to Chat (1005) and
+// Resource (1053). Drives Gate /user_login and the Chat/Resource login frames
+// via the headless clients. Asserts:
+//   a. a forged Chat token is rejected (1006 error TokenInvalid);
+//   b. a valid token from a real Gate /user_login authenticates on Chat;
+//   c. the 1006 response JSON carries no secret fields (pwd/token/session_token);
+//   d. an unauthenticated Resource business frame (1041) is rejected / closed;
+//   e. a forged Resource token yields 1054 TokenInvalid;
+//   f. a valid token yields 1054 error==0 and the uid echoed;
+//   g. a second password login for the same uid overwrites utoken_<uid>: the
+//      old token can no longer authenticate on Chat or Resource, the new one can.
 // ---------------------------------------------------------------------------
-bool ScenarioAuthTicket() {
-	std::printf("\n=== scenario: auth-ticket ===\n");
+bool ScenarioSimpleAuth() {
+	std::printf("\n=== scenario: simple-auth ===\n");
 	ProcessManager pm;
 	Redis redis;
 	std::string tag = RunTag();
 	bool all_ok = true;
 
 	if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)) {
-		Fail("auth-ticket: connect redis", "failed");
+		Fail("simple-auth: connect redis", "failed");
 		return false;
 	}
 
-	// Tickets minted by Status that no ChatServer consumes are tracked so the
-	// scenario leaves no orphaned chat:ticket:* keys (60s TTL otherwise).
-	std::vector<std::string> tickets;
-	const std::string legacy_key = "utoken_9999";  // plan 3.2(d) seed literal
 	auto cleanup = [&]() {
-		for (const auto& t : tickets) redis.Del(ChatTicketKey(t));
-		redis.Del(legacy_key);
-		redis.Del(SessionTokenKey(SENDER_UID));
-		redis.Del(SessionTokenKey(RECEIVER_UID));
-		redis.Del("uip_"      + std::to_string(SENDER_UID));
-		redis.Del("usession_" + std::to_string(SENDER_UID));
+		redis.Del(UserTokenKey(SENDER_UID));
+		redis.Del("uip_"       + std::to_string(SENDER_UID));
+		redis.Del("usession_"  + std::to_string(SENDER_UID));
 		redis.Del("ubaseinfo_" + std::to_string(SENDER_UID));
 	};
 
-	// (d-part1) Seed a no-TTL legacy token BEFORE Status starts: the v2
-	// migration (SCAN+DEL utoken_*, stamp auth:schema=v2) runs at StatusServer
-	// startup and must remove it. auth:schema must read "v2" afterwards.
-	redis.Del(legacy_key);
-	if (!redis.Set(legacy_key, "legacy-fake-token-" + tag)) {
-		Fail("auth-ticket: seed legacy utoken_9999", "redis Set failed");
-		return false;
-	}
-	bool legacy_present = false;
-	redis.Exists(legacy_key, legacy_present);
-	if (!legacy_present) {
-		Fail("auth-ticket: seed legacy utoken_9999", "key not present after Set");
-		return false;
-	}
-
 	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
 		MakeStatusIni(), STATUS_GRPC_PORT }, 15000)) {
-		Fail("auth-ticket: start StatusServer", "ready timeout"); cleanup(); return false;
-	}
-
-	// Migration runs at startup; poll (<=10s) for the legacy key to vanish and
-	// auth:schema to read "v2".
-	bool migrated = false;
-	for (int i = 0; i < 100; ++i) {
-		bool exists = true;
-		redis.Exists(legacy_key, exists);  // false once migration DEL'd it
-		std::string schema;
-		if (!exists && redis.Get("auth:schema", schema) && schema == "v2") {
-			migrated = true; break;
-		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-	}
-	Check(migrated, "auth-ticket: migration deleted utoken_9999 and stamped auth:schema=v2",
-		migrated ? "" : "legacy key survived / schema not v2");
-	if (!migrated) all_ok = false;
-
-	// Start the rest of the stack: Gate (/reconnect), two ChatServers (for the
-	// wrong-server ticket case) and Resource.
-	if (!pm.Start({ "GateServer", { "GateServer", "GateServer.exe" },
-		MakeGateIni(), GATE_HTTP_PORT }, 15000)) {
-		Fail("auth-ticket: start GateServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+		Fail("simple-auth: start StatusServer", "ready timeout"); cleanup(); return false;
 	}
 	if (!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
 		MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
 		CHAT1_TCP_PORT }, 15000)) {
-		Fail("auth-ticket: start chatserver1", "ready timeout"); cleanup(); pm.StopAll(); return false;
+		Fail("simple-auth: start chatserver1", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 	if (!pm.Start({ "chatserver2", { "chatserver2", "ChatServer.exe" },
 		MakeChatIni("chatserver2", CHAT2_TCP_PORT, CHAT2_GRPC_PORT, 4),
 		CHAT2_TCP_PORT }, 15000)) {
-		Fail("auth-ticket: start chatserver2", "ready timeout"); cleanup(); pm.StopAll(); return false;
+		Fail("simple-auth: start chatserver2", "ready timeout"); cleanup(); pm.StopAll(); return false;
+	}
+	if (!pm.Start({ "GateServer", { "GateServer", "GateServer.exe" },
+		MakeGateIni(), GATE_HTTP_PORT }, 15000)) {
+		Fail("simple-auth: start GateServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 	if (!pm.Start({ "ResourceServer", { "ResourceServer", "ResourceServer.exe" },
 		MakeResourceIni(), RESOURCE_HTTP_PORT }, 15000)) {
-		Fail("auth-ticket: start ResourceServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+		Fail("simple-auth: start ResourceServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 
-	// (a) InsecureChannel is rejected by the mTLS-only StatusServer: the RPC
-	// itself fails (handshake rejected), so GetChatServer returns false.
+	// Obtain a real login token via Gate /user_login (password login).
+	GateLoginInfo gl = GateLogin(SENDER_UID);
+	bool have_token = gl.ok && !gl.token.empty();
+	Check(have_token, "simple-auth: Gate /user_login issues a token",
+		have_token ? "" : ("err=" + std::to_string(gl.error)).c_str());
+	if (!have_token) { cleanup(); pm.StopAll(); return false; }
+	const std::string valid_token = gl.token;
+	const std::string chat_host = gl.chat_host;
+	const unsigned short chat_port = gl.chat_port;
+
+	// (a) Forged Chat token → 1006 error TokenInvalid (no bind).
 	{
-		StatusClient bad;
-		if (!bad.ConnectInsecure("127.0.0.1", STATUS_GRPC_PORT)) {
-			Fail("auth-ticket: insecure channel connect", "connect returned false");
-			all_ok = false;
+		TcpClient c;
+		if (!c.Connect(chat_host, chat_port, 10000)) {
+			Fail("simple-auth: connect chat (forged)", "connect failed"); all_ok = false;
 		} else {
-			int e = -1; std::string sn, h, p, tk;
-			bool rpc_ok = bad.GetChatServer(SENDER_UID, TICKET_INTENT_INITIAL, "",
-			                               e, sn, h, p, tk);
-			Check(!rpc_ok, "auth-ticket: insecure client rejected by mTLS server",
-				rpc_ok ? "RPC unexpectedly succeeded" : "");
-			if (rpc_ok) all_ok = false;
-		}
-	}
-
-	// mTLS client used for the rest of the ticket sub-assertions.
-	StatusClient sc;
-	if (!sc.Connect("127.0.0.1", STATUS_GRPC_PORT)) {
-		Fail("auth-ticket: mTLS status client connect", "failed");
-		cleanup(); pm.StopAll(); return false;
-	}
-
-	const std::string port1 = std::to_string(CHAT1_TCP_PORT);
-	const std::string port2 = std::to_string(CHAT2_TCP_PORT);
-
-	// (b) INITIAL login mints a session token; replaying the SAME (now consumed)
-	// ticket on a second connection is TokenInvalid.
-	std::string session_token;
-	{
-		int e = -1; std::string sn, h, p, tk;
-		bool ok = sc.GetChatServer(SENDER_UID, TICKET_INTENT_INITIAL, "",
-		                          e, sn, h, p, tk);
-		if (ok && !tk.empty()) tickets.push_back(tk);
-		bool issued = ok && e == ERR_SUCCESS && !tk.empty()
-			&& (p == port1 || p == port2);
-		Check(issued, "auth-ticket: INITIAL GetChatServer issues a ticket (error 0)",
-			issued ? "" : ("err=" + std::to_string(e) + " port=" + p).c_str());
-		if (!issued) { cleanup(); pm.StopAll(); return false; }
-
-		const unsigned short target = (p == port1) ? CHAT1_TCP_PORT : CHAT2_TCP_PORT;
-		TcpClient c1;
-		if (!c1.Connect("127.0.0.1", target, 10000)) {
-			Fail("auth-ticket: connect chat for INITIAL login", "connect failed");
-			cleanup(); pm.StopAll(); return false;
-		}
-		auto lo = ChatLoginInitial(c1, SENDER_UID, tk);
-		Check(lo.ok && !lo.session_token.empty(),
-			"auth-ticket: INITIAL chat login succeeds and mints session_token",
-			("error=" + std::to_string(lo.error)).c_str());
-		if (!lo.ok) { c1.Close(); all_ok = false; }
-		session_token = lo.session_token;
-
-		// Replay the SAME ticket on a fresh connection → already GETDEL'd → 1010.
-		TcpClient c2;
-		if (c2.Connect("127.0.0.1", target, 10000)) {
-			auto lo2 = ChatLoginInitial(c2, SENDER_UID, tk);
-			Check(lo2.error == ERR_TOKEN_INVALID,
-				"auth-ticket: replayed ticket rejected (TokenInvalid)",
-				("error=" + std::to_string(lo2.error)).c_str());
-			if (lo2.error != ERR_TOKEN_INVALID) all_ok = false;
-			c2.Close();
-		}
-		c1.Close();
-	}
-
-	// (c) A ticket issued for server X cannot log in on server Y (server field
-	// mismatch → TokenInvalid). Status picks the target; we connect to the OTHER.
-	{
-		int e = -1; std::string sn, h, p, tk;
-		bool ok = sc.GetChatServer(SENDER_UID, TICKET_INTENT_INITIAL, "",
-		                          e, sn, h, p, tk);
-		if (ok && !tk.empty()) tickets.push_back(tk);
-		if (!ok || e != ERR_SUCCESS || tk.empty()) {
-			Check(false, "auth-ticket: issue ticket for wrong-server case",
-				("err=" + std::to_string(e)).c_str());
-			all_ok = false;
-		} else {
-			// Ticket targets the server Status picked; connect to the other one.
-			const unsigned short wrong = (p == port1) ? CHAT2_TCP_PORT : CHAT1_TCP_PORT;
-			TcpClient cw;
-			if (cw.Connect("127.0.0.1", wrong, 10000)) {
-				auto lo = ChatLoginInitial(cw, SENDER_UID, tk);
-				Check(lo.error == ERR_TOKEN_INVALID,
-					"auth-ticket: ticket rejected on wrong server (TokenInvalid)",
-					("error=" + std::to_string(lo.error) + " picked=" + p).c_str());
-				if (lo.error != ERR_TOKEN_INVALID) all_ok = false;
-				cw.Close();
-			}
-		}
-	}
-
-	// (d-part2) The deleted legacy value cannot authenticate: it is not a valid
-	// v2 session token, so ResourceLogin with it is TokenInvalid. (The key itself
-	// is already gone; this proves the value is worthless even if guessed.)
-	if (session_token.empty()) {
-		// Need a real login first to keep later steps viable; retry once.
-		int e = -1; std::string sn, h, p, tk;
-		if (sc.GetChatServer(SENDER_UID, TICKET_INTENT_INITIAL, "", e, sn, h, p, tk)
-		    && e == ERR_SUCCESS && !tk.empty()) {
-			tickets.push_back(tk);
-			const unsigned short target = (p == port1) ? CHAT1_TCP_PORT : CHAT2_TCP_PORT;
-			TcpClient c; c.Connect("127.0.0.1", target, 10000);
-			auto lo = ChatLoginInitial(c, SENDER_UID, tk);
-			if (lo.ok) session_token = lo.session_token;
+			auto lo = ChatLogin(c, SENDER_UID, "forged-chat-" + tag);
+			Check(lo.error == ERR_TOKEN_INVALID,
+				"simple-auth: forged Chat token → TokenInvalid",
+				("error=" + std::to_string(lo.error)).c_str());
+			if (lo.error != ERR_TOKEN_INVALID) all_ok = false;
 			c.Close();
 		}
 	}
 
-	// (e) /reconnect with the valid session token returns a RESUME ticket;
-	// ChatLoginResume echoes the SAME token. A forged token /reconnect is 1010.
-	if (session_token.empty()) {
-		Check(false, "auth-ticket: no session token for /reconnect", "prior login failed");
-		all_ok = false;
-	} else {
-		// Forged session token → TokenInvalid.
-		{
-			json req; req["uid"] = SENDER_UID; req["session_token"] = "forged-" + tag;
-			HttpResponse r = HttpPost("127.0.0.1", GATE_HTTP_PORT, "/reconnect",
-			                          req.dump(), "text/json", 8000);
-			auto j = ParseJson(r.body);
-			int e = j.is_object() ? j.value("error", -1) : -1;
-			Check(r.status == 200 && e == ERR_TOKEN_INVALID,
-				"auth-ticket: /reconnect forged token → TokenInvalid",
-				("http=" + std::to_string(r.status) + " err=" + std::to_string(e)).c_str());
-			if (!(r.status == 200 && e == ERR_TOKEN_INVALID)) all_ok = false;
-		}
-		// Valid session token → RESUME ticket + chat address.
-		std::string resume_ticket, resume_host; unsigned short resume_port = 0;
-		{
-			json req; req["uid"] = SENDER_UID; req["session_token"] = session_token;
-			HttpResponse r = HttpPost("127.0.0.1", GATE_HTTP_PORT, "/reconnect",
-			                          req.dump(), "text/json", 8000);
-			auto j = ParseJson(r.body);
-			int e = j.is_object() ? j.value("error", -1) : -1;
-			resume_ticket = j.is_object() ? j.value("chat_ticket", "") : "";
-			resume_host   = j.is_object() ? j.value("chathost", "") : "";
-			resume_port   = static_cast<unsigned short>(
-				std::atoi((j.is_object() ? j.value("chatport", "0") : "0").c_str()));
-			if (!resume_ticket.empty()) tickets.push_back(resume_ticket);
-			Check(r.status == 200 && e == ERR_SUCCESS && !resume_ticket.empty()
-				  && !resume_host.empty() && resume_port != 0,
-				"auth-ticket: /reconnect valid token → RESUME ticket",
-				("http=" + std::to_string(r.status) + " err=" + std::to_string(e)).c_str());
-			if (!(r.status == 200 && e == ERR_SUCCESS && !resume_ticket.empty())) all_ok = false;
-		}
-		// ChatLoginResume echoes the SAME session token (no rotation).
-		if (!resume_ticket.empty() && resume_port != 0) {
-			TcpClient cr;
-			if (cr.Connect(resume_host, resume_port, 10000)) {
-				auto lo = ChatLoginResume(cr, SENDER_UID, resume_ticket, session_token);
-				Check(lo.ok && lo.session_token == session_token,
-					"auth-ticket: ChatLoginResume echoes same session_token",
-					(lo.ok ? ("rotated mismatch got=" + lo.session_token).c_str()
-					       : ("error=" + std::to_string(lo.error)).c_str()));
-				if (!(lo.ok && lo.session_token == session_token)) all_ok = false;
-				cr.Close();
-			}
+	// (b) Valid token → Chat login success.
+	// (c) 1006 response carries no secret fields (pwd/token/session_token).
+	{
+		TcpClient c;
+		if (!c.Connect(chat_host, chat_port, 10000)) {
+			Fail("simple-auth: connect chat (valid)", "connect failed"); all_ok = false;
+		} else {
+			auto lo = ChatLogin(c, SENDER_UID, valid_token);
+			Check(lo.ok, "simple-auth: valid Chat token → login success",
+				("error=" + std::to_string(lo.error)).c_str());
+			if (!lo.ok) all_ok = false;
+			bool clean = lo.response.is_object()
+				&& !lo.response.contains("pwd")
+				&& !lo.response.contains("token")
+				&& !lo.response.contains("session_token");
+			Check(clean, "simple-auth: 1006 response omits pwd/token/session_token",
+				clean ? "" : "secret field present in response");
+			if (!clean) all_ok = false;
+			c.Close();
 		}
 	}
 
-	// (f) Resource auth: unauthenticated 1041 is rejected; forged ResourceLogin
-	// is TokenInvalid; the real session token authenticates (error 0).
-	if (session_token.empty()) {
-		Check(false, "auth-ticket: no session token for Resource auth", "prior login failed");
-		all_ok = false;
-	} else {
-		// Unauthenticated business frame (1041) → TokenInvalid + close.
-		{
-			ResClient r0;
-			if (r0.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
-				json b; b["md5"] = "x"; b["name"] = "x"; b["token"] = "";
-				b["message_id"] = 0; b["sender"] = SENDER_UID;
-				b["receiver"] = RECEIVER_UID;
-				r0.Send(ID_FILE_INFO_SYNC_REQ, b.dump());
-				Frame f;
-				bool got = r0.Wait(ID_FILE_INFO_SYNC_RSP, 5000, &f);
-				int e = -1;
-				if (got) { auto j = ParseJson(f.body); e = j.value("error", -1); }
-				// Either an explicit TokenInvalid response or the connection was
+	// (d) Unauthenticated Resource business frame (1041) → rejected / closed.
+	{
+		ResClient r0;
+		if (!r0.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
+			Fail("simple-auth: connect resource (unauth)", "connect failed"); all_ok = false;
+		} else {
+			json b; b["md5"] = "x"; b["name"] = "x";
+			b["message_id"] = 0; b["sender"] = SENDER_UID;
+			b["receiver"] = RECEIVER_UID;
+			r0.Send(ID_FILE_INFO_SYNC_REQ, b.dump());
+			Frame f;
+			bool got = r0.Wait(ID_FILE_INFO_SYNC_RSP, 5000, &f);
+			int e = -1;
+			if (got) { auto j = ParseJson(f.body); e = j.value("error", -1); }
+			// Either an explicit TokenInvalid response or the connection was
 			// closed (server rejects+close) — both prove the gate held.
-				bool rejected = (got && e == ERR_TOKEN_INVALID) || r0.IsClosed();
-				Check(rejected, "auth-ticket: unauthenticated 1041 rejected",
-					(got ? ("error=" + std::to_string(e)).c_str() : "no response"));
-				if (!rejected) all_ok = false;
-				r0.Close();
-			}
+			bool rejected = (got && e == ERR_TOKEN_INVALID) || r0.IsClosed();
+			Check(rejected, "simple-auth: unauthenticated Resource frame rejected",
+				(got ? ("error=" + std::to_string(e)).c_str() : "no response"));
+			if (!rejected) all_ok = false;
+			r0.Close();
 		}
-		// Forged ResourceLogin → TokenInvalid.
-		{
-			ResClient r1;
-			if (r1.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
-				int e = ResourceLogin(r1, SENDER_UID, "forged-res-" + tag);
-				Check(e == ERR_TOKEN_INVALID,
-					"auth-ticket: forged ResourceLogin → TokenInvalid",
-					("error=" + std::to_string(e)).c_str());
-				if (e != ERR_TOKEN_INVALID) all_ok = false;
-				r1.Close();
-			}
+	}
+
+	// (e) Forged Resource token → 1054 TokenInvalid.
+	{
+		ResClient r1;
+		if (!r1.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
+			Fail("simple-auth: connect resource (forged)", "connect failed"); all_ok = false;
+		} else {
+			int e = ResourceLogin(r1, SENDER_UID, "forged-res-" + tag);
+			Check(e == ERR_TOKEN_INVALID,
+				"simple-auth: forged Resource token → TokenInvalid",
+				("error=" + std::to_string(e)).c_str());
+			if (e != ERR_TOKEN_INVALID) all_ok = false;
+			r1.Close();
 		}
-		// Real session token → auth success (error 0).
-		{
-			ResClient r2;
-			if (r2.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
-				int e = ResourceLogin(r2, SENDER_UID, session_token);
-				Check(e == ERR_SUCCESS,
-					"auth-ticket: valid ResourceLogin → auth success",
-					("error=" + std::to_string(e)).c_str());
-				if (e != ERR_SUCCESS) all_ok = false;
-				r2.Close();
+	}
+
+	// (f) Valid token → 1054 error==0 and uid echoed. Done as a raw exchange so
+	// both the error code and the echoed uid can be inspected (the ResourceLogin
+	// helper returns only the error code).
+	{
+		ResClient r2;
+		if (!r2.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
+			Fail("simple-auth: connect resource (valid)", "connect failed"); all_ok = false;
+		} else {
+			json j; j["uid"] = SENDER_UID; j["token"] = valid_token;
+			bool sent = r2.Send(ID_RESOURCE_LOGIN_REQ, j.dump());
+			Frame f;
+			bool got = sent && r2.Wait(ID_RESOURCE_LOGIN_RSP, 10000, &f);
+			int e = -1, echoed_uid = -1;
+			if (got) {
+				auto rj = ParseJson(f.body);
+				if (rj.is_object()) {
+					e = rj.value("error", -1);
+					echoed_uid = rj.value("uid", -1);
+				}
+			}
+			Check(got && e == ERR_SUCCESS && echoed_uid == SENDER_UID,
+				"simple-auth: valid Resource token → 1054 error==0, uid echoed",
+				("error=" + std::to_string(e) + " uid=" + std::to_string(echoed_uid)).c_str());
+			if (!(got && e == ERR_SUCCESS && echoed_uid == SENDER_UID)) all_ok = false;
+			r2.Close();
+		}
+	}
+
+	// (g) A second password login for the same uid overwrites utoken_<uid>: the
+	// old token can no longer authenticate on Chat or Resource; the new one can.
+	{
+		GateLoginInfo gl2 = GateLogin(SENDER_UID);
+		const std::string new_token = gl2.ok ? gl2.token : "";
+		const bool rotated = gl2.ok && !new_token.empty() && new_token != valid_token;
+		Check(rotated, "simple-auth: second /user_login overwrites the token",
+			rotated ? "" : ("gl2.ok=" + std::to_string((int)gl2.ok)
+				+ " new_empty=" + std::to_string((int)new_token.empty())).c_str());
+		if (!rotated) {
+			all_ok = false;
+		} else {
+			// Old token can no longer log into Chat.
+			{
+				TcpClient c;
+				if (c.Connect(gl2.chat_host, gl2.chat_port, 10000)) {
+					auto lo = ChatLogin(c, SENDER_UID, valid_token);
+					Check(lo.error == ERR_TOKEN_INVALID,
+						"simple-auth: old Chat token rejected after rotation",
+						("error=" + std::to_string(lo.error)).c_str());
+					if (lo.error != ERR_TOKEN_INVALID) all_ok = false;
+					c.Close();
+				} else {
+					Check(false, "simple-auth: old Chat token rejected after rotation",
+						"connect failed");
+					all_ok = false;
+				}
+			}
+			// Old token can no longer log into Resource.
+			{
+				ResClient r;
+				if (r.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
+					int e = ResourceLogin(r, SENDER_UID, valid_token);
+					Check(e == ERR_TOKEN_INVALID,
+						"simple-auth: old Resource token rejected after rotation",
+						("error=" + std::to_string(e)).c_str());
+					if (e != ERR_TOKEN_INVALID) all_ok = false;
+					r.Close();
+				}
+			}
+			// New token authenticates on Chat and Resource.
+			{
+				TcpClient c;
+				if (c.Connect(gl2.chat_host, gl2.chat_port, 10000)) {
+					auto lo = ChatLogin(c, SENDER_UID, new_token);
+					Check(lo.ok, "simple-auth: new Chat token authenticates",
+						("error=" + std::to_string(lo.error)).c_str());
+					if (!lo.ok) all_ok = false;
+					c.Close();
+				}
+			}
+			{
+				ResClient r;
+				if (r.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
+					int e = ResourceLogin(r, SENDER_UID, new_token);
+					Check(e == ERR_SUCCESS,
+						"simple-auth: new Resource token authenticates",
+						("error=" + std::to_string(e)).c_str());
+					if (e != ERR_SUCCESS) all_ok = false;
+					r.Close();
+				}
 			}
 		}
 	}

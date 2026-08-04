@@ -5,7 +5,6 @@
 #include "ConfigMgr.h"
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
-#include "SecurityUtil.h"
 
 //将请求消息id映射为对应的回复消息id；无对应回复（通知类）或未知id返回0
 static short ReqToRspId(short msg_id)
@@ -696,12 +695,12 @@ void LogicWorker::RegisterCallBacks()
 			auto root = json::parse(msg_data, nullptr, false);
 
 			int uid = 0;
-			std::string session_token;
+			std::string token;
 			bool parse_ok = root.is_object();
 			if (parse_ok) {
 				try {
 					uid = root["uid"].get<int>();
-					session_token = root["session_token"].get<std::string>();
+					token = root["token"].get<std::string>();
 				}
 				catch (...) {
 					parse_ok = false;
@@ -716,16 +715,16 @@ void LogicWorker::RegisterCallBacks()
 				return;
 			}
 
-			//校验session token: session:token:v2:<uid>，常量时间比较，失败即返回TokenInvalid
+			//校验登录令牌: utoken_<uid>，缺失或不匹配即返回TokenInvalid且不绑定会话
 			std::string stored;
-			bool ok = RedisMgr::GetInstance()->Get(SESSION_TOKEN_V2_PREFIX + std::to_string(uid), stored);
-			if (!ok || !security::ConstantTimeEquals(stored, session_token)) {
+			bool ok = RedisMgr::GetInstance()->Get(USERTOKENPREFIX + std::to_string(uid), stored);
+			if (!ok || stored != token) {
 				rtvalue["error"] = ErrorCodes::TokenInvalid;
 				session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
 				return;
 			}
 
-			session->SetAuth(uid, session_token);
+			session->SetAuth(uid);
 			rtvalue["error"] = ErrorCodes::Success;
 			rtvalue["uid"] = uid;
 			session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
@@ -752,20 +751,6 @@ void LogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 
 	//鉴权门控：除登录外所有消息都要求会话已认证，否则返回TokenInvalid并关闭连接
 	if (!session->IsAuthed()) {
-		short rsp_id = ReqToRspId(msg_id);
-		if (rsp_id != 0) {
-			json rtvalue;
-			rtvalue["error"] = ErrorCodes::TokenInvalid;
-			session->Send(rtvalue.dump(4), rsp_id);
-		}
-		session->Close();
-		return;
-	}
-
-	//每请求重验：从Redis读取session:token:v2:<uid>并常量时间比较，失败即关闭(fail closed)
-	std::string stored;
-	bool ok = RedisMgr::GetInstance()->Get(SESSION_TOKEN_V2_PREFIX + std::to_string(session->GetUserId()), stored);
-	if (!ok || !security::ConstantTimeEquals(stored, session->GetSessionToken())) {
 		short rsp_id = ReqToRspId(msg_id);
 		if (rsp_id != 0) {
 			json rtvalue;

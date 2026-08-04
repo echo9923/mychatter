@@ -13,15 +13,17 @@
 - [redis.js（VarifyServer）](file://server/VarifyServer/redis.js)
 - [LogicSystem.cpp](file://server/ChatServer/src/LogicSystem.cpp)
 - [day35心跳逻辑.md](file://开发文档/day35心跳逻辑.md)
+- [CServer.cpp](file://server/ChatServer/src/CServer.cpp)
+- [StatusServiceImpl.cpp](file://server/StatusServer/src/StatusServiceImpl.cpp)
 </cite>
 
 ## 更新摘要
 **变更内容**   
-- 新增Redis有序集合操作支持：ZAdd()、ZRangeByScore()、ZRem()方法
-- 新增键过期管理功能：Expire()方法
-- 完善了离线消息处理的有序集合实现
-- 增强了二进制安全的数据操作方法
-- 更新了分布式锁和连接池管理的详细注释
+- 新增SetWithExpire方法：支持原子性设置键值和过期时间，用于心跳管理和会话缓存
+- 新增HGetAll方法：高效获取Hash结构的所有字段，用于服务发现和负载均衡
+- 增强了服务发现机制：通过HGetAll实现节点元数据的批量读取
+- 优化了心跳管理：使用SETEX命令确保心跳信息的自动清理
+- 完善了分布式服务架构：支持动态节点注册和健康检查
 
 ## 目录
 1. [简介](#简介)
@@ -42,7 +44,7 @@
 ## 简介
 本技术文档围绕 LLFCChat 的 Redis 缓存系统，系统性阐述连接池管理、序列化格式、缓存策略设计，以及用户会话缓存、好友关系缓存、在线状态缓存的实现方案。同时给出键命名规范、过期策略、一致性保障机制，覆盖缓存预热、失效处理与故障转移细节，并提供配置调优、内存管理与性能监控的最佳实践，以及在高并发场景下对缓存穿透、雪崩、击穿的解决方案。
 
-**更新** RedisMgr类已新增有序集合操作方法和键过期管理功能，包括ZAdd()、ZRangeByScore()、ZRem()、Expire()四个二进制安全方法，为离线消息处理和排序数据存储提供了强大的支持。
+**更新** RedisMgr类已增强SetWithExpire和HGetAll方法，为服务发现、心跳管理和负载均衡提供了更高效的数据操作能力。SetWithExpire方法使用SETEX命令实现原子性的键值设置和过期时间设置，HGetAll方法通过单次命令获取整个Hash结构，显著提升了服务发现的查询效率。
 
 ## 项目结构
 LLFCChat 在多个服务中复用统一的 Redis 抽象层：
@@ -86,7 +88,7 @@ VS --> R
 - **DistLock**：基于 SET NX EX + Lua 脚本的分布式锁实现，确保跨进程/跨服务的互斥访问。
 - **常量与配置**：统一键前缀（如 USER_SESSION_PREFIX、USERIPPREFIX、LOGIN_COUNT、LOCK_PREFIX、OFFLINE_MSG_PREFIX 等）与锁超时参数。
 
-**更新** RedisMgr类现在包含完整的Doxygen注释，详细说明了每个方法的功能、参数和返回值，特别是新增的ZAdd()、ZRangeByScore()、ZRem()、Expire()四个有序集合操作方法。
+**更新** RedisMgr类现在包含完整的Doxygen注释，详细说明了每个方法的功能、参数和返回值，特别是新增的SetWithExpire()和HGetAll()方法，以及ZAdd()、ZRangeByScore()、ZRem()、Expire()四个有序集合操作方法。
 
 **章节来源**
 - [RedisMgr.h](file://server/ChatServer/include/RedisMgr.h)
@@ -111,8 +113,10 @@ class RedisConPool {
 class RedisMgr {
 +Get(key, value) bool
 +Set(key, value) bool
++SetWithExpire(key, value, expire_seconds) bool
 +LPush/RPush/LPop/RPop(...)
 +HSet/HGet/HDel(...)
++HGetAll(key, result) bool
 +Del/ExistsKey(...)
 +ZAdd(key, score, member) bool
 +ZRangeByScore(key, min, limit, members) bool
@@ -204,10 +208,61 @@ Fail --> End
 - **返回值类型校验**（STRING/INTEGER/NIL/STATUS），失败路径打印日志并返回 false/空串。
 - **使用 Defer 模式**确保异常路径也能归还连接。
 
-**更新** RedisMgr类的所有方法现在都包含详细的Doxygen注释，说明了每个缓存操作的具体功能和错误处理机制，特别是新增的有序集合操作方法。
+**更新** RedisMgr类的所有方法现在都包含详细的Doxygen注释，说明了每个缓存操作的具体功能和错误处理机制，特别是新增的SetWithExpire()和HGetAll()方法。
 
 **章节来源**
 - [RedisMgr.cpp](file://server/ChatServer/src/RedisMgr.cpp)
+
+### SetWithExpire方法与心跳管理
+- **原子性操作**：使用SETEX命令同时设置值和过期时间，避免竞态条件。
+- **心跳管理**：ChatServer定期更新心跳键，StatusServer通过ExistsKey检查节点存活状态。
+- **自动清理**：过期时间到期后自动删除，无需手动清理。
+
+**更新** SetWithExpire方法主要用于服务心跳管理，ChatServer每10秒更新一次心跳信息，StatusServer通过检查心跳键是否存在来判断节点健康状态。
+
+```mermaid
+sequenceDiagram
+participant CS as "ChatServer"
+participant SS as "StatusServer"
+participant R as "Redis"
+CS->>R : SETEX heartbeat : key timestamp TTL
+Note over CS,R : 每10秒更新心跳
+SS->>R : EXISTS heartbeat : key
+R-->>SS : 1(存在)/0(不存在)
+SS->>SS : 根据结果选择服务节点
+```
+
+**图表来源**
+- [CServer.cpp](file://server/ChatServer/src/CServer.cpp)
+- [StatusServiceImpl.cpp](file://server/StatusServer/src/StatusServiceImpl.cpp)
+
+**章节来源**
+- [CServer.cpp](file://server/ChatServer/src/CServer.cpp)
+- [StatusServiceImpl.cpp](file://server/StatusServer/src/StatusServiceImpl.cpp)
+
+### HGetAll方法与高效服务发现
+- **批量查询**：单次命令获取整个Hash结构的所有字段，减少网络往返。
+- **服务发现**：StatusServer通过HGetAll获取所有ChatServer节点的元数据。
+- **负载均衡**：结合连接计数实现最少连接数路由策略。
+
+**更新** HGetAll方法主要用于服务发现场景，StatusServer一次性获取所有ChatServer节点信息，然后进行健康检查和负载均衡选择。
+
+```mermaid
+flowchart TD
+A["服务发现请求"] --> B["HGETALL chatserver_info"]
+B --> C["遍历节点元数据"]
+C --> D["检查心跳键是否存在"]
+D --> E["解析节点JSON信息"]
+E --> F["读取连接计数"]
+F --> G["选择最少连接节点"]
+G --> H["返回最佳节点"]
+```
+
+**图表来源**
+- [StatusServiceImpl.cpp](file://server/StatusServer/src/StatusServiceImpl.cpp)
+
+**章节来源**
+- [StatusServiceImpl.cpp](file://server/StatusServer/src/StatusServiceImpl.cpp)
 
 ### 有序集合操作与离线消息处理
 - **ZAdd()**：向有序集合添加成员及其分值，使用二进制安全的argv方式传递参数，避免特殊字符问题。
@@ -305,13 +360,16 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
   - LOGIN_COUNT：各服务登录计数（logincount）
   - LOCK_PREFIX：分布式锁前缀（lock_）
   - **OFFLINE_MSG_PREFIX**：**离线消息有序集合（offline_msg:）**
+  - **CHATSERVER_HEARTBEAT_PREFIX**：**ChatServer心跳键（chatserver_heartbeat:）**
+  - **CHATSERVER_INFO_KEY**：**ChatServer节点信息（chatserver_info）**
 - **过期策略**：
   - 会话与令牌建议使用 EX/PX 设置 TTL，结合心跳刷新。
   - 登录计数为持久型 HASH，不设置过期。
   - 分布式锁通过 EX 自动过期，防止死锁。
   - **离线消息通过 Expire() 设置 TTL，实现自动清理**。
+  - **心跳键通过 SetWithExpire() 设置TTL，自动清理过期节点**。
 
-**更新** 键命名规范现在包含更详细的说明，解释了每种键类型的使用场景和最佳实践，特别是新增的离线消息有序集合键。
+**更新** 键命名规范现在包含更详细的说明，解释了每种键类型的使用场景和最佳实践，特别是新增的心跳键和服务发现键。
 
 **章节来源**
 - [const.h](file://server/ChatServer/include/const.h)
@@ -322,8 +380,9 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
 - **会话一致性**：心跳周期内以 Redis 中的 session_id 为准，多端登录冲突时以最新为准。
 - **计数一致性**：登录计数更新前加锁，避免并发叠加或丢失。
 - **有序集合一致性**：ZAdd/ZRem操作保证消息顺序的一致性，Expire确保过期数据的自动清理。
+- **心跳一致性**：SetWithExpire确保心跳更新的原子性，避免部分更新导致的节点状态不一致。
 
-**更新** 数据一致性机制现在有更详细的说明，包括分布式锁的原子性保证、并发控制策略和有序集合操作的原子性。
+**更新** 数据一致性机制现在有更详细的说明，包括分布式锁的原子性保证、并发控制策略、有序集合操作的原子性和心跳更新的原子性。
 
 **章节来源**
 - [DistLock.cpp](file://server/ChatServer/src/DistLock.cpp)
@@ -334,12 +393,14 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
 - **预热**：服务启动后可根据热点键（如热门用户信息、常用配置）批量加载至 Redis。
 - **失效**：业务变更时主动 Del/HDel 对应键；会话类键通过 TTL 自然失效。
 - **故障转移**：连接池健康检查与自动重连；若 Redis 不可用，上层应降级（如本地缓存或限流）。
+- **服务发现降级**：当Redis不可用时，StatusServer回退到本地静态配置提供服务。
 
-**更新** 故障转移策略现在包含更详细的降级方案和恢复机制说明，特别是有序集合操作的故障处理。
+**更新** 故障转移策略现在包含更详细的降级方案和恢复机制说明，特别是服务发现场景下的本地配置回退机制。
 
 **章节来源**
 - [RedisMgr.h](file://server/ChatServer/include/RedisMgr.h)
 - [RedisMgr.cpp](file://server/ChatServer/src/RedisMgr.cpp)
+- [StatusServiceImpl.cpp](file://server/StatusServer/src/StatusServiceImpl.cpp)
 
 ## 高并发问题治理：穿透、雪崩、击穿
 - **穿透**（查询不存在的数据）：
@@ -350,6 +411,8 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
   - 加分布式锁保证只有一线程回源重建；或使用互斥信号量控制重建并发。
 - **有序集合雪崩**：
   - 为有序集合设置合理的TTL，避免大量有序集合同时过期。
+- **服务发现雪崩**：
+  - HGetAll操作本身具有原子性，但需考虑Redis整体可用性；可引入本地缓存层。
 
 [本节为通用策略说明，不直接分析具体文件]
 
@@ -357,18 +420,23 @@ VarifyRedis["redis.js"] --> IORedis["ioredis"]
 - **关键指标**：
   - 连接池大小、活跃连接数、命中率、平均/尾延迟、错误率、重连次数。
   - **有序集合操作成功率、过期键清理效率**。
+  - **心跳键存活率、服务发现响应时间**。
 - **配置调优**：
   - 连接池大小按峰值 QPS×平均 RT/1s 估算；适当增大以减少等待。
   - 合理设置心跳与健检频率，平衡 CPU 与可靠性。
   - **离线消息TTL根据业务需求调整，平衡内存占用和数据保留时间**。
+  - **心跳TTL设置为10-30秒，平衡实时性和网络开销**。
 - **监控手段**：
   - 采集 Redis 服务端 stats（connected_clients、keyspace_hits/misses、used_memory）。
   - 应用侧埋点：命令耗时、失败次数、锁等待时长。
   - **监控有序集合大小变化趋势，及时发现内存增长问题**。
+  - **监控服务发现成功率，及时发现节点异常**。
 
 [本节为通用指导，不直接分析具体文件]
 
 ## 结论
-LLFCChat 的 Redis 子系统以连接池为核心，配合分布式锁与统一命令封装，实现了稳定可靠的缓存与状态管理能力。**更新** 随着RedisMgr类新增的有序集合操作方法和键过期管理功能，系统现在能够高效处理离线消息、排行榜、时间序列等需要排序的数据场景。通过规范的键命名、合理的过期策略与健壮的错误处理，支撑了会话、在线状态、计数和有序集合等关键场景。面向高并发与高可用，建议进一步引入批量/管道、热点键保护、多级缓存与完善的监控告警体系，持续提升系统吞吐与稳定性。
+LLFCChat 的 Redis 子系统以连接池为核心，配合分布式锁与统一命令封装，实现了稳定可靠的缓存与状态管理能力。**更新** 随着RedisMgr类新增的SetWithExpire和HGetAll方法，系统现在能够更高效地处理服务发现、心跳管理和负载均衡等分布式场景。SetWithExpire方法通过原子性的SETEX操作确保了心跳更新的可靠性，HGetAll方法通过单次命令获取整个Hash结构，显著提升了服务发现的查询效率。
 
-**新增的ZAdd()、ZRangeByScore()、ZRem()、Expire()方法为LLFCChat的离线消息处理提供了强大的支持，通过有序集合实现消息的时间顺序存储和高效查询，配合TTL机制确保数据的自动清理，形成了完整的离线消息解决方案。**
+通过规范的键命名、合理的过期策略与健壮的错误处理，支撑了会话、在线状态、计数、有序集合和服务发现等关键场景。面向高并发与高可用，建议进一步引入批量/管道、热点键保护、多级缓存与完善的监控告警体系，持续提升系统吞吐与稳定性。
+
+**新增的SetWithExpire和HGetAll方法为LLFCChat的分布式服务架构提供了强大的支持，通过原子性操作和高效查询，实现了可靠的服务发现、心跳管理和负载均衡，形成了完整的分布式服务治理方案。**

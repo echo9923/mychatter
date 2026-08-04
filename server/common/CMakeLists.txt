@@ -39,7 +39,6 @@ endif()
 find_package(Boost CONFIG REQUIRED COMPONENTS asio filesystem property_tree uuid)
 find_package(hiredis CONFIG REQUIRED)
 find_package(mysql-concpp CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
 
 # --- Base common lib: config + asio pool + logic worker ----------------------
 add_library(llfc_server_common STATIC
@@ -55,10 +54,6 @@ target_link_libraries(llfc_server_common PUBLIC
   Boost::filesystem
   Boost::property_tree
 )
-# SecurityUtil.h (header-only, included by every service) is the only OpenSSL
-# consumer in common — expose it transitively without forcing it into the
-# static archive's own compilation.
-target_link_libraries(llfc_server_common INTERFACE OpenSSL::Crypto)
 target_compile_features(llfc_server_common PUBLIC cxx_std_17)
 llfc_apply_msvc_defaults(llfc_server_common)
 

@@ -3,8 +3,6 @@
 #include "const.h"
 #include "RedisMgr.h"
 #include <climits>
-#include <nlohmann/json.hpp>
-using json = nlohmann::json;
 
 std::string generate_unique_string() {
 	// 创建UUID对象
@@ -16,56 +14,20 @@ std::string generate_unique_string() {
 	return unique_string;
 }
 
-/// Verify that the caller presented a client certificate whose SAN contains
-/// "llfc-gate".  Returns false when no mTLS peer identity or wrong SAN.
-static bool VerifyGateCert(ServerContext* context) {
-	auto auth_ctx = context->auth_context();
-	if (auth_ctx == nullptr) {
-		return false;
-	}
-	auto sans = auth_ctx->FindPropertyValues("x509_subject_alternative_name");
-	for (const auto& san_ref : sans) {
-		std::string san(san_ref.data(), san_ref.length());
-		if (san.find("llfc-gate") != std::string::npos) {
-			return true;
-		}
-	}
-	return false;
-}
-
 Status StatusServiceImpl::GetChatServer(ServerContext* context, const GetChatServerReq* request, GetChatServerRsp* reply)
 {
-	// --- mTLS: require a valid client cert with SAN=llfc-gate ---
-	if (!VerifyGateCert(context)) {
-		return Status(grpc::StatusCode::UNAUTHENTICATED,
-			"client certificate SAN must be llfc-gate");
-	}
-
-	// --- Least-loaded live node selection (3.1) ---
+	// --- Least-loaded live node selection ---
 	const auto& server = getChatServer();
 	if (server.host.empty()) {
 		reply->set_error(ErrorCodes::NoAvailableChatServer);
 		return Status::OK;
 	}
 
-	// --- Issue one-time chat ticket ---
-	std::string ticket_uuid = generate_unique_string();
+	// --- Issue login token: utoken_<uid> -> token (TTL 86400s) ---
+	std::string token = generate_unique_string();
+	std::string token_key = USERTOKENPREFIX + std::to_string(request->uid());
 
-	json ticket_json;
-	ticket_json["uid"] = request->uid();
-	ticket_json["server"] = server.name;
-	ticket_json["intent"] = static_cast<int>(request->intent());
-
-	// RESUME: embed the session-token SHA-256 so Chat can compare it.
-	if (request->intent() == message::RESUME &&
-		!request->session_token_sha256().empty()) {
-		ticket_json["session_token_sha256"] = request->session_token_sha256();
-	}
-
-	std::string ticket_key = CHAT_TICKET_PREFIX + ticket_uuid;
-	std::string ticket_value = ticket_json.dump();
-
-	if (!RedisMgr::GetInstance()->SetEx(ticket_key, 60, ticket_value)) {
+	if (!RedisMgr::GetInstance()->SetEx(token_key, 86400, token)) {
 		// Redis failure: do not return server address.
 		reply->set_error(ErrorCodes::RPCFailed);
 		return Status::OK;
@@ -75,7 +37,7 @@ Status StatusServiceImpl::GetChatServer(ServerContext* context, const GetChatSer
 	reply->set_server_name(server.name);
 	reply->set_host(server.host);
 	reply->set_port(server.port);
-	reply->set_chat_ticket(ticket_uuid);
+	reply->set_token(token);
 	return Status::OK;
 }
 

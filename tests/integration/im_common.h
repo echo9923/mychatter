@@ -67,7 +67,7 @@ inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = 1049;
 inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = 1050;
 inline constexpr short ID_PULL_OFFLINE_MSG_REQ    = 1051;
 inline constexpr short ID_PULL_OFFLINE_MSG_RSP    = 1052;
-// Resource auth (plan 3.2): client presents session_token once per connection;
+// Resource auth: client presents the login token once per connection;
 // all subsequent file frames are authorized against the bound session.
 inline constexpr short ID_RESOURCE_LOGIN_REQ       = 1053;
 inline constexpr short ID_RESOURCE_LOGIN_RSP       = 1054;
@@ -80,11 +80,6 @@ inline constexpr int MSG_STATUS_UN_READ   = 0;
 inline constexpr int MSG_STATUS_UN_UPLOAD = 3;
 inline constexpr int MSG_TYPE_TEXT        = 0;
 inline constexpr int MSG_TYPE_PIC         = 1;
-
-// TicketIntent (mirror status.proto enum): INITIAL = first login after pwd
-// check; RESUME = reconnect holding an existing session token.
-inline constexpr int TICKET_INTENT_INITIAL = 0;
-inline constexpr int TICKET_INTENT_RESUME  = 1;
 
 // ---- Cross-server test proxy port -----------------------------------------
 // The harness places a TCP proxy on this port between chatserver1 and
@@ -130,17 +125,12 @@ inline bool Check(bool cond, const std::string& name, const std::string& detail)
 }
 
 // Total number of message bodies the test should leave on disk/Redis untouched
-// Redis key helpers (plan 3.2): the session lives in the versioned
-// session:token:v2:<uid> key; one-time chat tickets live under
-// chat:ticket:<uuid>. StatusServer migration stamps auth:schema=v2.
+// Redis key helpers for chat leases and the simple per-user login token.
 inline std::string ChatLeaseKey(const std::string& name) {
 	return "chatserver:lease:" + name;
 }
-inline std::string SessionTokenKey(int uid) {
-	return "session:token:v2:" + std::to_string(uid);
-}
-inline std::string ChatTicketKey(const std::string& uuid) {
-	return "chat:ticket:" + uuid;
+inline std::string UserTokenKey(int uid) {
+	return "utoken_" + std::to_string(uid);
 }
 // by an entire scenario run. Used for the final summary line.
 inline int Failures() { return g_failures.load(); }

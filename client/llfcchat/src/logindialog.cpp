@@ -102,8 +102,7 @@ void LoginDialog::initHttpHandlers()
         _si->_uid = jsonObj["uid"].toInt();
         _si->_chat_host = jsonObj["chathost"].toString();
         _si->_chat_port = jsonObj["chatport"].toString();
-        //3.2 Gate 返回一次性票据 chat_ticket（不再返回 token）
-        _si->_chat_ticket = jsonObj["chat_ticket"].toString();
+        _si->_token = jsonObj["token"].toString();
 
         _si->_res_host = jsonObj["reshost"].toString();
         _si->_res_port = jsonObj["resport"].toString();
@@ -237,10 +236,9 @@ void LoginDialog::slot_tcp_con_finish(bool bsuccess)
 {
     if(bsuccess){
         showTip(tr("聊天服务连接成功，正在登录..."),true);
-        //3.2 INITIAL 登录：请求体 {uid, chat_ticket}（无 session_token）
         QJsonObject jsonObj;
         jsonObj["uid"] = _si->_uid;
-        jsonObj["chat_ticket"] = _si->_chat_ticket;
+        jsonObj["token"] = _si->_token;
 
         QJsonDocument doc(jsonObj);
         QByteArray jsonData = doc.toJson(QJsonDocument::Indented);
@@ -265,10 +263,9 @@ void LoginDialog::slot_res_con_finish(bool bsuccess)
 {
        if(bsuccess){
           showTip(tr("资源服务连接成功，正在鉴权..."),true);
-          //3.2 Resource 登录：请求体 {uid, session_token}
           QJsonObject jsonObj;
           jsonObj["uid"] = _si->_uid;
-          jsonObj["session_token"] = UserMgr::GetInstance()->GetToken();
+          jsonObj["token"] = UserMgr::GetInstance()->GetToken();
 
           QJsonDocument doc(jsonObj);
           QByteArray jsonData = doc.toJson(QJsonDocument::Compact);

@@ -29,17 +29,6 @@ public:
 	bool ExistsKey(const std::string &key);
 	bool HGetAll(const std::string& key, std::unordered_map<std::string, std::string>& result);
 
-	/// SCAN iterates all keys matching a glob pattern, returning the full key list.
-	std::vector<std::string> Scan(const std::string& pattern);
-
-	/// SET key value NX EX ttl — returns true only if the key was newly set.
-	bool SetNx(const std::string& key, const std::string& value, int ttl_seconds);
-
-	/// EVAL a Lua script with the given keys and args, returning the string reply
-	/// (empty string on error or non-string reply).
-	std::string Eval(const std::string& script,
-		const std::vector<std::string>& keys,
-		const std::vector<std::string>& args);
 	void Close() {
 		_con_pool->Close();
 		_con_pool->ClearConnections();

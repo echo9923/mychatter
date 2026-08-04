@@ -97,7 +97,5 @@ private:
 	std::mutex _mutex;
 	/// 稳态定时器，用于执行周期性任务（心跳检测、超时断开等）
 	boost::asio::steady_timer _timer;
-	/// on_timer 计数器：每 60 个 tick（约 3600s）触发一次可恢复令牌 compare-and-expire 续期
-	int _token_refresh_tick{0};
 };
 

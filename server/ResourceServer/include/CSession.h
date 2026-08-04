@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <boost/asio.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <boost/uuid/uuid_generators.hpp>
@@ -31,10 +31,9 @@ public:
 	~CSession();
 	tcp::socket& GetSocket();
 	std::string& GetSessionId();
-	void SetAuth(int uid, const std::string& token);
+	void SetAuth(int uid);
 	bool IsAuthed() const;
 	int GetUserId() const;
-	std::string GetSessionToken() const;
 	void Start();
 	void Send(char* msg,  short max_length, short msgid);
 	void Send(std::string msg, short msgid);
@@ -63,8 +62,6 @@ private:
 	std::shared_ptr<MsgNode> _recv_head_node;
 	std::atomic<bool> _authed{false};
 	std::atomic<int> _user_uid{0};
-	std::string _session_token;
-	mutable std::mutex _token_mtx;
 };
 
 
