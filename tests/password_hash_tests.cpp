@@ -36,10 +36,6 @@ int main() {
     Check(h1 != h2, "same pw, two hashes differ (fresh salt)");
     Check(VerifyPassword(pw, h2), "second hash still verifies");
 
-    Check(VerifyPassword("legacy", "legacy"), "legacy plaintext verifies");
-    Check(!VerifyPassword("other", "legacy"), "legacy plaintext mismatch");
-    Check(ShouldRehash("legacy"), "legacy plaintext flagged for rehash");
-
     Check(!VerifyPassword(pw, ""), "empty stored rejected");
     Check(!VerifyPassword(pw, "pbkdf2-sha256$i=600000$zz$00"), "bad salt hex rejected");
     Check(!VerifyPassword(pw, "pbkdf2-sha256$i=600000$00$zz"), "bad dk hex rejected");
@@ -53,7 +49,6 @@ int main() {
     const std::size_t pos = older.find(marker);
     const std::size_t end = older.find('$', pos);
     older.replace(pos, end - pos, "i=10000");
-    Check(ShouldRehash(older), "mismatched iteration flagged for rehash");
     Check(!VerifyPassword(pw, older), "mismatched iteration fails verify");
 
     const std::string weird("p\x01\x02\xfe\xff\x00ss");

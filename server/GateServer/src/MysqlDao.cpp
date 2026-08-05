@@ -267,21 +267,9 @@ bool MysqlDao::CheckPwd(const std::string& email, const std::string& pwd, UserIn
 			break;
 		}
 
-		// PBKDF2 恒定时间校验；存量明文行由 VerifyPassword 的 legacy 分支兼容，
-		// 校验通过后由 ShouldRehash 触发 rehash-on-login，把明文平滑升级为哈希。
+		// PBKDF2 恒定时间校验；pwd 必须为 pbkdf2-sha256 格式，明文/畸形值一律拒绝
 		if (!llfc::VerifyPassword(pwd, origin_pwd)) {
 			return false;
-		}
-		if (llfc::ShouldRehash(origin_pwd)) {
-			const std::string hashed = llfc::HashPassword(pwd);
-			if (!hashed.empty()) {
-				// 复用同一连接执行 UPDATE，避免二次向连接池取连接
-				std::unique_ptr<sql::PreparedStatement> pstmt_upd(
-					con->_con->prepareStatement("UPDATE user SET pwd = ? WHERE name = ?"));
-				pstmt_upd->setString(1, hashed);
-				pstmt_upd->setString(2, userInfo.name);
-				pstmt_upd->executeUpdate();
-			}
 		}
 		return true;
 	}

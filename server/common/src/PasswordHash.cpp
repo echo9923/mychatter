@@ -81,12 +81,6 @@ bool ParseHash(const std::string& stored, ParsedHash& out) {
 }
 
 // ---- primitives -------------------------------------------------------------
-bool ConstantTimeEquals(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;  // length is not secret
-    // CRYPTO_memcmp returns 0 when the two buffers are identical.
-    return CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
-}
-
 bool DeriveKey(const std::string& pw, const std::vector<unsigned char>& salt,
                int iterations, std::vector<unsigned char>& dk) {
     dk.assign(kDerivedBytes, 0);
@@ -123,20 +117,11 @@ std::string HashPassword(const std::string& pw) {
 bool VerifyPassword(const std::string& pw, const std::string& stored) {
     if (stored.empty()) return false;
     ParsedHash parsed;
-    if (!ParseHash(stored, parsed)) {
-        // Legacy plaintext row: constant-time compare against the raw value.
-        return ConstantTimeEquals(pw, stored);
-    }
+    if (!ParseHash(stored, parsed)) return false;  // 非 pbkdf2 格式（含明文）一律拒绝
     std::vector<unsigned char> dk;
     if (!DeriveKey(pw, parsed.salt, parsed.iterations, dk)) return false;
     if (dk.size() != parsed.dk.size()) return false;
     return CRYPTO_memcmp(dk.data(), parsed.dk.data(), dk.size()) == 0;
-}
-
-bool ShouldRehash(const std::string& stored) {
-    ParsedHash parsed;
-    if (!ParseHash(stored, parsed)) return true;  // legacy plaintext
-    return parsed.iterations != kPbkdf2Iterations;
 }
 
 } // namespace llfc
