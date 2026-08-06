@@ -28,7 +28,7 @@ public:
 	bool Get(const std::string &key, std::string& value);
 	/// 设置指定键的值
 	bool Set(const std::string &key, const std::string &value);
-	/// 设置指定键的值并设置过期时间（SETEX key seconds value）
+	/// 设置指定键的值并设置过期时间（SET key value EX seconds）
 	bool SetEx(const std::string& key, int ttl_seconds, const std::string& value);
 	/// 从列表左侧插入元素
 	bool LPush(const std::string &key, const std::string &value);

@@ -1669,7 +1669,7 @@ bool ScenarioImageOffline() {
 //   - deleting a node's lease excludes it;
 //   - deleting all leases returns NoAvailableChatServer (1018, empty host).
 //
-// The decisive 3/1 load is seeded directly via Redis SETEX: producing three
+// The decisive 3/1 load is seeded directly via Redis SET (EX): producing three
 // distinct authenticated sessions on one server is not possible with the two
 // fixture uids (same-uid re-login kicks the prior session, and LoginHandler
 // rejects uids absent from the user store). Seeding the lease value is exactly
@@ -1688,7 +1688,7 @@ bool ScenarioStatusDiscovery() {
 	const std::string lease1 = ChatLeaseKey("chatserver1");
 	const std::string lease2 = ChatLeaseKey("chatserver2");
 	// Each successful GetChatServer writes the per-user login token to
-	// utoken_<uid> (SETEX TTL 86400). All calls below use uid=1, so a single key
+	// utoken_<uid> (SET ... EX TTL 86400). All calls below use uid=1, so a single key
 	// is overwritten each time; clear it on teardown.
 	auto cleanup = [&]() {
 		redis.Del(UserTokenKey(1));

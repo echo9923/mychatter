@@ -55,9 +55,10 @@ bool Redis::Set(const std::string& key, const std::string& value) {
 bool Redis::SetEx(const std::string& key, int ttl, const std::string& value) {
 	if (!ctx_) return false;
 	std::string ttl_str = std::to_string(ttl);
-	const char* argv[4] = { "SETEX", key.c_str(), ttl_str.c_str(), value.c_str() };
-	const std::size_t lens[4] = { 5, key.size(), ttl_str.size(), value.size() };
-	auto* r = static_cast<redisReply*>(redisCommandArgv(ctx_, 4, argv, lens));
+	// SET key value EX ttl (replaces deprecated SETEX)
+	const char* argv[5] = { "SET", key.c_str(), value.c_str(), "EX", ttl_str.c_str() };
+	const std::size_t lens[5] = { 3, key.size(), value.size(), 2, ttl_str.size() };
+	auto* r = static_cast<redisReply*>(redisCommandArgv(ctx_, 5, argv, lens));
 	bool ok = r && r->type == REDIS_REPLY_STATUS && r->str &&
 		(std::strcmp(r->str, "OK") == 0);
 	if (r) freeReplyObject(r);
