@@ -48,7 +48,7 @@ int main()
 		pointer_server->StartTimer();
 
 		// lease 上报定时器：启动立即上报一次已认证会话数，此后每 report_interval 秒用
-		// SETEX chatserver:lease:<name> <lease_ttl> <count> 续租。回调以 weak_ptr 防悬挂；
+		// SET chatserver:lease:<name> <count> EX <lease_ttl> 续租。回调以 weak_ptr 防悬挂；
 		// 上报失败只记录 server name 与错误信息（不含 Redis 凭据），下一周期自然重试。
 		auto lease_timer = std::make_shared<boost::asio::steady_timer>(io_context);
 		std::weak_ptr<CServer> server_wp(pointer_server);
