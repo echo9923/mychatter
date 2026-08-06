@@ -86,29 +86,28 @@ bool RedisMgr::SetExp(const std::string& key, const std::string& value, int expi
 	if (connect == nullptr) {
 		return false;
 	}
-	auto reply = (redisReply*)redisCommand(connect, "SETEX %s %d %s", key.c_str(), 
-		      expire_seconds,
-		value.c_str());
+	auto reply = (redisReply*)redisCommand(connect, "SET %s %s EX %d", key.c_str(),
+		      value.c_str(), expire_seconds);
 
 	if (NULL == reply) {
-		std::cout << "Execute command [ SETEX " << key << " " << expire_seconds
-			<< " " << value << " ] failure ! " << std::endl;
+		std::cout << "Execute command [ SET " << key << " " << value
+			<< " EX " << expire_seconds << " ] failure ! " << std::endl;
 		_con_pool->returnConnection(connect);
 		return false;
 	}
 
 	if (!(reply->type == REDIS_REPLY_STATUS &&
 		(strcmp(reply->str, "OK") == 0 || strcmp(reply->str, "ok") == 0))) {
-		std::cout << "Execute command [ SETEX " << key << " " << expire_seconds
-			<< " " << value << " ] failure ! " << std::endl;
+		std::cout << "Execute command [ SET " << key << " " << value
+			<< " EX " << expire_seconds << " ] failure ! " << std::endl;
 		freeReplyObject(reply);
 		_con_pool->returnConnection(connect);
 		return false;
 	}
 
 	freeReplyObject(reply);
-	std::cout << "Execute command [ SETEX " << key << " " << expire_seconds
-		<< " " << value << " ] success ! " << std::endl;
+	std::cout << "Execute command [ SET " << key << " " << value
+		<< " EX " << expire_seconds << " ] success ! " << std::endl;
 	_con_pool->returnConnection(connect);
 	return true;
 }

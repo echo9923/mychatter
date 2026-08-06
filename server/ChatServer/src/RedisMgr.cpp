@@ -84,20 +84,20 @@ bool RedisMgr::SetEx(const std::string& key, int ttl_seconds, const std::string&
 		return false;
 	}
 
-	auto reply = (redisReply*)redisCommand(connect, "SETEX %s %d %s",
-		key.c_str(), ttl_seconds, value.c_str());
+	auto reply = (redisReply*)redisCommand(connect, "SET %s %s EX %d",
+		key.c_str(), value.c_str(), ttl_seconds);
 
 	if (NULL == reply) {
-		std::cout << "Execute command [ SETEX " << key << " " << ttl_seconds
-			<< " " << value << " ] failure!" << std::endl;
+		std::cout << "Execute command [ SET " << key << " " << value
+			<< " EX " << ttl_seconds << " ] failure!" << std::endl;
 		_con_pool->returnConnection(connect);
 		return false;
 	}
 
 	if (!(reply->type == REDIS_REPLY_STATUS &&
 		(strcmp(reply->str, "OK") == 0 || strcmp(reply->str, "ok") == 0))) {
-		std::cout << "Execute command [ SETEX " << key << " " << ttl_seconds
-			<< " " << value << " ] failure!" << std::endl;
+		std::cout << "Execute command [ SET " << key << " " << value
+			<< " EX " << ttl_seconds << " ] failure!" << std::endl;
 		freeReplyObject(reply);
 		_con_pool->returnConnection(connect);
 		return false;
