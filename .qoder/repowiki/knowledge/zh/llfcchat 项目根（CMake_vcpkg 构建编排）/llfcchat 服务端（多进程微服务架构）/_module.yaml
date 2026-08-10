@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: server
-title: 服务端多进程架构（网关/聊天/资源/状态服务）
+title: llfcchat 服务端（多进程微服务架构）
 scope:
     - server/CMakeLists.txt
     - server/common/

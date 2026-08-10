@@ -10,14 +10,16 @@
 - [httpmgr.h](file://client/llfcchat/include/httpmgr.h)
 - [httpmgr.cpp](file://client/llfcchat/src/httpmgr.cpp)
 - [global.h](file://client/llfcchat/include/global.h)
+- [logindialog.cpp](file://client/llfcchat/src/logindialog.cpp)
+- [status.proto](file://proto/status_service/status.proto)
 </cite>
 
 ## 更新摘要
 **变更内容**   
-- 移除了原文档中详细的用户认证API、好友关系API、资源管理API等已删除的接口规范
-- 更新了当前GateServer中实际实现的HTTP接口列表
-- 简化了API规范描述，聚焦于现有功能
-- 调整了架构图和依赖关系分析以反映当前实现
+- 更新了用户登录接口的响应格式，从复杂的chat_ticket结构简化为简单的token字符串
+- 移除了session_token字段，API响应结构更加简洁
+- 客户端接收的数据格式从{uid, chat_ticket[, session_token]}简化为{uid, token}
+- 更新了认证机制说明，反映新的简单token认证流程
 
 ## 目录
 1. [简介](#简介)
@@ -67,7 +69,7 @@ Gate --> |Redis| Cache["缓存(验证码)"]
 - [HttpConnection.h:1-36](file://server/GateServer/include/HttpConnection.h#L1-L36)
 - [HttpConnection.cpp:1-225](file://server/GateServer/src/HttpConnection.cpp#L1-L225)
 - [LogicSystem.h:1-24](file://server/GateServer/include/LogicSystem.h#L1-L24)
-- [LogicSystem.cpp:1-467](file://server/GateServer/src/LogicSystem.cpp#L1-L467)
+- [LogicSystem.cpp:1-556](file://server/GateServer/src/LogicSystem.cpp#L1-L556)
 - [const.h:1-65](file://server/GateServer/include/const.h#L1-L65)
 - [httpmgr.h:1-34](file://client/llfcchat/include/httpmgr.h#L1-L34)
 - [httpmgr.cpp:1-62](file://client/llfcchat/src/httpmgr.cpp#L1-L62)
@@ -204,7 +206,7 @@ RegOk --> |是| Success["返回成功(error=0)及用户信息"]
   - 更新数据库密码，返回成功或错误码
 
 **章节来源**
-- [LogicSystem.cpp:235-316](file://server/GateServer/src/LogicSystem.cpp#L235-L316)
+- [LogicSystem.cpp:235-316](file://server/GateServer/src/LogicSystem.cpp#L235-316)
 
 ### 用户登录接口
 - URL与方法：POST /user_login
@@ -215,7 +217,7 @@ RegOk --> |是| Success["返回成功(error=0)及用户信息"]
   - error：整数，错误码
   - email：字符串，邮箱
   - uid：整数，用户ID
-  - token：字符串，TCP连接认证令牌
+  - **token：字符串，TCP连接认证令牌**（已更新：从复杂chat_ticket结构简化为简单字符串）
   - chathost/chatport：字符串，分配的ChatServer地址与端口
   - reshost/resport：字符串，ResourceServer地址与端口
 - 处理流程
@@ -269,12 +271,16 @@ G-->>C : "HTTP 200 + JSON"
 [本节为概念性说明，不直接分析具体文件]
 
 ### 认证机制与Token使用
-- 登录成功后，GateServer返回token给客户端
+**已更新** 认证机制已简化为简单的token认证：
+- 登录成功后，GateServer返回简单的token字符串给客户端（而非复杂的chat_ticket结构）
 - 客户端后续与ChatServer建立TCP连接时使用该token进行认证
 - Token由StatusServer生成并随ChatServer分配信息一并返回
+- 客户端接收的数据格式从{uid, chat_ticket[, session_token]}简化为{uid, token}
+- 移除了session_token字段，API响应结构更加简洁
 
 **章节来源**
 - [LogicSystem.cpp:318-396](file://server/GateServer/src/LogicSystem.cpp#L318-L396)
+- [status.proto:1-30](file://proto/status_service/status.proto#L1-L30)
 
 ### 错误码定义与HTTP状态码使用规范
 - 错误码（error字段）

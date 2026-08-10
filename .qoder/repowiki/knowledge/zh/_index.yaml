@@ -3,30 +3,19 @@ schema_version: 1
 locale: zh-CN
 branch: Season_2
 nodes_managed: true
-exported_at: "2026-08-01T10:53:28Z"
+exported_at: "2026-08-06T11:44:36Z"
 modules:
     "":
-        dir_name: llfcchat 仓库根（构建编排与依赖管理）
-        title: llfcchat 仓库根（构建编排与依赖管理）
-        scope:
-            - .gitignore
-            - AGENTS.md
-            - CMakeLists.txt
-            - CMakePresets.json
-            - LICENSE
-            - README.md
-            - vcpkg.json
-            - 更新记录.md
-            - 第三季待做事件.md
+        dir_name: LLFCChat 分布式聊天系统（C++ 服务端 + Qt 客户端）
+        title: LLFCChat 分布式聊天系统（C++ 服务端 + Qt 客户端）
+        scope: []
         source_files: []
-        children:
-            - server
-            - tests
+        children: []
         depends_on: []
         related_to: []
     server:
-        dir_name: 服务端多进程架构（网关_聊天_资源_状态服务）
-        title: 服务端多进程架构（网关/聊天/资源/状态服务）
+        dir_name: llfcchat 服务端（多进程微服务架构）
+        title: llfcchat 服务端（多进程微服务架构）
         scope:
             - server/CMakeLists.txt
             - server/common/

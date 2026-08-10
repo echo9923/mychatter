@@ -8,8 +8,10 @@
 - [LogicSystem.cpp](file://server/ChatServer/src/LogicSystem.cpp)
 - [UserMgr.h](file://server/ChatServer/include/UserMgr.h)
 - [UserMgr.cpp](file://server/ChatServer/src/UserMgr.cpp)
-- [DistLock.h](file://server/ChatServer/include/DistLock.h)
-- [DistLock.cpp](file://server/ChatServer/src/DistLock.cpp)
+- [DistLock.h](file://server/common/include/DistLock.h)
+- [DistLock.cpp](file://server/common/src/DistLock.cpp)
+- [RedisMgr.h](file://server/ChatServer/include/RedisMgr.h)
+- [RedisMgr.cpp](file://server/ChatServer/src/RedisMgr.cpp)
 - [data.h](file://server/ChatServer/include/data.h)
 - [const.h](file://server/ChatServer/include/const.h)
 - [MsgNode.h](file://server/ChatServer/include/MsgNode.h)
@@ -20,10 +22,10 @@
 
 ## 更新摘要
 **变更内容**   
-- 新增基于uid的分片消息传递架构，通过PostToUser方法实现用户级路由
-- 增强会话管理功能，添加SendAndClose原子性最终帧传输机制
-- 改进优雅关闭序列，优化服务停机流程
-- 更新消息路由逻辑，支持跨服uid分片和负载均衡
+- RedisManager类更新了Redis命令实现，从SETEX改为SET ... EX语法
+- 改进了错误处理和日志输出格式，统一使用"Execute command"前缀
+- 分布式锁实现已采用原子性SET NX EX命令，提升可靠性
+- 增强了Redis操作的异常处理机制和连接池管理
 
 ## 目录
 1. [简介](#简介)
@@ -43,7 +45,7 @@
 - LogicSystem业务逻辑处理（消息验证、权限检查、广播机制）
 - UserMgr用户状态管理（在线用户列表、好友关系、消息队列）
 - 分布式锁实现（多进程数据一致性）
-- **新增** 基于uid的分片消息传递架构和原子性会话操作
+- **更新** RedisManager的Redis命令实现优化，采用现代SET ... EX语法替代废弃的SETEX命令
 - 消息协议定义、错误处理策略与性能优化方案
 
 ## 项目结构
@@ -66,14 +68,18 @@ H["ConfigMgr<br/>配置读取"] --> C
 I["PostToUser<br/>uid分片路由"] --> C
 end
 J["客户端"] --> A
+K["Redis服务器<br/>SET ... EX语法"] --> E
+L["MySQL数据库"] --> E
+end
 ```
 
-图表来源 
+**图表来源** 
 - [CServer.cpp:1-133](file://server/ChatServer/src/CServer.cpp#L1-L133)
 - [CSession.h:1-86](file://server/ChatServer/include/CSession.h#L1-L86)
 - [LogicSystem.h:1-60](file://server/ChatServer/include/LogicSystem.h#L1-L60)
 - [UserMgr.h:1-22](file://server/ChatServer/include/UserMgr.h#L1-L22)
-- [DistLock.h:1-18](file://server/ChatServer/include/DistLock.h#L1-L18)
+- [DistLock.h:1-17](file://server/common/include/DistLock.h#L1-L17)
+- [RedisMgr.h:1-95](file://server/ChatServer/include/RedisMgr.h#L1-L95)
 - [chat.proto:1-105](file://proto/chat_service/chat.proto#L1-L105)
 
 章节来源
@@ -84,7 +90,8 @@ J["客户端"] --> A
 - CSession：封装单个TCP连接的读写、粘包处理、发送队列、心跳计时、异常清理。**新增** SendAndClose原子性操作和优雅关闭机制。
 - LogicSystem：单例消息总线，按消息ID分派到具体处理器；包含登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载等。**新增** PostToUser uid分片路由机制。
 - UserMgr：维护uid到session的映射，提供获取、设置、移除操作。
-- DistLock：基于Redis的分布式锁，支持超时与原子释放。
+- DistLock：基于Redis的分布式锁，支持超时与原子释放，采用SET NX EX原子命令。
+- **更新** RedisMgr：Redis管理器，已更新SetEx方法使用SET ... EX语法替代SETEX命令，改进错误处理和日志输出。
 - 数据模型：UserInfo、ApplyInfo、ChatThreadInfo、ChatMessage、PageResult、ChatMsgType。
 - 常量与协议：ErrorCodes、MSG_IDS、Redis键前缀、gRPC消息类型。
 
@@ -92,12 +99,13 @@ J["客户端"] --> A
 - [CSession.h:1-86](file://server/ChatServer/include/CSession.h#L1-L86)
 - [LogicSystem.h:1-60](file://server/ChatServer/include/LogicSystem.h#L1-L60)
 - [UserMgr.h:1-22](file://server/ChatServer/include/UserMgr.h#L1-L22)
-- [DistLock.h:1-18](file://server/ChatServer/include/DistLock.h#L1-L18)
+- [DistLock.h:1-17](file://server/common/include/DistLock.h#L1-L17)
+- [RedisMgr.h:1-95](file://server/ChatServer/include/RedisMgr.h#L1-L95)
 - [data.h:1-65](file://server/ChatServer/include/data.h#L1-L65)
 - [const.h:1-104](file://server/ChatServer/include/const.h#L1-L104)
 
 ## 架构总览
-ChatServer通过AsioIOServicePool进行高并发IO，CServer负责Accept新连接并创建CSession；CSession解析头部与体，将消息投递至LogicSystem队列；LogicSystem在独立工作线程中消费并调用对应处理器；处理器根据目标用户所在服务器选择本地推送或gRPC跨服通知；UserMgr维护内存中的uid->session映射；分布式锁保证关键路径（如踢人、登录互斥）的一致性。**新增** PostToUser方法实现基于uid的分片路由，支持跨服负载均衡和高可用。
+ChatServer通过AsioIOServicePool进行高并发IO，CServer负责Accept新连接并创建CSession；CSession解析头部与体，将消息投递至LogicSystem队列；LogicSystem在独立工作线程中消费并调用对应处理器；处理器根据目标用户所在服务器选择本地推送或gRPC跨服通知；UserMgr维护内存中的uid->session映射；分布式锁保证关键路径（如踢人、登录互斥）的一致性。**更新** RedisManager采用现代化的SET ... EX语法进行键值过期设置，提升兼容性和性能。
 
 ```mermaid
 sequenceDiagram
@@ -106,7 +114,7 @@ participant Server as "CServer"
 participant Session as "CSession"
 participant Logic as "LogicSystem"
 participant UMgr as "UserMgr"
-participant Redis as "Redis"
+participant Redis as "Redis (SET ... EX)"
 participant DB as "MySQL"
 participant Peer as "其他ChatServer(gRPC)"
 Client->>Server : TCP连接
@@ -117,9 +125,9 @@ Session->>Logic : PostMsgToQue(LogicNode)
 Logic->>Logic : 工作线程消费队列
 Logic->>Logic : 按msg_id路由到处理器
 alt 登录流程
-Logic->>Redis : 校验Token
+Logic->>Redis : SET token value EX ttl
 Logic->>DB : 拉取用户基础信息
-Logic->>Redis : 分布式锁(lock_+uid)
+Logic->>Redis : SET lock : key identifier NX EX timeout
 Logic->>Peer : 跨服踢人(必要时)
 Logic->>UMgr : SetUserSession(uid, session)
 Logic-->>Client : 登录响应(含好友/申请列表)
@@ -138,11 +146,13 @@ Note over Session : SendAndClose原子性操作
 Session->>Session : 发送最终帧并关闭连接
 ```
 
-图表来源 
+**图表来源** 
 - [CServer.cpp:1-133](file://server/ChatServer/src/CServer.cpp#L1-L133)
 - [CSession.cpp:1-335](file://server/ChatServer/src/CSession.cpp#L1-L335)
 - [LogicSystem.cpp:1-945](file://server/ChatServer/src/LogicSystem.cpp#L1-L945)
 - [UserMgr.cpp:1-50](file://server/ChatServer/src/UserMgr.cpp#L1-L50)
+- [RedisMgr.cpp:81-109](file://server/ChatServer/src/RedisMgr.cpp#L81-L109)
+- [DistLock.cpp:26-48](file://server/common/src/DistLock.cpp#L26-L48)
 - [chat.proto:1-105](file://proto/chat_service/chat.proto#L1-L105)
 
 ## 详细组件分析
@@ -207,7 +217,7 @@ CSession --> SendNode : "发送队列"
 CSession --> RecvNode : "接收缓冲"
 ```
 
-图表来源 
+**图表来源** 
 - [CSession.h:1-86](file://server/ChatServer/include/CSession.h#L1-L86)
 - [MsgNode.h:1-48](file://server/ChatServer/include/MsgNode.h#L1-L48)
 
@@ -257,7 +267,7 @@ Other --> Resp
 Graceful --> End(["结束"])
 ```
 
-图表来源 
+**图表来源** 
 - [LogicSystem.cpp:1-945](file://server/ChatServer/src/LogicSystem.cpp#L1-L945)
 - [const.h:1-104](file://server/ChatServer/include/const.h#L1-L104)
 
@@ -291,7 +301,7 @@ class CSession {
 UserMgr --> CSession : "持有引用"
 ```
 
-图表来源 
+**图表来源** 
 - [UserMgr.h:1-22](file://server/ChatServer/include/UserMgr.h#L1-L22)
 - [UserMgr.cpp:1-50](file://server/ChatServer/src/UserMgr.cpp#L1-L50)
 - [CSession.h:1-86](file://server/ChatServer/include/CSession.h#L1-L86)
@@ -301,9 +311,10 @@ UserMgr --> CSession : "持有引用"
 - [UserMgr.h:1-22](file://server/ChatServer/include/UserMgr.h#L1-L22)
 
 ### 分布式锁：DistLock
-- 获取锁：使用Redis SET key identifier NX EX timeout，轮询直至成功或超时。
+- 获取锁：使用Redis SET key identifier NX EX timeout原子命令，轮询直至成功或超时。
 - 释放锁：EVAL Lua脚本比较identifier并原子删除，防止误删他人锁。
 - 使用场景：登录互斥、踢人、关键资源更新等。
+- **更新** 采用原子性SET NX EX命令，提升锁获取的可靠性和性能。
 
 ```mermaid
 flowchart TD
@@ -320,13 +331,61 @@ I --> |是| J["释放完成"]
 I --> |否| K["忽略(非本人锁)"]
 ```
 
-图表来源 
-- [DistLock.cpp:1-73](file://server/ChatServer/src/DistLock.cpp#L1-L73)
-- [DistLock.h:1-18](file://server/ChatServer/include/DistLock.h#L1-L18)
+**图表来源** 
+- [DistLock.cpp:26-48](file://server/common/src/DistLock.cpp#L26-L48)
+- [DistLock.cpp:51-72](file://server/common/src/DistLock.cpp#L51-L72)
+- [DistLock.h:1-17](file://server/common/include/DistLock.h#L1-L17)
 
 章节来源
-- [DistLock.cpp:1-73](file://server/ChatServer/src/DistLock.cpp#L1-L73)
-- [DistLock.h:1-18](file://server/ChatServer/include/DistLock.h#L1-L18)
+- [DistLock.cpp:1-73](file://server/common/src/DistLock.cpp#L1-L73)
+- [DistLock.h:1-17](file://server/common/include/DistLock.h#L1-L17)
+
+### RedisManager：Redis操作管理
+- **更新** SetEx方法：已从SETEX命令迁移到SET ... EX语法，提供更好的兼容性和性能。
+- 连接池管理：使用RedisConPool管理Redis连接，支持连接复用和资源回收。
+- 错误处理：统一的错误处理机制，详细的日志输出便于问题排查。
+- 支持的命令：Get、Set、SetEx、LPush、LPop、RPush、RPop、HSet、HGet、HDel、Del、ExistsKey、ZAdd、ZRangeByScore、ZRem、Expire等。
+- **更新** 日志格式：统一使用"Execute command"前缀，提高日志可读性。
+
+```mermaid
+classDiagram
+class RedisMgr {
++Get(key, value) bool
++Set(key, value) bool
++SetEx(key, ttl_seconds, value) bool
++LPush(key, value) bool
++LPop(key, value) bool
++RPush(key, value) bool
++RPop(key, value) bool
++HSet(key, hkey, value) bool
++HGet(key, hkey) string
++HDel(key, field) bool
++Del(key) bool
++ExistsKey(key) bool
++ZAdd(key, score, member) bool
++ZRangeByScore(key, min, limit, members) bool
++ZRem(key, member) bool
++Expire(key, seconds) bool
++acquireLock(lockName, lockTimeout, acquireTimeout) string
++releaseLock(lockName, identifier) bool
+-_con_pool : RedisConPool
+}
+class RedisConPool {
++getConnection() redisContext*
++returnConnection(redisContext*)
++Close()
++ClearConnections()
+}
+RedisMgr --> RedisConPool : "使用"
+```
+
+**图表来源** 
+- [RedisMgr.h:19-93](file://server/ChatServer/include/RedisMgr.h#L19-L93)
+- [RedisMgr.cpp:81-109](file://server/ChatServer/src/RedisMgr.cpp#L81-L109)
+
+章节来源
+- [RedisMgr.cpp:1-577](file://server/ChatServer/src/RedisMgr.cpp#L1-L577)
+- [RedisMgr.h:1-95](file://server/ChatServer/include/RedisMgr.h#L1-L95)
 
 ### CServer：定时器与心跳清理
 - Accept循环：从AsioIOServicePool获取IO上下文，异步接受连接，创建CSession并Start。
@@ -342,7 +401,8 @@ I --> |否| K["忽略(非本人锁)"]
 - CSession依赖：boost::asio、MsgNode、const、gRPC生成的pb头。
 - LogicSystem依赖：Singleton、queue、thread、CSession、nlohmann/json、data、UserMgr、MysqlMgr、RedisMgr、ChatGrpcClient、DistLock。
 - UserMgr依赖：CSession、RedisMgr。
-- DistLock依赖：hiredis。
+- DistLock依赖：hiredis、Boost UUID。
+- **更新** RedisMgr依赖：hiredis、RedisConPool、ConfigMgr、DistLock。
 - 外部服务：MySQL、Redis、gRPC对端ChatServer实例。
 
 ```mermaid
@@ -359,19 +419,23 @@ Logic --> DistLock
 UserMgr --> CSession
 UserMgr --> PostToUser["PostToUser"]
 DistLock --> RedisMgr
+RedisMgr --> RedisConPool["RedisConPool"]
+RedisMgr --> ConfigMgr["ConfigMgr"]
 ```
 
-图表来源 
+**图表来源** 
 - [CSession.h:1-86](file://server/ChatServer/include/CSession.h#L1-L86)
 - [LogicSystem.h:1-60](file://server/ChatServer/include/LogicSystem.h#L1-L60)
 - [UserMgr.h:1-22](file://server/ChatServer/include/UserMgr.h#L1-L22)
-- [DistLock.h:1-18](file://server/ChatServer/include/DistLock.h#L1-L18)
+- [DistLock.h:1-17](file://server/common/include/DistLock.h#L1-L17)
+- [RedisMgr.h:1-95](file://server/ChatServer/include/RedisMgr.h#L1-L95)
 
 章节来源
 - [CSession.h:1-86](file://server/ChatServer/include/CSession.h#L1-L86)
 - [LogicSystem.h:1-60](file://server/ChatServer/include/LogicSystem.h#L1-L60)
 - [UserMgr.h:1-22](file://server/ChatServer/include/UserMgr.h#L1-L22)
-- [DistLock.h:1-18](file://server/ChatServer/include/DistLock.h#L1-L18)
+- [DistLock.h:1-17](file://server/common/include/DistLock.h#L1-L17)
+- [RedisMgr.h:1-95](file://server/ChatServer/include/RedisMgr.h#L1-L95)
 
 ## 性能考虑
 - IO模型：基于Boost.Asio的异步非阻塞IO，配合AsioIOServicePool提升并发能力。
@@ -380,8 +444,9 @@ DistLock --> RedisMgr
 - 缓存优先：用户基础信息与好友列表优先查Redis，未命中再落库，降低DB压力。
 - 跨服通知：仅当接收方不在本服时才发起gRPC调用，减少不必要的远程调用。
 - 分布式锁：短超时+Lua原子释放，避免死锁与长时间持有。
-- **新增** uid分片路由：基于用户uid的哈希分片，提高消息路由效率和负载均衡。
-- **新增** 原子性操作：SendAndClose确保最终帧发送和连接关闭的原子性，避免资源泄漏。
+- **更新** Redis命令优化：采用SET ... EX语法替代SETEX，提升Redis兼容性。
+- **更新** 原子性操作：SendAndClose确保最终帧发送和连接关闭的原子性，避免资源泄漏。
+- **更新** 连接池管理：RedisConPool有效管理Redis连接，减少连接创建开销。
 - **新增** 优雅关闭：渐进式关闭流程，确保所有待处理消息完成后再释放资源。
 
 ## 故障排查指南
@@ -390,24 +455,29 @@ DistLock --> RedisMgr
 - 登录失败：核对Redis中Token键值、UID有效性、分布式锁竞争情况。
 - 跨服通知失败：检查ChatGrpcClient调用与对端服务可用性。
 - 内存泄漏：关注MsgNode分配与析构，确保发送/接收缓冲正确释放。
-- **新增** uid分片问题：检查用户uid分布均匀性和分片算法正确性。
-- **新增** 原子性操作失败：监控SendAndClose方法的执行状态和异常处理。
+- **更新** Redis命令错误：检查SET ... EX语法是否正确，确认Redis版本兼容性。
+- **更新** 分布式锁问题：监控SET NX EX命令的执行状态和Lua脚本执行情况。
+- **新增** 连接池问题：检查RedisConPool的连接管理和资源回收机制。
 - **新增** 优雅关闭问题：检查服务关闭时的资源释放顺序和消息队列清空状态。
 
 章节来源
 - [CSession.cpp:1-335](file://server/ChatServer/src/CSession.cpp#L1-L335)
 - [CServer.cpp:1-133](file://server/ChatServer/src/CServer.cpp#L1-L133)
 - [LogicSystem.cpp:1-945](file://server/ChatServer/src/LogicSystem.cpp#L1-L945)
+- [RedisMgr.cpp:81-109](file://server/ChatServer/src/RedisMgr.cpp#L81-L109)
+- [DistLock.cpp:26-48](file://server/common/src/DistLock.cpp#L26-L48)
 
 ## 结论
-ChatServer以CSession为核心承载TCP会话，LogicSystem作为消息总线驱动业务流转，UserMgr维护在线映射，DistLock保障多进程一致性。**新增** 的基于uid的分片消息传递架构显著提升了系统的可扩展性和负载均衡能力，原子性会话操作和优雅关闭机制增强了系统的稳定性和可靠性。整体设计清晰、可扩展性强，适合大规模即时通讯场景。建议持续优化缓存命中率、监控跨服延迟、完善错误码与可观测性。
+ChatServer以CSession为核心承载TCP会话，LogicSystem作为消息总线驱动业务流转，UserMgr维护在线映射，DistLock保障多进程一致性。**更新** 的RedisManager采用现代化的SET ... EX语法替代废弃的SETEX命令，提升了Redis兼容性和性能。分布式锁实现已优化为原子性SET NX EX命令，增强了锁获取的可靠性。整体设计清晰、可扩展性强，适合大规模即时通讯场景。建议持续优化缓存命中率、监控跨服延迟、完善错误码与可观测性。
 
 ## 附录：消息协议与错误码
 - 错误码：Success、Error_Json、RPCFailed、VarifyExpired、VarifyCodeErr、UserExist、PasswdErr、EmailNotMatch、PasswdUpFailed、PasswdInvalid、TokenInvalid、UidInvalid、CREATE_CHAT_FAILED、LOAD_CHAT_FAILED。
 - 消息ID：登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载、文件同步等。
 - gRPC接口：NotifyAddFriend、NotifyAuthFriend、NotifyTextChatMsg、NotifyKickUser、NotifyChatImgMsg及对应请求/响应结构。
+- **更新** Redis命令：SetEx方法已更新为SET ... EX语法，支持更广泛的Redis版本兼容性。
 - **新增** PostToUser接口：支持基于uid的消息路由和分片传输。
 
 章节来源
 - [const.h:1-104](file://server/ChatServer/include/const.h#L1-L104)
 - [chat.proto:1-105](file://proto/chat_service/chat.proto#L1-L105)
+- [RedisMgr.cpp:81-109](file://server/ChatServer/src/RedisMgr.cpp#L81-L109)
