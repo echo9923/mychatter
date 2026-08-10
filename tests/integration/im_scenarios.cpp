@@ -148,9 +148,26 @@ static GateLoginInfo GateLogin(int uid) {
 	return info;
 }
 
-// Full login for a fixture uid: obtain the login token from Gate /user_login,
-// connect to the returned ChatServer, and run the chat login (1005). On success
-// the TcpClient is authenticated and `token` holds the gate-issued login token.
+// Delivery/topology scenarios do not test passwords. Ask Status for the same
+// utoken/endpoint that Gate requests after password verification so these
+// scenarios are independent of fixture password migration state.
+static GateLoginInfo StatusLogin(int uid) {
+	GateLoginInfo info;
+	StatusClient status;
+	std::string port_text;
+	if (!status.Connect("127.0.0.1", STATUS_GRPC_PORT) ||
+		!status.GetChatServer(uid, info.error, info.server_name,
+			info.chat_host, port_text, info.token)) {
+		return info;
+	}
+	info.chat_port = static_cast<unsigned short>(std::atoi(port_text.c_str()));
+	info.ok = info.error == ERR_SUCCESS && !info.token.empty() &&
+		!info.server_name.empty() && !info.chat_host.empty() && info.chat_port != 0;
+	return info;
+}
+
+// Full Chat login for a fixture uid using a Status-issued token. Password
+// behavior remains covered separately by ScenarioSimpleAuth through GateLogin.
 struct LoginInfo {
 	bool           ok = false;
 	std::string    token;
@@ -160,7 +177,7 @@ struct LoginInfo {
 
 static LoginInfo LoginUser(TcpClient& c, int uid) {
 	LoginInfo info;
-	GateLoginInfo gl = GateLogin(uid);
+	GateLoginInfo gl = StatusLogin(uid);
 	if (!gl.ok) return info;
 	if (!c.Connect(gl.chat_host, gl.chat_port, 10000)) {
 		std::printf("[login] connect chat uid=%d %s:%u failed\n",
@@ -188,7 +205,7 @@ static bool LoginUserPinned(TcpClient& c, int uid, Redis& redis,
 	const std::string other = (want_name == "chatserver1") ? "chatserver2" : "chatserver1";
 	for (int attempt = 0; attempt < 15; ++attempt) {
 		redis.SetEx(ChatLeaseKey(other), 8, "999");
-		GateLoginInfo gl = GateLogin(uid);
+		GateLoginInfo gl = StatusLogin(uid);
 		if (gl.ok && gl.chat_port == want_port) {
 			if (!c.Connect(gl.chat_host, gl.chat_port, 10000)) {
 				std::printf("[login] pinned connect uid=%d %s:%u failed\n",
