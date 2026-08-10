@@ -100,6 +100,39 @@ bool Redis::Exists(const std::string& key, bool& out) {
 	return ok;
 }
 
+bool Redis::HSet(const std::string& key, const std::string& field,
+                 const std::string& value) {
+	if (!ctx_) return false;
+	const char* argv[4] = { "HSET", key.c_str(), field.c_str(), value.c_str() };
+	const std::size_t lens[4] = { 4, key.size(), field.size(), value.size() };
+	auto* r = static_cast<redisReply*>(redisCommandArgv(ctx_, 4, argv, lens));
+	bool ok = r && r->type == REDIS_REPLY_INTEGER;
+	if (r) freeReplyObject(r);
+	return ok;
+}
+
+bool Redis::HGet(const std::string& key, const std::string& field,
+                 std::string& value) {
+	if (!ctx_) return false;
+	const char* argv[3] = { "HGET", key.c_str(), field.c_str() };
+	const std::size_t lens[3] = { 4, key.size(), field.size() };
+	auto* r = static_cast<redisReply*>(redisCommandArgv(ctx_, 3, argv, lens));
+	bool ok = r && r->type == REDIS_REPLY_STRING;
+	if (ok) value.assign(r->str, r->len);
+	if (r) freeReplyObject(r);
+	return ok;
+}
+
+bool Redis::HDel(const std::string& key, const std::string& field) {
+	if (!ctx_) return false;
+	const char* argv[3] = { "HDEL", key.c_str(), field.c_str() };
+	const std::size_t lens[3] = { 4, key.size(), field.size() };
+	auto* r = static_cast<redisReply*>(redisCommandArgv(ctx_, 3, argv, lens));
+	bool ok = r && r->type == REDIS_REPLY_INTEGER;
+	if (r) freeReplyObject(r);
+	return ok;
+}
+
 bool Redis::ZRange(const std::string& key, std::vector<std::string>& members) {
 	members.clear();
 	if (!ctx_) return false;

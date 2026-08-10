@@ -138,7 +138,7 @@ if(LLFC_RUN_INTEGRATION_TESTS)
   set(_im_scenarios
     gate-smoke order-n4 order-n1 dedup
     offline lost-ack pull-bytes cross-server image-offline
-    status-discovery simple-auth
+    status-discovery chat-failover simple-auth
   )
   foreach(_scn ${_im_scenarios})
     add_test(NAME im_integration_${_scn}

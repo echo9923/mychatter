@@ -27,6 +27,7 @@
 #include "MysqlMgr.h"          // MySQL管理器，用于用户数据的持久化操作
 #include "StatusGrpcClient.h"  // 状态服务的gRPC客户端（调用StatusServer分配ChatServer）
 #include "ConfigMgr.h"         // 配置读取，用于解析 [Concurrency] worker 数与队列容量
+#include <limits>
 
 /**
  * @brief 从 [Concurrency] 读取一个正整数配置项，缺失/非数字/<=0 时回退
@@ -339,6 +340,61 @@ LogicSystem::LogicSystem() {
 		return true;
 		});
 
+	// ==================== POST /reassign_chat ====================
+	RegPost("/reassign_chat", [](std::shared_ptr<HttpConnection> connection) {
+		auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
+		connection->_response.set(http::field::content_type, "text/json");
+		json root;
+		auto request = json::parse(body_str, nullptr, false);
+		if (request.is_discarded() || !request.is_object() ||
+			!request.contains("uid") ||
+			(!request["uid"].is_number_integer() &&
+			 !request["uid"].is_number_unsigned()) ||
+			!request.contains("token") || !request["token"].is_string()) {
+			root["error"] = ErrorCodes::Error_Json;
+			beast::ostream(connection->_response.body()) << root.dump(4);
+			return true;
+		}
+
+		long long uid_value = 0;
+		try {
+			uid_value = request["uid"].get<long long>();
+		} catch (const json::exception&) {
+			root["error"] = ErrorCodes::Error_Json;
+			beast::ostream(connection->_response.body()) << root.dump(4);
+			return true;
+		}
+		const std::string token = request["token"].get<std::string>();
+		if (uid_value <= 0 ||
+			uid_value > std::numeric_limits<int>::max() || token.empty()) {
+			root["error"] = ErrorCodes::Error_Json;
+			beast::ostream(connection->_response.body()) << root.dump(4);
+			return true;
+		}
+
+		auto reply = StatusGrpcClient::GetInstance()->GetChatServer(
+			static_cast<int>(uid_value), token);
+		if (reply.error()) {
+			const int error = reply.error();
+			if (error == ErrorCodes::NoAvailableChatServer ||
+				error == ErrorCodes::TokenInvalid ||
+				error == ErrorCodes::UidInvalid) {
+				root["error"] = error;
+			} else {
+				root["error"] = ErrorCodes::RPCFailed;
+			}
+			beast::ostream(connection->_response.body()) << root.dump(4);
+			return true;
+		}
+
+		root["error"] = ErrorCodes::Success;
+		root["server_name"] = reply.server_name();
+		root["chathost"] = reply.host();
+		root["chatport"] = reply.port();
+		beast::ostream(connection->_response.body()) << root.dump(4);
+		return true;
+	});
+
 	// ==================== POST /user_login ====================
 	// 用户登录接口
 	// 处理流程：
@@ -403,6 +459,7 @@ LogicSystem::LogicSystem() {
 		root["email"] = email;
 		root["uid"] = userInfo.uid;             // 用户唯一标识ID
 		root["token"] = reply.token();          // 登录令牌（utoken_<uid>，TTL 86400s）
+		root["server_name"] = reply.server_name();
 		root["chathost"] = reply.host();        // 分配的ChatServer的IP地址
 		root["chatport"] = reply.port();        // 分配的ChatServer的端口号
 		// 【步骤4】从配置文件读取ResourceServer（资源服务器）的地址信息

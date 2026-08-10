@@ -1,12 +1,20 @@
 #include "ChatGrpcClient.h"
+#include "ChatServerRegistry.h"
+#include "const.h"
+#include "data.h"
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
-#include "UserMgr.h"
-
-#include "CSession.h"
 #include "MysqlMgr.h"
+#include <charconv>
 #include <chrono>
+#include <nlohmann/json.hpp>
 #include <thread>
+
+using json = nlohmann::json;
+using grpc::ClientContext;
+using grpc::Status;
+using message::ChatService;
+using message::TextChatMsgRsp;
 
 namespace {
 /// 从 [Delivery] 读取整数配置；非法/缺失时回退 fallback（与 LogicSystem 同一模式，计划4.2/5.3）
@@ -27,46 +35,70 @@ int ReadDeliveryInt(const std::string& key, int fallback) {
 	}
 	return fallback;
 }
+
+bool ResolveRpcEndpoint(const std::string& server_name, std::string& endpoint) {
+	std::string lease;
+	if (!RedisMgr::GetInstance()->Get(llfc::ChatServerLeaseKey(server_name), lease) ||
+		lease.empty()) {
+		return false;
+	}
+	int load = 0;
+	const auto load_result = std::from_chars(
+		lease.data(), lease.data() + lease.size(), load);
+	if (load_result.ec != std::errc{} ||
+		load_result.ptr != lease.data() + lease.size() || load < 0) {
+		return false;
+	}
+
+	const std::string metadata = RedisMgr::GetInstance()->HGet(
+		llfc::kChatServerRegistryKey, server_name);
+	const auto data = json::parse(metadata, nullptr, false);
+	if (!data.is_object()) return false;
+	for (const char* key : { "name", "rpc_host", "rpc_port" }) {
+		if (!data.contains(key) || !data[key].is_string()) return false;
+	}
+	const std::string name = data["name"].get<std::string>();
+	const std::string host = data["rpc_host"].get<std::string>();
+	const std::string port_text = data["rpc_port"].get<std::string>();
+	int port = 0;
+	const auto port_result = std::from_chars(
+		port_text.data(), port_text.data() + port_text.size(), port);
+	if (name != server_name || host.empty() ||
+		port_result.ec != std::errc{} ||
+		port_result.ptr != port_text.data() + port_text.size() ||
+		port <= 0 || port > 65535) {
+		return false;
+	}
+	endpoint = host + ":" + port_text;
+	return true;
+}
 } // namespace
 
-ChatGrpcClient::ChatGrpcClient()
-{
-	auto& cfg = ConfigMgr::Inst();
-	auto server_list = cfg["PeerServer"]["Servers"];
+std::shared_ptr<Channel> ChatGrpcClient::ResolveChannel(
+	const std::string& server_name) {
+	std::string endpoint;
+	if (!ResolveRpcEndpoint(server_name, endpoint)) return nullptr;
 
-	std::vector<std::string> words;
-
-	std::stringstream ss(server_list);
-	std::string word;
-
-	while (std::getline(ss, word, ',')) {
-		words.push_back(word);
+	std::lock_guard<std::mutex> lock(_channels_mutex);
+	auto found = _channels.find(server_name);
+	if (found != _channels.end() && found->second.endpoint == endpoint) {
+		return found->second.channel;
 	}
-
-	for (auto& word : words) {
-		if (cfg[word]["Name"].empty()) {
-			continue;
-		}
-		_channels[cfg[word]["Name"]] = grpc::CreateChannel(cfg[word]["Host"] + ":" + cfg[word]["Port"], grpc::InsecureChannelCredentials());
-	}
-
+	auto channel = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
+	_channels[server_name] = { endpoint, channel };
+	return channel;
 }
 
 AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_ip, const AddFriendReq& req)
 {
 	AddFriendRsp rsp;
-	Defer defer([&rsp, &req]() {
-		rsp.set_error(ErrorCodes::Success);
-		rsp.set_applyuid(req.applyuid());
-		rsp.set_touid(req.touid());
-		});
+	rsp.set_error(ErrorCodes::RPCFailed);
+	rsp.set_applyuid(req.applyuid());
+	rsp.set_touid(req.touid());
+	auto channel = ResolveChannel(server_ip);
+	if (!channel) return rsp;
 
-	auto find_iter = _channels.find(server_ip);
-	if (find_iter == _channels.end()) {
-		return rsp;
-	}
-
-	auto stub = ChatService::NewStub(find_iter->second);
+	auto stub = ChatService::NewStub(channel);
 	ClientContext context;
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	Status status = stub->NotifyAddFriend(&context, req, &rsp);
@@ -120,23 +152,18 @@ bool ChatGrpcClient::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<
 		RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 	}
 
+	return true;
 }
 
 AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const AuthFriendReq& req) {
 	AuthFriendRsp rsp;
-	rsp.set_error(ErrorCodes::Success);
+	rsp.set_error(ErrorCodes::RPCFailed);
+	rsp.set_fromuid(req.fromuid());
+	rsp.set_touid(req.touid());
+	auto channel = ResolveChannel(server_ip);
+	if (!channel) return rsp;
 
-	Defer defer([&rsp, &req]() {
-		rsp.set_fromuid(req.fromuid());
-		rsp.set_touid(req.touid());
-		});
-
-	auto find_iter = _channels.find(server_ip);
-	if (find_iter == _channels.end()) {
-		return rsp;
-	}
-
-	auto stub = ChatService::NewStub(find_iter->second);
+	auto stub = ChatService::NewStub(channel);
 	ClientContext context;
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	Status status = stub->NotifyAuthFriend(&context, req, &rsp);
@@ -160,15 +187,13 @@ NotifyResult ChatGrpcClient::NotifyTextChatMsg(const std::string& server_ip, con
 	int backoff_ms = ReadDeliveryInt("RpcBackoffMs", 100);
 	if (backoff_ms < 1) backoff_ms = 100;
 
-	auto find_iter = _channels.find(server_ip);
-	if (find_iter == _channels.end()) {
+	auto channel = ResolveChannel(server_ip);
+	if (!channel) {
 		//未知 server：配置/路由缺失，参数类错误，立即停止不重试（计划5.6）
 		result.grpc_code = grpc::StatusCode::NOT_FOUND;
 		result.app_error = ErrorCodes::RPCFailed;
 		return result;
 	}
-	auto& channel = find_iter->second;
-
 	for (int attempt = 1; attempt <= max_attempts; ++attempt) {
 		//每次尝试新的 stub + ClientContext，deadline 固定 RpcDeadlineMs（计划5.6）
 		auto stub = ChatService::NewStub(channel);
@@ -215,17 +240,12 @@ NotifyResult ChatGrpcClient::NotifyTextChatMsg(const std::string& server_ip, con
 KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_ip, const KickUserReq& req)
 {
 	KickUserRsp rsp;
-	Defer defer([&rsp, &req]() {
-		rsp.set_error(ErrorCodes::Success);
-		rsp.set_uid(req.uid());
-		});
+	rsp.set_error(ErrorCodes::RPCFailed);
+	rsp.set_uid(req.uid());
+	auto channel = ResolveChannel(server_ip);
+	if (!channel) return rsp;
 
-	auto find_iter = _channels.find(server_ip);
-	if (find_iter == _channels.end()) {
-		return rsp;
-	}
-
-	auto stub = ChatService::NewStub(find_iter->second);
+	auto stub = ChatService::NewStub(channel);
 	ClientContext context;
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	Status status = stub->NotifyKickUser(&context, req, &rsp);

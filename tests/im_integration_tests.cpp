@@ -39,6 +39,7 @@ ScenarioEntry kScenarios[] = {
 	{ "cross-server",  imt::ScenarioCrossServer  },
 	{ "image-offline", imt::ScenarioImageOffline },
 	{ "status-discovery", imt::ScenarioStatusDiscovery },
+	{ "chat-failover", imt::ScenarioChatFailover },
 	{ "simple-auth",   imt::ScenarioSimpleAuth   },
 };
 
@@ -52,7 +53,7 @@ int main(int argc, char** argv) {
 		const std::string a = argv[i];
 		if (a == "--scenario" && i + 1 < argc) { scenario = argv[++i]; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|image-offline|status-discovery|simple-auth>\n");
+			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|image-offline|status-discovery|chat-failover|simple-auth>\n");
 			return 0;
 		}
 	}

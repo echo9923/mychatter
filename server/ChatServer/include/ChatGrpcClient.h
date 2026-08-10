@@ -1,18 +1,13 @@
 #pragma once
-#include "const.h"
 #include "Singleton.h"
-#include "ConfigMgr.h"
 #include <grpcpp/grpcpp.h> 
 #include "chat.grpc.pb.h"
-#include "chat.pb.h"
-#include "const.h"
-#include "data.h"
-#include <nlohmann/json.hpp>
-using json = nlohmann::json;
+#include <mutex>
+#include <unordered_map>
+
+struct UserInfo;
 
 using grpc::Channel;
-using grpc::Status;
-using grpc::ClientContext;
 
 using message::AddFriendReq;
 using message::AddFriendRsp;
@@ -20,12 +15,7 @@ using message::AddFriendRsp;
 using message::AuthFriendReq;
 using message::AuthFriendRsp;
 
-using message::ChatService;
-
 using message::TextChatMsgReq;
-using message::TextChatMsgRsp;
-using message::TextChatData;
-
 using message::KickUserReq;
 using message::KickUserRsp;
 
@@ -56,9 +46,7 @@ class ChatGrpcClient :public Singleton<ChatGrpcClient>
 	friend class Singleton<ChatGrpcClient>;
 public:
 	/// 析构函数
-	~ChatGrpcClient() {
-
-	}
+	~ChatGrpcClient() = default;
 
 	/**
 	 * @brief 通知目标ChatServer有用户收到了好友申请
@@ -108,11 +96,14 @@ public:
 	KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& req);
 
 private:
-	/// 私有构造函数，从配置文件读取PeerServer配置并建立共享gRPC通道
-	ChatGrpcClient();
+	/// 私有构造函数；目标通道在调用时从 Redis 注册表解析并缓存。
+	ChatGrpcClient() = default;
 	/// 共享gRPC通道映射表，键为目标节点的配置名，值为共享Channel
-	unordered_map<std::string, std::shared_ptr<Channel>> _channels;
+	std::shared_ptr<Channel> ResolveChannel(const std::string& server_name);
+	struct CachedChannel {
+		std::string endpoint;
+		std::shared_ptr<Channel> channel;
+	};
+	std::unordered_map<std::string, CachedChannel> _channels;
+	std::mutex _channels_mutex;
 };
-
-
-

@@ -13,14 +13,23 @@
 #include <QStandardPaths>
 
 TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_message_len(0),_bytes_sent(0),_pending(false),
+    _manual_close(false),_reconnecting(false),_disconnect_notified(false),
     _retry_timer(nullptr),_delivery_uid(0),_retry_initial_ms(2000),_retry_max_ms(30000),
     _ack_retry_initial_ms(2000),_offline_pull_timer(nullptr),_offline_pull_interval_ms(10000),_offline_pull_batch(100)
 {
     registerMetaType();
     QObject::connect(&_socket, &QTcpSocket::connected, this, [&]() {
            qDebug() << "Connected to server!";
-           // 连接建立后发送消息
-            emit sig_con_success(true);
+           _disconnect_notified = false;
+           if (_reconnecting) {
+               QJsonObject json_obj;
+               json_obj["uid"] = _server_info->_uid;
+               json_obj["token"] = _server_info->_token;
+               slot_send_data(ID_CHAT_LOGIN,
+                              QJsonDocument(json_obj).toJson(QJsonDocument::Compact));
+               return;
+           }
+           emit sig_con_success(true);
        });
 
        QObject::connect(&_socket, &QTcpSocket::readyRead, this, [&]() {
@@ -73,6 +82,13 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
                             this,
                             [&](QTcpSocket::SocketError socketError) {
                qDebug() << "Error:" << _socket.errorString() ;
+               if (_reconnecting) {
+                   finishReconnectFailure();
+                   return;
+               }
+               if (_manual_close || _disconnect_notified) {
+                   return;
+               }
                switch (socketError) {
                    case QTcpSocket::ConnectionRefusedError:
                        qDebug() << "Connection Refused!";
@@ -109,8 +125,17 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
             if (_offline_pull_timer) {
                 _offline_pull_timer->stop();
             }
-            //并且发送通知到界面
-            emit sig_connection_closed();
+            if (_manual_close) {
+                return;
+            }
+            if (_reconnecting) {
+                finishReconnectFailure();
+                return;
+            }
+            if (!_disconnect_notified) {
+                _disconnect_notified = true;
+                emit sig_connection_closed();
+            }
         });
         //连接发送信号用来发送数据
         QObject::connect(this, &TcpMgr::sig_send_data, this, &TcpMgr::slot_send_data);
@@ -147,6 +172,7 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
 
         //关闭socket
         connect(this, &TcpMgr::sig_close, this, &TcpMgr::slot_tcp_close);
+        connect(this, &TcpMgr::sig_reconnect_chat, this, &TcpMgr::slot_reconnect_chat);
         //可靠重传信号连接（公有 API → TCP 线程 slot）
         connect(this, &TcpMgr::sig_send_reliable_chat, this, &TcpMgr::slot_send_reliable_chat);
         //§6.2：StartPendingReplay 公有 API → TCP 线程 slot（GUI thread models 建好后执行）
@@ -212,6 +238,11 @@ void TcpMgr::CloseConnection(){
     emit sig_close();
 }
 
+void TcpMgr::ReconnectChat(const QString& host, quint16 port)
+{
+    emit sig_reconnect_chat(host, port);
+}
+
 void TcpMgr::SendData(ReqId reqId, QByteArray data)
 {
     emit sig_send_data(reqId, data);
@@ -250,12 +281,20 @@ void TcpMgr::initHandlers()
     _handlers.insert(ID_CHAT_LOGIN_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
         qDebug()<< "handle id is "<< id ;
+        auto report_login_failure = [this](int error) {
+            if (_reconnecting) {
+                finishReconnectFailure();
+                return;
+            }
+            emit sig_login_failed(error);
+        };
         // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
         // 检查转换是否成功
-        if(jsonDoc.isNull()){
+        if(jsonDoc.isNull() || !jsonDoc.isObject()){
            qDebug() << "Failed to create QJsonDocument.";
+           report_login_failure(ErrorCodes::ERR_JSON);
            return;
         }
 
@@ -265,18 +304,33 @@ void TcpMgr::initHandlers()
         if(!jsonObj.contains("error")){
             int err = ErrorCodes::ERR_JSON;
             qDebug() << "Login Failed, err is Json Parse Err" << err ;
-            emit sig_login_failed(err);
+            report_login_failure(err);
             return;
         }
 
         int err = jsonObj["error"].toInt();
         if(err != ErrorCodes::SUCCESS){
             qDebug() << "Login Failed, err is " << err ;
-            emit sig_login_failed(err);
+            report_login_failure(err);
             return;
         }
         
         auto uid = jsonObj["uid"].toInt();
+        if (_reconnecting) {
+            if (!_server_info || uid != _server_info->_uid) {
+                report_login_failure(ErrorCodes::ERR_JSON);
+                return;
+            }
+
+            _reconnecting = false;
+            _manual_close = false;
+            _disconnect_notified = false;
+            StartPendingReplay();
+            StartOfflinePull();
+            emit sig_reconnect_finished(true);
+            return;
+        }
+
         auto name = jsonObj["name"].toString();
         auto nick = jsonObj["nick"].toString();
         auto icon = jsonObj["icon"].toString();
@@ -1150,19 +1204,65 @@ void TcpMgr::handleMsg(ReqId id, int len, QByteArray data)
    find_iter.value()(id,len,data);
 }
 
+void TcpMgr::finishReconnectFailure()
+{
+    if (!_reconnecting) {
+        return;
+    }
+
+    _reconnecting = false;
+    _manual_close = true;
+    _socket.abort();
+    emit sig_reconnect_finished(false);
+}
+
 void TcpMgr::slot_tcp_close() {
+    _manual_close = true;
+    _reconnecting = false;
     _socket.close();
 }
 
 void TcpMgr::slot_tcp_connect(std::shared_ptr<ServerInfo> si)
 {
     qDebug()<< "receive tcp connect signal";
+    _manual_close = false;
+    _reconnecting = false;
+    _disconnect_notified = false;
     // 3.2 保存 ServerInfo，Chat 认证成功后传给 FileTcpMgr 连接 Resource
     _server_info = si;
     // 尝试连接到服务器
     qDebug() << "Connecting to chat server...";
     _host = si->_chat_host;
     _port = static_cast<uint16_t>(si->_chat_port.toUInt());
+    _socket.connectToHost(_host, _port);
+}
+
+void TcpMgr::slot_reconnect_chat(QString host, quint16 port)
+{
+    if (!_server_info || host.isEmpty() || port == 0 ||
+        _socket.state() != QAbstractSocket::UnconnectedState) {
+        emit sig_reconnect_finished(false);
+        return;
+    }
+
+    _server_info->_chat_host = host;
+    _server_info->_chat_port = QString::number(port);
+    _host = host;
+    _port = port;
+
+    _buffer.clear();
+    _b_recv_pending = false;
+    _message_id = 0;
+    _message_len = 0;
+    _send_queue.clear();
+    _current_block.clear();
+    _bytes_sent = 0;
+    _pending = false;
+
+    _manual_close = false;
+    _disconnect_notified = false;
+    _reconnecting = true;
+    qDebug() << "Reconnecting to chat server" << host << port;
     _socket.connectToHost(_host, _port);
 }
 

@@ -76,12 +76,8 @@ private:
 // ---- INI generators (mirror production layout, retargeted to test ports) ---
 std::string MakeStatusIni();
 std::string MakeChatIni(const std::string& self_name, unsigned short tcp_port,
-                        unsigned short rpc_port, int logic_workers);
-std::string MakeChatIniPeer(const std::string& self_name, unsigned short tcp_port,
-                            unsigned short rpc_port, int logic_workers,
-                            const std::string& peer_name,
-                            unsigned short peer_tcp_port,
-                            unsigned short peer_rpc_port);
+                        unsigned short rpc_port, int logic_workers,
+                        unsigned short advertised_rpc_port = 0);
 std::string MakeGateIni();
 std::string MakeResourceIni();
 

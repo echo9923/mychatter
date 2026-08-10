@@ -2,10 +2,13 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include "logindialog.h"
-#include "registerdialog.h"
-#include "resetdialog.h"
-#include "chatdialog.h"
+#include "global.h"
+
+class ChatDialog;
+class LoginDialog;
+class QTimer;
+class RegisterDialog;
+class ResetDialog;
 /******************************************************************************
  *
  * @file       mainwindow.h
@@ -42,15 +45,27 @@ public slots:
     void SlotOffline();
     void SlotExcepConOffline();
     void SlotResServerConOffline();
+    void SlotReconnectHttpFinish(ReqId id, QString res, ErrorCodes err);
+    void SlotReconnectFinished(bool success);
 
 private:
     void offlineLogin();
+    void scheduleReconnectAttempt();
+    void attemptReconnect();
+    void failReconnectAttempt();
+    void finishReconnectExhausted();
+    void cancelReconnect();
     Ui::MainWindow *ui;
     LoginDialog* _login_dlg;
     RegisterDialog* _reg_dlg;
     ResetDialog* _reset_dlg;
     ChatDialog* _chat_dlg;
     UIStatus _ui_status;
+    QTimer* _reconnect_timer;
+    int _reconnect_attempt;
+    bool _reconnect_in_progress;
+    bool _reconnect_http_pending;
+    bool _reconnect_tcp_pending;
 };
 
 #endif // MAINWINDOW_H

@@ -9,6 +9,7 @@ service StatusService {
 
 message GetChatServerReq {
   int32 uid = 1;
+  string token = 2;
 }
 
 message GetChatServerRsp {

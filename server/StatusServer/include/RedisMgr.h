@@ -2,6 +2,7 @@
 #include "const.h"
 #include <hiredis/hiredis.h>
 #include <queue>
+#include <unordered_map>
 #include <vector>
 #include <atomic>
 #include <mutex>

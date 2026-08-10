@@ -3,19 +3,16 @@
 
 #include <iostream>
 #include <cstdlib>
-#include <chrono>
-#include <thread>
+#include <csignal>
 #include <string>
-#include "const.h"
 #include "ConfigMgr.h"
-#include <hiredis/hiredis.h>
 #include "RedisMgr.h"
 #include <memory>
 #include <thread>
 #include <boost/asio.hpp>
 #include "StatusServiceImpl.h"
 
-bool RunServer() {
+void RunServer() {
 	// 获取全局配置管理器的单例实例（ConfigMgr::Inst() 返回静态单例引用）
 	// 配置文件（如 config.ini）中的各项配置均通过该单例以 cfg[段名][键名] 的方式读取
 	auto& cfg = ConfigMgr::Inst();
@@ -50,7 +47,7 @@ bool RunServer() {
 	// 设置异步等待SIGINT信号
 	// async_wait 注册一个异步回调：当收到 SIGINT/SIGTERM 信号时由 io_context 触发该回调
 	// 注意通过引用捕获 server 与 io_context，回调执行时它们必须仍然有效（RunServer 作用域内成立）
-	signals.async_wait([&server, &io_context](const boost::system::error_code& error, int signal_number) {
+	signals.async_wait([&server, &io_context](const boost::system::error_code& error, int) {
 		// error 为空表示信号正常触发；若发生错误则不做处理
 		if (!error) {
 			std::cout << "Shutting down server..." << std::endl;
@@ -67,17 +64,12 @@ bool RunServer() {
 	// 等待服务器关闭
 	// Wait() 会阻塞当前（主）线程，直到 Shutdown() 被调用且所有 RPC 处理完毕、服务器完全退出
 	server->Wait();
-	// 服务器正常退出后返回 true，由 main 判断是否需要清理资源
-	return true;
 }
 
-int main(int argc, char** argv) {
+int main() {
 	try {
-		bool ok = RunServer();
+		RunServer();
 		RedisMgr::GetInstance()->Close();
-		if (!ok) {
-			return EXIT_FAILURE;
-		}
 	}
 	catch (std::exception const& e) {
 		std::cerr << "Error: " << e.what() << std::endl;

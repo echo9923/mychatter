@@ -27,6 +27,11 @@ public:
 	bool Get(const std::string& key, std::string& value);
 	bool Del(const std::string& key);
 	bool Exists(const std::string& key, bool& out);
+	bool HSet(const std::string& key, const std::string& field,
+	          const std::string& value);
+	bool HGet(const std::string& key, const std::string& field,
+	          std::string& value);
+	bool HDel(const std::string& key, const std::string& field);
 
 	// Inspect offline_msg:<uid>: members of the pending ZSET (sorted by score).
 	bool ZRange(const std::string& key, std::vector<std::string>& members);

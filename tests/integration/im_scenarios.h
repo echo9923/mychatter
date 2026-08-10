@@ -25,6 +25,7 @@ bool ScenarioImageOffline();// image-offline: sharded upload, UN_UPLOAD exclusio
 
 // --- Plan 3.1: StatusServer lease-based least-loaded discovery ---
 bool ScenarioStatusDiscovery();// status-discovery: lease selection, rotation, NoAvailableChatServer
+bool ScenarioChatFailover();   // chat-failover: token-preserving reassignment and pending recovery
 
 // --- Simple token auth: shared utoken_<uid> for Chat + Resource ---
 bool ScenarioSimpleAuth();    // simple-auth: forged/valid token on Chat+Resource, secret-field hygiene, rotation

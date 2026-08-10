@@ -23,7 +23,7 @@ public:
 	}
 	/// Request a chat server assignment plus a login token (plain gRPC).
 	/// @param uid  user id
-	GetChatServerRsp GetChatServer(int uid);
+	GetChatServerRsp GetChatServer(int uid, const std::string& token = {});
 private:
 	StatusGrpcClient();
 	std::shared_ptr<Channel> channel_;

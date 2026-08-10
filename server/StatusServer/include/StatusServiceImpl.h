@@ -1,50 +1,30 @@
 #pragma once
+
+#include <atomic>
+#include <cstddef>
+#include <string>
 #include <grpcpp/grpcpp.h>
 #include "status.grpc.pb.h"
-#include <atomic>
-#include <mutex>
-#include <vector>
 
-using grpc::Server;
-using grpc::ServerBuilder;
 using grpc::ServerContext;
 using grpc::Status;
 using message::GetChatServerReq;
 using message::GetChatServerRsp;
 using message::StatusService;
 
-class  ChatServer {
+class ChatServer {
 public:
-	ChatServer():host(""),port(""),name(""),con_count(0){}
-	ChatServer(const ChatServer& cs):host(cs.host), port(cs.port), name(cs.name), con_count(cs.con_count){}
-	ChatServer& operator=(const ChatServer& cs) {
-		if (&cs == this) {
-			return *this;
-		}
-
-		host = cs.host;
-		name = cs.name;
-		port = cs.port;
-		con_count = cs.con_count;
-		return *this;
-	}
 	std::string host;
 	std::string port;
 	std::string name;
-	int con_count;
 };
-class StatusServiceImpl final : public StatusService::Service
-{
+
+class StatusServiceImpl final : public StatusService::Service {
 public:
-	StatusServiceImpl();
 	Status GetChatServer(ServerContext* context, const GetChatServerReq* request,
 		GetChatServerRsp* reply) override;
+
 private:
 	ChatServer getChatServer();
-	std::unordered_map<std::string, ChatServer> _servers;
-	std::vector<std::string> _server_order;  // 配置中 ChatServer 名称的出现顺序
-	std::atomic<size_t> _rr{0};              // 同负载候选轮转起点，避免配置首项长期占优
-	std::mutex _server_mtx;
-
+	std::atomic<std::size_t> _rr{0};
 };
-

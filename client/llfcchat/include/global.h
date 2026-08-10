@@ -90,7 +90,8 @@ enum ReqId{
     ID_PULL_OFFLINE_MSG_REQ       =  1051,    //拉取离线消息请求
     ID_PULL_OFFLINE_MSG_RSP       =  1052,    //拉取离线消息回复
     ID_RESOURCE_LOGIN_REQ         =  1053,    //资源服务器登录请求
-    ID_RESOURCE_LOGIN_RSP         =  1054     //资源服务器登录回复
+    ID_RESOURCE_LOGIN_RSP         =  1054,    //资源服务器登录回复
+    ID_REASSIGN_CHAT              =  1055     //复用当前 token 获取新的 ChatServer
 };
 Q_DECLARE_METATYPE(ReqId)
 
@@ -109,6 +110,7 @@ enum Modules{
     REGISTERMOD = 0,
     RESETMOD = 1,
     LOGINMOD = 2,
+    RECONNECTMOD = 3,
 };
 
 enum TipErr{

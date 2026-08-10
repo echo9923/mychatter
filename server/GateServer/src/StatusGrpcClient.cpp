@@ -1,12 +1,13 @@
 #include "StatusGrpcClient.h"
 
-GetChatServerRsp StatusGrpcClient::GetChatServer(int uid)
+GetChatServerRsp StatusGrpcClient::GetChatServer(int uid, const std::string& token)
 {
 	ClientContext context;
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
 	GetChatServerRsp reply;
 	GetChatServerReq request;
 	request.set_uid(uid);
+	request.set_token(token);
 	auto stub = StatusService::NewStub(channel_);
 	Status status = stub->GetChatServer(&context, request, &reply);
 	if (status.ok()) {
