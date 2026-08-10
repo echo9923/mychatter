@@ -15,8 +15,15 @@
 - [const.h](file://server/ResourceServer/include/const.h)
 - [MysqlMgr.h](file://server/ResourceServer/include/MysqlMgr.h)
 - [RedisMgr.h](file://server/ResourceServer/include/RedisMgr.h)
+- [RedisMgr.cpp](file://server/ResourceServer/src/RedisMgr.cpp)
 - [config.ini](file://server/ResourceServer/config/config.ini)
 </cite>
+
+## 更新摘要
+**所做更改**
+- 更新了Redis缓存管理部分，反映SetExp方法已采用新的SET ... EX语法
+- 增强了Redis命令一致性说明，确保与其他服务保持统一
+- 更新了Redis操作性能优化相关内容
 
 ## 目录
 1. [简介](#简介)
@@ -64,7 +71,7 @@ LogicWorker --> ConfigMgr["ConfigMgr<br/>配置文件读取"]
 - [LogicWorker.cpp:1-742](file://server/ResourceServer/src/LogicWorker.cpp#L1-L742)
 - [FileSystem.cpp:1-29](file://server/ResourceServer/src/FileSystem.cpp#L1-L29)
 - [FileWorker.cpp:1-660](file://server/ResourceServer/src/FileWorker.cpp#L1-L660)
-- [RedisMgr.h:1-313](file://server/ResourceServer/include/RedisMgr.h#L1-L313)
+- [RedisMgr.h:1-63](file://server/ResourceServer/include/RedisMgr.h#L1-L63)
 - [MysqlMgr.h:1-44](file://server/ResourceServer/include/MysqlMgr.h#L1-L44)
 
 **章节来源**
@@ -72,7 +79,7 @@ LogicWorker --> ConfigMgr["ConfigMgr<br/>配置文件读取"]
 - [LogicWorker.cpp:1-742](file://server/ResourceServer/src/LogicWorker.cpp#L1-L742)
 - [FileSystem.cpp:1-29](file://server/ResourceServer/src/FileSystem.cpp#L1-L29)
 - [FileWorker.cpp:1-660](file://server/ResourceServer/src/FileWorker.cpp#L1-L660)
-- [RedisMgr.h:1-313](file://server/ResourceServer/include/RedisMgr.h#L1-L313)
+- [RedisMgr.h:1-63](file://server/ResourceServer/include/RedisMgr.h#L1-L63)
 - [MysqlMgr.h:1-44](file://server/ResourceServer/include/MysqlMgr.h#L1-L44)
 
 ## 核心组件
@@ -93,7 +100,7 @@ LogicWorker --> ConfigMgr["ConfigMgr<br/>配置文件读取"]
 - [FileWorker.h:1-91](file://server/ResourceServer/include/FileWorker.h#L1-L91)
 - [FileWorker.cpp:1-660](file://server/ResourceServer/src/FileWorker.cpp#L1-L660)
 - [FileInfo.h:1-26](file://server/ResourceServer/include/FileInfo.h#L1-L26)
-- [RedisMgr.h:1-313](file://server/ResourceServer/include/RedisMgr.h#L1-L313)
+- [RedisMgr.h:1-63](file://server/ResourceServer/include/RedisMgr.h#L1-L63)
 - [MysqlMgr.h:1-44](file://server/ResourceServer/include/MysqlMgr.h#L1-L44)
 
 ## 架构总览
@@ -129,7 +136,7 @@ Logic-->>Client : "响应ID_UPLOAD_FILE_RSP / ID_DOWN_LOAD_FILE_RSP"
 - [LogicWorker.cpp:1-742](file://server/ResourceServer/src/LogicWorker.cpp#L1-L742)
 - [FileSystem.cpp:1-29](file://server/ResourceServer/src/FileSystem.cpp#L1-L29)
 - [FileWorker.cpp:1-660](file://server/ResourceServer/src/FileWorker.cpp#L1-L660)
-- [RedisMgr.h:1-313](file://server/ResourceServer/include/RedisMgr.h#L1-L313)
+- [RedisMgr.h:1-63](file://server/ResourceServer/include/RedisMgr.h#L1-L63)
 - [MysqlMgr.h:1-44](file://server/ResourceServer/include/MysqlMgr.h#L1-L44)
 
 ## 详细组件分析
@@ -200,7 +207,7 @@ ErrSeq --> End
 
 **图示来源** 
 - [FileWorker.cpp:1-660](file://server/ResourceServer/src/FileWorker.cpp#L1-L660)
-- [RedisMgr.h:1-313](file://server/ResourceServer/include/RedisMgr.h#L1-L313)
+- [RedisMgr.h:1-63](file://server/ResourceServer/include/RedisMgr.h#L1-L63)
 
 **章节来源**
 - [FileWorker.h:1-91](file://server/ResourceServer/include/FileWorker.h#L1-L91)
@@ -265,7 +272,7 @@ Logic-->>Client : "ID_IMG_CHAT_CONTINUE_UPLOAD_RSP"
 **图示来源** 
 - [LogicWorker.cpp:1-742](file://server/ResourceServer/src/LogicWorker.cpp#L1-L742)
 - [FileWorker.cpp:1-660](file://server/ResourceServer/src/FileWorker.cpp#L1-L660)
-- [RedisMgr.h:1-313](file://server/ResourceServer/include/RedisMgr.h#L1-L313)
+- [RedisMgr.h:1-63](file://server/ResourceServer/include/RedisMgr.h#L1-L63)
 - [MysqlMgr.h:1-44](file://server/ResourceServer/include/MysqlMgr.h#L1-L44)
 
 **章节来源**
@@ -277,6 +284,31 @@ Logic-->>Client : "ID_IMG_CHAT_CONTINUE_UPLOAD_RSP"
 
 **章节来源**
 - [CSession.h:1-64](file://server/ResourceServer/include/CSession.h#L1-L64)
+
+### Redis缓存管理
+- **更新** SetExp方法已采用新的`SET ... EX`语法，替代已废弃的SETEX命令
+- 原子性操作：使用Redis原子的SET命令配合EX选项设置过期时间，提高性能和可靠性
+- 与其他服务保持一致：ChatServer、StatusServer等服务均采用相同的SET ... EX语法
+- 主要用途：
+  - 文件上传进度缓存（3600秒过期）
+  - 文件下载进度缓存（3600秒过期）
+  - 用户令牌验证缓存
+  - 分布式锁实现
+
+```mermaid
+flowchart LR
+A["SetExp方法"] --> B["SET key value EX seconds"]
+B --> C["原子性设置值与过期时间"]
+C --> D["提高Redis操作性能"]
+D --> E["与其他服务保持一致"]
+```
+
+**图示来源** 
+- [RedisMgr.cpp:83-113](file://server/ResourceServer/src/RedisMgr.cpp#L83-L113)
+
+**章节来源**
+- [RedisMgr.h:1-63](file://server/ResourceServer/include/RedisMgr.h#L1-L63)
+- [RedisMgr.cpp:83-113](file://server/ResourceServer/src/RedisMgr.cpp#L83-L113)
 
 ### 配置与常量
 - config.ini：服务端口、MySQL/Redis连接、输出路径、静态资源路径、ChatServer gRPC地址
@@ -325,10 +357,9 @@ CSession --> LogicWorker
 - 并发模型：每个Worker独立线程，避免阻塞；任务队列缓冲突发流量
 - I/O优化：大文件分块传输（MAX_FILE_LEN=32KB），减少内存占用与网络拥塞
 - 缓存策略：Redis存储下载进度与文件元数据，降低重复计算与磁盘I/O
+- **Redis优化**：使用原子性的SET ... EX命令替代传统的SETEX命令，提升Redis操作性能
 - 负载均衡：按文件名哈希选择Worker，保证同一文件顺序处理，不同文件并行
 - 连接池：Redis连接池自动检测与重连，提升稳定性
-
-[本节为通用指导，不直接分析具体文件]
 
 ## 故障排查指南
 - 常见错误码：
@@ -342,17 +373,16 @@ CSession --> LogicWorker
   - 检查config.ini中MySQL/Redis配置是否正确
   - 确认文件路径是否存在且可写
   - 验证客户端传递的seq与服务器端Redis中的进度一致
-  - 查看日志输出（如“无法打开文件”、“文件不存在”等）
+  - 查看日志输出（如"无法打开文件"、"文件不存在"等）
   - 对于头像上传，确认token有效且匹配uid
+  - **Redis问题排查**：检查SET ... EX命令执行日志，确认Redis版本支持该语法
 
 **章节来源**
 - [const.h:1-117](file://server/ResourceServer/include/const.h#L1-L117)
 - [FileWorker.cpp:1-660](file://server/ResourceServer/src/FileWorker.cpp#L1-L660)
 
 ## 结论
-ResourceServer通过清晰的层次划分与异步Worker机制，实现了高效、可靠的文件上传下载与断点续传。结合Redis与MySQL的状态管理，确保了进度一致性与系统健壮性。未来可进一步扩展云存储后端与病毒扫描等安全能力。
-
-[本节为总结，不直接分析具体文件]
+ResourceServer通过清晰的层次划分与异步Worker机制，实现了高效、可靠的文件上传下载与断点续传。结合Redis与MySQL的状态管理，确保了进度一致性与系统健壮性。**最新的Redis操作优化**采用原子性的SET ... EX语法，进一步提升了缓存操作的可靠性和性能，同时保持了与其他服务的一致性。未来可进一步扩展云存储后端与病毒扫描等安全能力。
 
 ## 附录
 - 文件传输协议要点：
@@ -362,5 +392,6 @@ ResourceServer通过清晰的层次划分与异步Worker机制，实现了高效
   - 上传/下载完成后通过回调返回JSON结果，包含error、seq、name、total_size、current_size、is_last等
 - 异常处理：
   - 所有异常均转换为标准错误码，确保客户端可统一处理
-
-[本节为补充说明，不直接分析具体文件]
+- **Redis命令规范**：
+  - 使用SET key value EX seconds语法设置带过期时间的键值对
+  - 替代已废弃的SETEX命令，提供更好的性能和兼容性

@@ -5,6 +5,7 @@
 - [chat.proto](file://proto/chat_service/chat.proto)
 - [status.proto](file://proto/status_service/status.proto)
 - [verify.proto](file://proto/verify_service/verify.proto)
+- [message.proto (VarifyServer)](file://server/VarifyServer/message.proto)
 - [ChatServiceImpl.h](file://server/ChatServer/include/ChatServiceImpl.h)
 - [ChatServiceImpl.cpp](file://server/ChatServer/src/ChatServiceImpl.cpp)
 - [StatusServiceImpl.h](file://server/StatusServer/include/StatusServiceImpl.h)
@@ -18,10 +19,11 @@
 
 ## 更新摘要
 **变更内容**   
-- 移除了StatusService中的Login RPC及相关消息类型(LoginReq, LoginRsp)
-- 更新了StatusService接口说明，仅保留GetChatServer方法
-- 修正了架构流程图和依赖关系图
-- 更新了错误处理机制说明
+- **重大简化**：移除了StatusService中的Login RPC及相关消息类型(LoginReq, LoginRsp)
+- **接口简化**：GetChatServer请求从复杂的票据签发简化为简单的token生成和存储
+- **移除复杂逻辑**：删除了TicketIntent枚举、session_token_sha256参数和复杂的票据验证流程
+- **统一认证机制**：采用统一的utoken_<uid>令牌机制，TTL为86400秒（24小时）
+- **客户端调用简化**：GateServer调用StatusGrpcClient.GetChatServer()仅需要uid参数
 
 ## 目录
 1. [简介](#简介)
@@ -41,8 +43,10 @@
 ## 简介
 本文件为LLFCChat系统的gRPC接口设计文档，覆盖以下服务：
 - ChatService：聊天服务器间消息通知、好友申请与认证、文本与图片消息推送、踢人等。
-- StatusService：会话路由与票据分发（分配ChatServer地址与一次性票据）。
-- VerifyService（VarifyService）：验证码派发（Node.js实现），供GateServer调用。
+- StatusService：会话路由与登录令牌分发（分配ChatServer地址与一次性登录令牌）。
+- VarifyService（VarifyServer）：验证码派发（Node.js实现），供GateServer调用。
+
+**重要更新**：系统已简化认证流程，移除了复杂的票据签发机制，采用统一的utoken令牌系统进行身份验证。
 
 文档包含：
 - Protocol Buffers消息定义与服务接口规范
@@ -57,6 +61,7 @@ Proto文件位于proto目录下，按服务划分：
 - chat_service/chat.proto：ChatService接口与消息
 - status_service/status.proto：StatusService接口与消息
 - verify_service/verify.proto：VarifyService接口与消息
+- server/VarifyServer/message.proto：VarifyServer的额外消息定义
 
 各服务的C++实现位于server子目录中，包含服务实现类与客户端Stub封装（连接池、单例等）。
 
@@ -66,6 +71,7 @@ subgraph "Proto定义"
 P1["chat.proto"]
 P2["status.proto"]
 P3["verify.proto"]
+P4["message.proto<br/>(VarifyServer)"]
 end
 subgraph "服务端"
 S1["ChatServiceImpl<br/>ChatServer"]
@@ -80,15 +86,17 @@ end
 P1 --> S1
 P2 --> S2
 P3 --> S3
+P4 --> S3
 C1 --> S2
 C2 --> S3
 C3 --> S1
 ```
 
-图表来源
+**图表来源**
 - [chat.proto:1-105](file://proto/chat_service/chat.proto#L1-L105)
-- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
+- [status.proto:1-22](file://proto/status_service/status.proto#L1-L22)
 - [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
+- [message.proto:1-44](file://server/VarifyServer/message.proto#L1-L44)
 - [ChatServiceImpl.h:1-55](file://server/ChatServer/include/ChatServiceImpl.h#L1-L55)
 - [StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
 - [VerifyGrpcClient.h:1-113](file://server/GateServer/include/VerifyGrpcClient.h#L1-L113)
@@ -97,25 +105,31 @@ C3 --> S1
 
 章节来源
 - [chat.proto:1-105](file://proto/chat_service/chat.proto#L1-L105)
-- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
+- [status.proto:1-22](file://proto/status_service/status.proto#L1-L22)
 - [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
+- [message.proto:1-44](file://server/VarifyServer/message.proto#L1-L44)
 
 ## 核心组件
 - ChatService：提供好友申请通知、好友认证通知、文本聊天消息推送、踢人通知、图片消息通知等RPC方法。
-- StatusService：提供获取ChatServer地址与一次性票据的RPC方法。
+- StatusService：提供获取ChatServer地址与登录令牌的RPC方法，采用简化的utoken机制。
 - VarifyService：提供获取验证码的RPC方法（Node.js实现）。
+
+**更新**：StatusService已从复杂的票据签发系统简化为简单的token生成和存储机制。
 
 章节来源
 - [chat.proto:1-105](file://proto/chat_service/chat.proto#L1-L105)
-- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
+- [status.proto:1-22](file://proto/status_service/status.proto#L1-L22)
 - [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
 
 ## 架构总览
-系统采用多服务协作：
-- GateServer作为入口，调用StatusService获取ChatServer路由信息，调用VarifyService发送验证码。
+系统采用多服务协作，认证流程已大幅简化：
+- GateServer作为入口，调用StatusService获取ChatServer路由信息和登录令牌。
 - ChatServer负责在线用户会话转发与消息广播。
 - ResourceServer负责资源上传下载，并通过ChatService向ChatServer推送图片消息通知。
-- StatusServer维护ChatServer列表与一次性票据生命周期管理。
+- StatusServer维护ChatServer列表与登录令牌生命周期管理。
+- VarifyServer提供验证码服务。
+
+**更新**：移除了复杂的TicketIntent和session_token_sha256验证流程，采用统一的utoken令牌机制。
 
 ```mermaid
 sequenceDiagram
@@ -126,22 +140,22 @@ participant Chat as "ChatServer"
 participant Res as "ResourceServer"
 participant Verify as "VarifyServer(Node.js)"
 Client->>Gate : "HTTP登录/注册请求"
-Gate->>Status : "GetChatServer(uid, intent, session_token_sha256)"
-Status-->>Gate : "{server_name, host, port, chat_ticket}"
+Gate->>Status : "GetChatServer(uid)"
+Status-->>Gate : "{server_name, host, port, token}"
 Gate->>Verify : "GetVarifyCode(email)"
 Verify-->>Gate : "{error, email, code}"
 Gate-->>Client : "返回验证码/下一步流程"
-Client->>Gate : "携带ticket连接ChatServer"
+Client->>Chat : "携带token连接ChatServer"
 Res->>Chat : "NotifyChatImgMsg(...)"
 Chat-->>Res : "NotifyChatImgRsp(...)"
 ```
 
-图表来源
-- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
+**图表来源**
+- [status.proto:1-22](file://proto/status_service/status.proto#L1-L22)
 - [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
 - [chat.proto:1-105](file://proto/chat_service/chat.proto#L1-L105)
-- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
-- [StatusGrpcClient.cpp:27-48](file://server/GateServer/src/StatusGrpcClient.cpp#L27-L48)
+- [StatusServiceImpl.cpp:17-42](file://server/StatusServer/src/StatusServiceImpl.cpp#L17-L42)
+- [StatusGrpcClient.cpp:3-19](file://server/GateServer/src/StatusGrpcClient.cpp#L3-L19)
 - [ChatServiceImpl.cpp:105-139](file://server/ChatServer/src/ChatServiceImpl.cpp#L105-L139)
 
 ## 详细组件分析
@@ -248,7 +262,7 @@ ChatService --> NotifyChatImgReq : "接收"
 ChatService --> NotifyChatImgRsp : "返回"
 ```
 
-图表来源
+**图表来源**
 - [chat.proto:1-105](file://proto/chat_service/chat.proto#L1-L105)
 - [ChatServiceImpl.h:1-55](file://server/ChatServer/include/ChatServiceImpl.h#L1-L55)
 
@@ -260,39 +274,42 @@ ChatService --> NotifyChatImgRsp : "返回"
 - [ChatServiceImpl.cpp:105-139](file://server/ChatServer/src/ChatServiceImpl.cpp#L105-L139)
 - [ChatServiceImpl.cpp:187-200](file://server/ChatServer/src/ChatServiceImpl.cpp#L187-L200)
 
-### StatusService接口与消息
+### StatusService接口与消息（已简化）
 - 服务方法
-  - GetChatServer：根据uid分配ChatServer地址与一次性票据
+  - GetChatServer：根据uid分配ChatServer地址与登录令牌
 
 - 关键消息字段说明
-  - GetChatServerReq/GetChatServerRsp：uid、intent（INITIAL/RESUME）、session_token_sha256；响应含error、server_name、host、port、chat_ticket
-  - TicketIntent枚举：INITIAL=0（密码验证后的首次登录）、RESUME=1（持有效session token的恢复登录）
+  - GetChatServerReq：仅包含uid字段
+  - GetChatServerRsp：error、server_name、host、port、token（登录令牌）
 
 - 业务逻辑要点
-  - 生成唯一票据UUID并写入Redis（键前缀CHAT_TICKET_PREFIX+ticket_uuid，60秒TTL）
-  - RESUME模式下嵌入session_token_sha256供ChatServer比对
+  - 生成唯一字符串作为登录令牌
+  - 将令牌写入Redis，键名为`utoken_<uid>`，TTL为86400秒（24小时）
   - 基于最少负载算法选择ChatServer节点
+  - **已移除**：TicketIntent枚举、session_token_sha256参数、复杂的票据验证流程
+
+**更新**：接口已大幅简化，移除了复杂的票据签发机制，采用统一的utoken令牌系统。
 
 ```mermaid
 flowchart TD
-Start(["开始"]) --> Req["接收 GetChatServerReq(uid, intent, session_token_sha256)"]
+Start(["开始"]) --> Req["接收 GetChatServerReq(uid)"]
 Req --> Select["选择最少负载的ChatServer"]
-Select --> Generate["生成唯一票据UUID"]
-Generate --> Save["Redis保存票据 -> CHAT_TICKET_PREFIX:uuid"]
-Save --> Resp["返回 GetChatServerRsp(server_name, host, port, chat_ticket)"]
+Select --> Generate["生成唯一字符串令牌"]
+Generate --> Save["Redis保存令牌 -> utoken_<uid><br/>TTL: 86400秒"]
+Save --> Resp["返回 GetChatServerRsp(server_name, host, port, token)"]
 Resp --> End(["结束"])
 ```
 
-图表来源
-- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
-- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
-- [StatusServiceImpl.cpp:111-169](file://server/StatusServer/src/StatusServiceImpl.cpp#L111-L169)
+**图表来源**
+- [status.proto:1-22](file://proto/status_service/status.proto#L1-L22)
+- [StatusServiceImpl.cpp:17-42](file://server/StatusServer/src/StatusServiceImpl.cpp#L17-L42)
+- [StatusServiceImpl.cpp:73-131](file://server/StatusServer/src/StatusServiceImpl.cpp#L73-L131)
 
 章节来源
-- [status.proto:1-31](file://proto/status_service/status.proto#L1-L31)
+- [status.proto:1-22](file://proto/status_service/status.proto#L1-L22)
 - [StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
-- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
-- [StatusServiceImpl.cpp:111-169](file://server/StatusServer/src/StatusServiceImpl.cpp#L111-L169)
+- [StatusServiceImpl.cpp:17-42](file://server/StatusServer/src/StatusServiceImpl.cpp#L17-L42)
+- [StatusServiceImpl.cpp:73-131](file://server/StatusServer/src/StatusServiceImpl.cpp#L73-L131)
 
 ### VarifyService接口与消息
 - 服务方法
@@ -310,12 +327,14 @@ Resp --> End(["结束"])
 
 ## 依赖关系分析
 - GateServer依赖：
-  - StatusGrpcClient：调用StatusService获取ChatServer路由与票据
+  - StatusGrpcClient：调用StatusService获取ChatServer路由与登录令牌
   - VerifyGrpcClient：调用VarifyService派发验证码
 - ChatServer依赖：
   - 内部UserMgr、RedisMgr、MysqlMgr用于会话与用户信息管理
 - ResourceServer依赖：
   - ChatServerGrpcClient：向ChatServer推送图片消息通知
+
+**更新**：StatusGrpcClient调用已简化，仅需uid参数即可获取完整的登录信息。
 
 ```mermaid
 graph LR
@@ -324,7 +343,7 @@ Gate --> |调用| VerifySvc["VarifyService"]
 Res["ResourceServer"] --> |调用| ChatSvc["ChatService"]
 ```
 
-图表来源
+**图表来源**
 - [StatusGrpcClient.h (GateServer):1-35](file://server/GateServer/include/StatusGrpcClient.h#L1-L35)
 - [VerifyGrpcClient.h:1-113](file://server/GateServer/include/VerifyGrpcClient.h#L1-L113)
 - [ChatServerGrpcClient.h:1-93](file://server/ResourceServer/include/ChatServerGrpcClient.h#L1-L93)
@@ -346,10 +365,12 @@ Res["ResourceServer"] --> |调用| ChatSvc["ChatService"]
 - 序列化与负载
   - Proto3默认高效序列化；注意大对象（如图片元数据）仅传递必要字段
 
+**更新**：StatusGrpcClient调用已优化，减少了参数传递和网络开销。
+
 章节来源
 - [VerifyGrpcClient.h:18-78](file://server/GateServer/include/VerifyGrpcClient.h#L18-L78)
 - [StatusGrpcClient.h (GateServer):1-35](file://server/GateServer/include/StatusGrpcClient.h#L1-L35)
-- [StatusGrpcClient.cpp (GateServer):27-48](file://server/GateServer/src/StatusGrpcClient.cpp#L27-L48)
+- [StatusGrpcClient.cpp:3-19](file://server/GateServer/src/StatusGrpcClient.cpp#L3-L19)
 - [ChatServerGrpcClient.h:19-79](file://server/ResourceServer/include/ChatServerGrpcClient.h#L19-L79)
 
 ## 错误处理机制
@@ -362,6 +383,8 @@ Res["ResourceServer"] --> |调用| ChatSvc["ChatService"]
 - 典型流程
   - GateServer调用VerifyGrpcClient.GetVarifyCode，失败时设置ErrorCodes::RPCFailed
   - StatusServer.GetChatServer无可用节点时返回NoAvailableChatServer
+
+**更新**：错误处理机制保持一致，但StatusService的错误场景已简化。
 
 ```mermaid
 sequenceDiagram
@@ -379,14 +402,14 @@ C-->>G : "设置error=RPCFailed并返回"
 end
 ```
 
-图表来源
+**图表来源**
 - [VerifyGrpcClient.h:87-104](file://server/GateServer/include/VerifyGrpcClient.h#L87-L104)
-- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
+- [StatusServiceImpl.cpp:17-42](file://server/StatusServer/src/StatusServiceImpl.cpp#L17-L42)
 
 章节来源
 - [VerifyGrpcClient.h:87-104](file://server/GateServer/include/VerifyGrpcClient.h#L87-L104)
 - [ChatServiceImpl.cpp:16-47](file://server/ChatServer/src/ChatServiceImpl.cpp#L16-L47)
-- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
+- [StatusServiceImpl.cpp:17-42](file://server/StatusServer/src/StatusServiceImpl.cpp#L17-L42)
 
 ## 版本管理与向后兼容
 - 字段编号不可重用：新增字段使用新的序号，旧客户端忽略未知字段
@@ -398,6 +421,8 @@ end
   - 灰度发布：新旧版本并存，逐步切换流量
   - 客户端能力协商：通过扩展字段声明支持的能力集
 
+**更新**：本次简化是破坏性变更，需要客户端和服务端同步更新。
+
 [本节为通用指导，不直接分析具体文件]
 
 ## 客户端实现示例（C++）
@@ -405,14 +430,16 @@ end
   - 使用队列存储Stub实例，线程安全获取与归还
   - 析构时关闭连接并清空队列
 - 调用示例（以StatusGrpcClient为例）
-  - 构造Request，设置uid、intent、session_token_sha256
+  - 构造Request，仅设置uid
   - 从连接池获取Stub，调用GetChatServer
   - 成功则返回响应，失败则设置错误码并返回
 - 其他客户端（VerifyGrpcClient、ChatServerGrpcClient）结构与用法类似
 
+**更新**：StatusGrpcClient调用已大幅简化，仅需uid参数。
+
 章节来源
 - [StatusGrpcClient.h (GateServer):1-35](file://server/GateServer/include/StatusGrpcClient.h#L1-L35)
-- [StatusGrpcClient.cpp (GateServer):27-48](file://server/GateServer/src/StatusGrpcClient.cpp#L27-L48)
+- [StatusGrpcClient.cpp:3-19](file://server/GateServer/src/StatusGrpcClient.cpp#L3-L19)
 - [VerifyGrpcClient.h:18-78](file://server/GateServer/include/VerifyGrpcClient.h#L18-L78)
 - [ChatServerGrpcClient.h:19-79](file://server/ResourceServer/include/ChatServerGrpcClient.h#L19-L79)
 
@@ -421,34 +448,46 @@ end
   - 实现ChatService::Service，监听端口并提供RPC
   - 依赖Redis与MySQL进行用户信息与缓存
 - StatusServer
-  - 实现StatusService::Service，维护ChatServer列表与一次性票据
+  - 实现StatusService::Service，维护ChatServer列表与登录令牌
   - 启动时加载配置文件，解析可用ChatServer节点
+  - **更新**：不再需要复杂的票据签发逻辑，仅需简单的token生成和Redis存储
 - VarifyServer（Node.js）
   - 实现VarifyService，提供验证码派发
 - 配置与启动
   - 确保各服务配置正确（主机、端口、数据库连接）
   - 先启动StatusServer与VarifyServer，再启动ChatServer与ResourceServer
 
+**更新**：StatusServer部署更加简单，移除了复杂的票据管理逻辑。
+
 章节来源
 - [ChatServiceImpl.h:1-55](file://server/ChatServer/include/ChatServiceImpl.h#L1-L55)
 - [StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
-- [StatusServiceImpl.cpp:82-109](file://server/StatusServer/src/StatusServiceImpl.cpp#L82-L109)
+- [StatusServiceImpl.cpp:44-71](file://server/StatusServer/src/StatusServiceImpl.cpp#L44-L71)
 - [verify.proto:1-19](file://proto/verify_service/verify.proto#L1-L19)
 
 ## 故障排查
 - 常见问题
   - RPC失败：检查网络连接、端口配置、防火墙
-  - 票据无效：确认票据是否过期或不存在于Redis
+  - 令牌无效：确认令牌是否过期或不存在于Redis（utoken_<uid>键）
   - 消息未达：目标用户会话不存在，属于预期行为（直接返回OK）
+  - **更新**：登录失败时检查Redis中utoken_<uid>键是否存在且未过期
 - 定位手段
   - 查看服务日志（Redis/MySQL访问、gRPC调用）
   - 检查连接池状态与资源释放
   - 使用抓包工具验证gRPC帧
 
+**更新**：故障排查重点转向utoken令牌机制而非复杂的票据系统。
+
 章节来源
-- [StatusServiceImpl.cpp:36-80](file://server/StatusServer/src/StatusServiceImpl.cpp#L36-L80)
+- [StatusServiceImpl.cpp:17-42](file://server/StatusServer/src/StatusServiceImpl.cpp#L17-L42)
 - [ChatServiceImpl.cpp:16-47](file://server/ChatServer/src/ChatServiceImpl.cpp#L16-L47)
 - [VerifyGrpcClient.h:87-104](file://server/GateServer/include/VerifyGrpcClient.h#L87-L104)
 
 ## 结论
-本设计通过清晰的Proto定义与分层服务实现了LLFCChat的聊天、状态路由与验证码派发能力。客户端采用连接池提升性能，服务端通过Redis/MySQL保障数据一致性与可用性。建议在后续迭代中完善超时与重试策略、增强监控与告警，并遵循版本兼容原则平滑演进。
+本设计通过清晰的Proto定义与分层服务实现了LLFCChat的聊天、状态路由与验证码派发能力。**经过重大简化后**，系统移除了复杂的票据签发机制，采用统一的utoken令牌系统进行身份验证，大大降低了系统复杂性和维护成本。客户端采用连接池提升性能，服务端通过Redis/MySQL保障数据一致性与可用性。建议在后续迭代中完善超时与重试策略、增强监控与告警，并遵循版本兼容原则平滑演进。
+
+**主要改进**：
+- 简化了认证流程，移除了TicketIntent和session_token_sha256验证
+- 统一了令牌机制，采用utoken_<uid>格式，TTL为24小时
+- 降低了客户端和服务端的复杂度
+- 提高了系统的可维护性和可扩展性

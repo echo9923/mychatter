@@ -1,0 +1,7 @@
+schema_version: 1
+module_path: ""
+title: LLFCChat 分布式聊天系统（C++ 服务端 + Qt 客户端）
+scope: []
+source_files: []
+depends_on: []
+related_to: []

@@ -3,8 +3,8 @@
 <cite>
 **本文引用的文件**   
 - [server/StatusServer/config/config.ini](file://server/StatusServer/config/config.ini)
-- [server/StatusServer/include/ConfigMgr.h](file://server/StatusServer/include/ConfigMgr.h)
-- [server/StatusServer/src/ConfigMgr.cpp](file://server/StatusServer/src/ConfigMgr.cpp)
+- [server/common/include/ConfigMgr.h](file://server/common/include/ConfigMgr.h)
+- [server/common/src/ConfigMgr.cpp](file://server/common/src/ConfigMgr.cpp)
 - [server/StatusServer/src/StatusServer.cpp](file://server/StatusServer/src/StatusServer.cpp)
 - [server/StatusServer/include/RedisMgr.h](file://server/StatusServer/include/RedisMgr.h)
 - [server/StatusServer/src/RedisMgr.cpp](file://server/StatusServer/src/RedisMgr.cpp)
@@ -24,11 +24,10 @@
 
 ## 更新摘要
 **变更内容**   
-- 实现了基于lease的智能负载感知聊天服务器选择机制
-- ChatServer通过定时器定期上报认证会话数到Redis的chatserver:lease:<name>键
-- StatusServer根据实时负载信息选择认证会话数最少的健康节点
-- 使用TTL机制自动处理节点故障转移，无需额外健康检查逻辑
-- 支持同负载节点的原子计数器轮转，避免配置首项长期占优
+- 为StatusServer的RunServer函数添加了详细的中文注释，包括gRPC服务器初始化、配置管理、信号处理等实现细节
+- 增强了服务器启动流程的可读性和可维护性
+- 完善了信号处理和优雅关闭机制的文档说明
+- 更新了服务器生命周期管理的最佳实践指导
 
 ## 目录
 1. [简介](#简介)
@@ -45,7 +44,7 @@
 ## 简介
 本文件为 StatusServer 状态管理服务的配置与运维指南，围绕 config.ini 的结构与参数、MySQL/Redis 连接配置、ChatServer 通信配置、用户在线状态存储策略、心跳检测间隔、状态同步机制、高可用部署要求以及性能优化与监控调试方法进行系统化说明。读者可据此完成本地开发、测试环境搭建与生产部署配置。
 
-**重大更新** 最新的负载均衡机制完全重构，实现了基于lease的智能负载感知聊天服务器选择，移除了复杂的CHATSERVER_INFO_KEY哈希表和LOGIN_COUNT计数依赖，采用简洁高效的chatserver:lease:<name>键值方案，显著提升了资源利用率和系统性能。
+**重大更新** 最新的负载均衡机制完全重构，实现了基于lease的智能负载感知聊天服务器选择，移除了复杂的CHATSERVER_INFO_KEY哈希表和LOGIN_COUNT计数依赖，采用简洁高效的chatserver:lease:<name>键值方案，显著提升了资源利用率和系统性能。**新增** RunServer函数包含详细的中文注释，提供了完整的服务器启动、配置管理和信号处理实现细节。
 
 ## 项目结构
 StatusServer 使用 INI 配置文件进行运行时参数管理，通过 ConfigMgr 加载并解析；服务启动后基于 gRPC 对外暴露接口，同时通过 Redis 和 MySQL 提供缓存与持久化能力，并通过 gRPC 客户端与 ChatServer 交互。
@@ -53,7 +52,7 @@ StatusServer 使用 INI 配置文件进行运行时参数管理，通过 ConfigM
 ```mermaid
 graph TB
 A["config.ini"] --> B["ConfigMgr<br/>INI解析器"]
-B --> C["StatusServer<br/>gRPC服务入口"]
+B --> C["StatusServer::RunServer<br/>gRPC服务入口"]
 C --> D["RedisMgr<br/>连接池+命令封装"]
 C --> E["MysqlDao<br/>连接池+DAO封装"]
 C --> F["ChatGrpcClient<br/>gRPC客户端池"]
@@ -64,13 +63,14 @@ G --> J["chatserver:lease:<name><br/>认证会话数(TTL)"]
 G --> K["chat:ticket:<uuid><br/>一次性票据"]
 L["ChatServer定时器"] --> M["GetAuthenticatedSessionCount()"]
 M --> N["SETEX chatserver:lease:<name>"]
+O["Boost.Asio信号处理"] --> P["SIGINT/SIGTERM优雅关闭"]
 ```
 
 图示来源
 - [server/StatusServer/config/config.ini:1-23](file://server/StatusServer/config/config.ini#L1-L23)
-- [server/StatusServer/include/ConfigMgr.h:1-84](file://server/StatusServer/include/ConfigMgr.h#L1-L84)
-- [server/StatusServer/src/ConfigMgr.cpp:1-50](file://server/StatusServer/src/ConfigMgr.cpp#L1-L50)
-- [server/StatusServer/src/StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+- [server/common/include/ConfigMgr.h:1-81](file://server/common/include/ConfigMgr.h#L1-L81)
+- [server/common/src/ConfigMgr.cpp:1-51](file://server/common/src/ConfigMgr.cpp#L1-L51)
+- [server/StatusServer/src/StatusServer.cpp:18-72](file://server/StatusServer/src/StatusServer.cpp#L18-L72)
 - [server/StatusServer/include/RedisMgr.h:1-59](file://server/StatusServer/include/RedisMgr.h#L1-L59)
 - [server/StatusServer/src/RedisMgr.cpp:1-458](file://server/StatusServer/src/RedisMgr.cpp#L1-L458)
 - [server/StatusServer/include/MysqlDao.h:1-149](file://server/StatusServer/include/MysqlDao.h#L1-L149)
@@ -78,13 +78,13 @@ M --> N["SETEX chatserver:lease:<name>"]
 - [server/StatusServer/include/ChatGrpcClient.h:1-33](file://server/StatusServer/include/ChatGrpcClient.h#L1-L33)
 - [server/StatusServer/src/ChatGrpcClient.cpp:1-13](file://server/StatusServer/src/ChatGrpcClient.cpp#L1-L13)
 - [server/StatusServer/include/StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
-- [server/StatusServer/src/StatusServiceImpl.cpp:1-170](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L170)
+- [server/StatusServer/src/StatusServiceImpl.cpp:1-132](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L132)
 - [server/ChatServer/src/ChatServer.cpp:50-69](file://server/ChatServer/src/ChatServer.cpp#L50-L69)
 - [server/ChatServer/src/CServer.cpp:75-88](file://server/ChatServer/src/CServer.cpp#L75-L88)
 
 章节来源
 - [server/StatusServer/config/config.ini:1-23](file://server/StatusServer/config/config.ini#L1-L23)
-- [server/StatusServer/src/StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+- [server/StatusServer/src/StatusServer.cpp:18-72](file://server/StatusServer/src/StatusServer.cpp#L18-L72)
 
 ## 核心组件
 - 配置管理：ConfigMgr 负责读取工作目录下的 config.ini，按 section/key 组织键值对，供各模块按需获取。
@@ -93,11 +93,12 @@ M --> N["SETEX chatserver:lease:<name>"]
 - 数据层：MysqlDao 提供数据库连接池与 DAO 方法（注册、校验、更新密码等）。
 - 通信层：ChatGrpcClient 维护到 ChatServer 的 gRPC 连接池，用于状态同步与业务协作。
 - **新增** 基于lease的智能负载均衡：通过Redis的chatserver:lease:<name>键值实现轻量级负载统计和健康检查，支持实时负载感知和自动故障转移。
+- **增强** 服务器生命周期管理：RunServer函数包含完整的gRPC服务器初始化、配置管理和信号处理逻辑。
 
 章节来源
-- [server/StatusServer/include/ConfigMgr.h:1-84](file://server/StatusServer/include/ConfigMgr.h#L1-L84)
-- [server/StatusServer/src/ConfigMgr.cpp:1-50](file://server/StatusServer/src/ConfigMgr.cpp#L1-L50)
-- [server/StatusServer/src/StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+- [server/common/include/ConfigMgr.h:1-81](file://server/common/include/ConfigMgr.h#L1-L81)
+- [server/common/src/ConfigMgr.cpp:1-51](file://server/common/src/ConfigMgr.cpp#L1-L51)
+- [server/StatusServer/src/StatusServer.cpp:18-72](file://server/StatusServer/src/StatusServer.cpp#L18-L72)
 - [server/StatusServer/include/RedisMgr.h:1-59](file://server/StatusServer/include/RedisMgr.h#L1-L59)
 - [server/StatusServer/src/RedisMgr.cpp:1-458](file://server/StatusServer/src/RedisMgr.cpp#L1-L458)
 - [server/StatusServer/include/MysqlDao.h:1-149](file://server/StatusServer/include/MysqlDao.h#L1-L149)
@@ -105,7 +106,7 @@ M --> N["SETEX chatserver:lease:<name>"]
 - [server/StatusServer/include/ChatGrpcClient.h:1-33](file://server/StatusServer/include/ChatGrpcClient.h#L1-L33)
 - [server/StatusServer/src/ChatGrpcClient.cpp:1-13](file://server/StatusServer/src/ChatGrpcClient.cpp#L1-L13)
 - [server/StatusServer/include/StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
-- [server/StatusServer/src/StatusServiceImpl.cpp:1-170](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L170)
+- [server/StatusServer/src/StatusServiceImpl.cpp:1-132](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L132)
 
 ## 架构总览
 StatusServer 作为状态中心，承担以下职责：
@@ -114,6 +115,7 @@ StatusServer 作为状态中心，承担以下职责：
 - 在需要时访问 MySQL 进行用户信息持久化与校验。
 - 与 ChatServer 通过 gRPC 进行状态同步与事件通知。
 - **重大更新** 基于chatserver:lease键值的智能负载均衡和服务发现，根据实时认证会话数选择最优节点。
+- **增强** 完善的服务器生命周期管理，包括优雅的信号处理和资源清理。
 
 ```mermaid
 sequenceDiagram
@@ -142,14 +144,18 @@ Chat->>Redis : "验证票据有效性"
 Chat-->>Status : "建立连接"
 end
 Status-->>Client : "响应结果"
+Note over Status : 信号处理
+Status->>Status : "监听SIGINT/SIGTERM"
+Status->>Status : "优雅关闭服务器"
+Status->>Status : "释放所有资源"
 ```
 
 图示来源
-- [server/StatusServer/src/StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+- [server/StatusServer/src/StatusServer.cpp:18-72](file://server/StatusServer/src/StatusServer.cpp#L18-L72)
+- [server/StatusServer/src/StatusServiceImpl.cpp:17-42](file://server/StatusServer/src/StatusServiceImpl.cpp#L17-L42)
 - [server/StatusServer/src/RedisMgr.cpp:1-458](file://server/StatusServer/src/RedisMgr.cpp#L1-L458)
 - [server/StatusServer/src/MysqlDao.cpp:1-172](file://server/StatusServer/src/MysqlDao.cpp#L1-L172)
 - [server/StatusServer/include/ChatGrpcClient.h:1-33](file://server/StatusServer/include/ChatGrpcClient.h#L1-L33)
-- [server/StatusServer/src/StatusServiceImpl.cpp:1-170](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L170)
 - [server/ChatServer/src/ChatServer.cpp:50-69](file://server/ChatServer/src/ChatServer.cpp#L50-L69)
 
 ## 详细组件分析
@@ -189,16 +195,36 @@ config.ini 是 StatusServer 的唯一配置源，包含以下 section：
 - 启动时会打印所有已加载的配置项，便于排查。
 
 章节来源
-- [server/StatusServer/include/ConfigMgr.h:1-84](file://server/StatusServer/include/ConfigMgr.h#L1-L84)
-- [server/StatusServer/src/ConfigMgr.cpp:1-50](file://server/StatusServer/src/ConfigMgr.cpp#L1-L50)
+- [server/common/include/ConfigMgr.h:1-81](file://server/common/include/ConfigMgr.h#L1-L81)
+- [server/common/src/ConfigMgr.cpp:1-51](file://server/common/src/ConfigMgr.cpp#L1-L51)
 
 ### gRPC 服务启动与监听
-- StatusServer::RunServer 从 ConfigMgr 读取 Host 与 Port，拼接 server_address。
-- 创建 gRPC ServerBuilder，添加监听端口与服务实现，启动等待信号量以优雅关闭。
-- 主线程等待服务器退出，异常路径中确保资源释放。
+**更新** StatusServer::RunServer 函数现在包含详细的中文注释，完整展示了gRPC服务器的初始化过程：
+
+- **配置获取**：通过 `ConfigMgr::Inst()` 获取全局配置管理器单例，从配置中读取Host和Port拼接成监听地址。
+- **服务实例化**：创建 `StatusServiceImpl` 服务实现类，该实现类负责处理具体的gRPC请求。
+- **服务器构建**：使用 `grpc::ServerBuilder` 创建gRPC服务器构建器，绑定监听端口并使用明文传输（InsecureServerCredentials）。
+- **服务注册**：通过 `RegisterService(&service)` 注册状态服务实现，使服务器能够处理客户端的状态查询请求。
+- **服务器启动**：调用 `BuildAndStart()` 构建并启动gRPC服务器，返回智能指针管理服务器生命周期。
+- **日志输出**：打印服务器监听地址，便于确认服务启动成功。
 
 章节来源
-- [server/StatusServer/src/StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+- [server/StatusServer/src/StatusServer.cpp:18-42](file://server/StatusServer/src/StatusServer.cpp#L18-L42)
+
+### 信号处理与优雅关闭
+**新增** RunServer函数实现了完整的信号处理机制，确保服务的优雅关闭：
+
+- **Asio事件循环**：创建 `boost::asio::io_context` 作为事件循环核心，专门用于监听系统信号。
+- **信号集设置**：使用 `boost::asio::signal_set` 捕获 SIGINT（Ctrl+C）和 SIGTERM（终止信号）。
+- **异步信号处理**：通过 `async_wait` 注册异步回调，当收到退出信号时执行优雅关闭逻辑。
+- **优雅关闭流程**：
+  - 调用 `server->Shutdown()` 停止接收新请求并等待正在处理的RPC完成
+  - 调用 `io_context.stop()` 停止事件循环，结束信号监听的线程
+- **独立线程运行**：将io_context.run()放入独立线程并detach，主线程继续执行服务器等待。
+- **阻塞等待**：主线程调用 `server->Wait()` 阻塞直到服务器完全退出。
+
+章节来源
+- [server/StatusServer/src/StatusServer.cpp:43-72](file://server/StatusServer/src/StatusServer.cpp#L43-L72)
 
 ### Redis 缓存与连接池
 - RedisMgr 在构造时从 [Redis] 读取 Host/Port/Passwd，初始化连接池大小（代码中固定为 5）。
@@ -264,7 +290,7 @@ Q --> R["返回最优节点+票据"]
 ```
 
 图示来源
-- [server/StatusServer/src/StatusServiceImpl.cpp:111-169](file://server/StatusServer/src/StatusServiceImpl.cpp#L111-L169)
+- [server/StatusServer/src/StatusServiceImpl.cpp:73-132](file://server/StatusServer/src/StatusServiceImpl.cpp#L73-L132)
 - [server/ChatServer/src/ChatServer.cpp:50-69](file://server/ChatServer/src/ChatServer.cpp#L50-L69)
 - [server/ChatServer/src/CServer.cpp:75-88](file://server/ChatServer/src/CServer.cpp#L75-L88)
 
@@ -298,6 +324,7 @@ Q --> R["返回最优节点+票据"]
 - MysqlDao 依赖 MySQL Connector/C++。
 - ChatGrpcClient 依赖 gRPC 生成的 Stub。
 - **重大更新** StatusServiceImpl 依赖Redis进行基于lease的智能负载均衡和服务发现，不再依赖复杂的哈希表操作。
+- **新增** StatusServer依赖Boost.Asio进行信号处理和异步事件管理。
 
 ```mermaid
 classDiagram
@@ -337,21 +364,26 @@ class StatusServer {
 class CServer {
 +GetAuthenticatedSessionCount() int
 }
+class SignalHandler {
++async_wait(callback) void
++stop() void
+}
 StatusServer --> ConfigMgr : "读取配置"
 StatusServer --> RedisMgr : "缓存/锁"
 StatusServer --> MysqlDao : "持久化"
 StatusServer --> ChatGrpcClient : "gRPC通信"
+StatusServer --> SignalHandler : "信号处理"
 StatusServiceImpl --> RedisMgr : "lease负载均衡"
 CServer --> RedisMgr : "负载上报"
 ```
 
 图示来源
-- [server/StatusServer/include/ConfigMgr.h:1-84](file://server/StatusServer/include/ConfigMgr.h#L1-L84)
+- [server/common/include/ConfigMgr.h:1-81](file://server/common/include/ConfigMgr.h#L1-L81)
 - [server/StatusServer/include/RedisMgr.h:1-59](file://server/StatusServer/include/RedisMgr.h#L1-L59)
 - [server/StatusServer/include/MysqlDao.h:1-149](file://server/StatusServer/include/MysqlDao.h#L1-L149)
 - [server/StatusServer/include/ChatGrpcClient.h:1-33](file://server/StatusServer/include/ChatGrpcClient.h#L1-L33)
 - [server/StatusServer/include/StatusServiceImpl.h:1-51](file://server/StatusServer/include/StatusServiceImpl.h#L1-L51)
-- [server/StatusServer/src/StatusServer.cpp:1-69](file://server/StatusServer/src/StatusServer.cpp#L1-L69)
+- [server/StatusServer/src/StatusServer.cpp:18-72](file://server/StatusServer/src/StatusServer.cpp#L18-L72)
 - [server/ChatServer/src/CServer.cpp:75-88](file://server/ChatServer/src/CServer.cpp#L75-L88)
 
 ## 性能与优化建议
@@ -373,6 +405,10 @@ CServer --> RedisMgr : "负载上报"
   - 通过TTL机制自动处理节点失效，无需额外的健康检查逻辑。
   - 原子计数器实现公平轮转，避免热点节点问题。
   - 基于实时认证会话数的负载感知，显著提升资源利用率。
+- **新增** 服务器性能优化
+  - 合理配置gRPC服务器的工作线程数量，避免过多线程导致上下文切换开销。
+  - 使用智能指针管理服务器生命周期，避免内存泄漏。
+  - 信号处理线程与主线程分离，提高响应性能。
 
 [本节为通用性能建议，不直接分析具体文件]
 
@@ -391,12 +427,17 @@ CServer --> RedisMgr : "负载上报"
   - 支持从动态发现回退到静态配置的故障恢复机制。
   - 负载均衡算法自动选择认证会话数最少的健康节点。
   - 同负载节点通过原子计数器实现公平轮转，避免单点过载。
+- **新增** 优雅关闭与故障恢复
+  - 信号处理确保服务在接收到终止信号时能够优雅关闭，避免数据丢失。
+  - 服务器重启时自动重新加载配置并恢复服务状态。
+  - 异常情况下自动清理临时资源和释放系统资源。
 
 章节来源
 - [server/StatusServer/config/config.ini:14-23](file://server/StatusServer/config/config.ini#L14-L23)
 - [server/ChatServer/config/chatserver1.ini:25-30](file://server/ChatServer/config/chatserver1.ini#L25-L30)
 - [server/ChatServer/config/chatserver2.ini:25-30](file://server/ChatServer/config/chatserver2.ini#L25-L30)
-- [server/StatusServer/src/StatusServiceImpl.cpp:111-169](file://server/StatusServer/src/StatusServiceImpl.cpp#L111-L169)
+- [server/StatusServer/src/StatusServiceImpl.cpp:73-132](file://server/StatusServer/src/StatusServiceImpl.cpp#L73-L132)
+- [server/StatusServer/src/StatusServer.cpp:43-72](file://server/StatusServer/src/StatusServer.cpp#L43-L72)
 
 ## 监控与调试指南
 - 日志输出
@@ -404,29 +445,38 @@ CServer --> RedisMgr : "负载上报"
   - RedisMgr/MysqlDao 在执行命令失败时输出错误信息，便于定位问题。
   - StatusServiceImpl 在服务发现过程中输出详细的节点选择和健康检查结果。
   - **重大更新** 新增lease相关的调试日志，包括负载上报失败、键值解析错误等信息。
+  - **新增** RunServer函数的详细日志输出，包括服务器启动、监听地址、信号处理等关键步骤。
 - 关键指标
   - Redis 连接池空闲/活跃数量、PING 失败次数、重连次数。
   - MySQL 连接池占用率、慢查询统计。
   - gRPC 请求成功率与延迟（可在上层埋点）。
   - ChatServer负载上报状态和lease键的有效性。
-  - **新增** 监控chatserver:lease:<name>键的值变化，观察负载分布情况。
+  - **新增** 监控服务器信号处理状态和资源使用情况。
+  - **新增** 监控gRPC服务器的工作线程数量和请求队列长度。
 - 常见问题排查
   - 端口冲突：检查 [StatusServer] 的 Host/Port 是否与已有服务冲突。
   - 认证失败：核对 [Redis]/[Mysql] 的 Passwd/User 是否正确。
   - 连接超时：检查防火墙/负载均衡策略，适当增大超时时间。
   - 心跳异常：确认客户端心跳发送频率与服务器阈值匹配。
   - **重大更新** 负载均衡异常：检查Redis中chatserver:lease:<name>键的状态和值格式，确认ChatServer是否正常上报负载。
-  - **新增** 票据验证失败：检查chat:ticket:<uuid>键是否存在且未过期。
-  - **新增** 负载上报失败：检查ChatServer的Discovery配置和Redis连接状态。
+  - **新增** 服务器启动失败：检查RunServer函数的配置加载和gRPC服务器初始化过程。
+  - **新增** 信号处理异常：确认Boost.Asio的事件循环正常运行，信号监听正常。
+  - **新增** 优雅关闭问题：检查服务器Shutdown流程和资源清理逻辑。
+- **新增** 调试工具和方法
+  - 使用gRPC客户端工具测试服务接口可用性。
+  - 通过Redis命令行工具检查负载信息和会话状态。
+  - 使用系统监控工具观察服务器CPU、内存和网络使用情况。
+  - 启用详细日志级别，跟踪服务器启动和运行过程中的关键步骤。
 
 章节来源
-- [server/StatusServer/src/ConfigMgr.cpp:1-50](file://server/StatusServer/src/ConfigMgr.cpp#L1-L50)
+- [server/common/src/ConfigMgr.cpp:1-51](file://server/common/src/ConfigMgr.cpp#L1-L51)
 - [server/StatusServer/src/RedisMgr.cpp:1-458](file://server/StatusServer/src/RedisMgr.cpp#L1-L458)
 - [server/StatusServer/src/MysqlDao.cpp:1-172](file://server/StatusServer/src/MysqlDao.cpp#L1-L172)
-- [server/StatusServer/src/StatusServiceImpl.cpp:1-170](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L170)
+- [server/StatusServer/src/StatusServiceImpl.cpp:1-132](file://server/StatusServer/src/StatusServiceImpl.cpp#L1-L132)
+- [server/StatusServer/src/StatusServer.cpp:18-72](file://server/StatusServer/src/StatusServer.cpp#L18-L72)
 
 ## 结论
-StatusServer 的配置以 config.ini 为核心，结合 ConfigMgr 动态加载；通过 Redis 提供高性能状态缓存与分布式锁，通过 MySQL 提供用户信息持久化，通过 gRPC 与 ChatServer 协同完成状态同步。**重大更新** 最新的负载均衡机制完全重构，实现了基于lease的智能负载感知聊天服务器选择，移除了复杂的CHATSERVER_INFO_KEY哈希表和LOGIN_COUNT计数依赖，采用简洁高效的chatserver:lease:<name>键值方案，显著提升了资源利用率和系统性能。
+StatusServer 的配置以 config.ini 为核心，结合 ConfigMgr 动态加载；通过 Redis 提供高性能状态缓存与分布式锁，通过 MySQL 提供用户信息持久化，通过 gRPC 与 ChatServer 协同完成状态同步。**重大更新** 最新的负载均衡机制完全重构，实现了基于lease的智能负载感知聊天服务器选择，移除了复杂的CHATSERVER_INFO_KEY哈希表和LOGIN_COUNT计数依赖，采用简洁高效的chatserver:lease:<name>键值方案，显著提升了资源利用率和系统性能。**新增** RunServer函数包含详细的中文注释，提供了完整的服务器启动、配置管理和信号处理实现细节，大大提升了代码的可读性和可维护性。
 
 **新特性总结**：
 - **简化架构**：移除复杂的哈希表操作，使用简单的字符串键值进行负载统计
@@ -436,5 +486,7 @@ StatusServer 的配置以 config.ini 为核心，结合 ConfigMgr 动态加载�
 - **高性能设计**：减少Redis操作复杂度，提升整体系统性能
 - **易于监控**：简单的键值结构便于监控和调试
 - **实时负载感知**：ChatServer主动上报认证会话数，StatusServer动态选择最优节点
+- **完善的服务生命周期管理**：包含详细的gRPC服务器初始化、配置管理和信号处理逻辑
+- **优雅的关闭机制**：通过Boost.Asio实现信号处理，确保服务能够优雅关闭并释放资源
 
-在生产环境中，建议合理设置连接池与超时参数，借助外部中间件实现高可用与故障转移，并结合日志与指标进行持续监控与优化。新的lease机制显著提升了系统的可扩展性和可靠性，为大规模分布式部署提供了更好的支持。通过智能负载感知和自动故障转移，系统能够更好地应对流量波动和节点故障，确保服务的稳定性和性能。
+在生产环境中，建议合理设置连接池与超时参数，借助外部中间件实现高可用与故障转移，并结合日志与指标进行持续监控与优化。新的lease机制显著提升了系统的可扩展性和可靠性，为大规模分布式部署提供了更好的支持。通过智能负载感知和自动故障转移，系统能够更好地应对流量波动和节点故障，确保服务的稳定性和性能。**新增** 完善的服务器生命周期管理确保了服务的可靠性和可维护性，使得系统在生产环境中更加稳定和易于管理。通过详细的中文注释和完善的错误处理机制，开发者可以更好地理解和维护StatusServer的核心功能。

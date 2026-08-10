@@ -26,16 +26,16 @@ private:
 	void WriteResponse();
 	void HandleReq();
 	tcp::socket  _socket;
-	// The buffer for performing reads.
+	// 用于执行读取操作的缓冲区。
 	beast::flat_buffer  _buffer{ 8192 };
 
-	// The request message.
+	// HTTP 请求消息。
 	http::request<http::dynamic_body> _request;
 
-	// The response message.
+	// HTTP 响应消息。
 	http::response<http::dynamic_body> _response;
 
-	// The timer for putting a deadline on connection processing.
+	// 连接处理超时定时器（60 秒）。
 	net::steady_timer deadline_{
 		_socket.get_executor(), std::chrono::seconds(60) };
 
