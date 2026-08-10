@@ -1,18 +1,10 @@
 #pragma once
-#include "const.h"
 #include "Singleton.h"
-#include "ConfigMgr.h"
 #include "chat.grpc.pb.h"
-#include "chat.pb.h"
 #include <grpcpp/grpcpp.h>
+#include <mutex>
+#include <unordered_map>
 using grpc::Channel;
-using grpc::Status;
-using grpc::ClientContext;
-
-
-using message::ChatService;
-using message::NotifyChatImgReq;
-using message::NotifyChatImgRsp;
 
 /**
  * @brief 跨服图片通知的最终结果（计划5.7）
@@ -31,9 +23,7 @@ class ChatServerGrpcClient :public Singleton<ChatServerGrpcClient>
 {
 	friend class Singleton<ChatServerGrpcClient>;
 public:
-	~ChatServerGrpcClient() {
-
-	}
+	~ChatServerGrpcClient() = default;
 	/**
 	 * @brief 通知目标 ChatServer 有图片消息可投递（带 deadline + 有界重试，计划5.7）
 	 *
@@ -48,7 +38,13 @@ public:
 	 */
 	NotifyResult NotifyChatImgMsg(int message_id, std::string chatserver);
 private:
-	ChatServerGrpcClient();
+	ChatServerGrpcClient() = default;
 	//sever_ip到共享channel的映射,  <chatserver1,std::shared_ptr<Channel>>
-	std::unordered_map<std::string, std::shared_ptr<Channel>> _hash_channels;
+	std::shared_ptr<Channel> ResolveChannel(const std::string& server_name);
+	struct CachedChannel {
+		std::string endpoint;
+		std::shared_ptr<Channel> channel;
+	};
+	std::unordered_map<std::string, CachedChannel> _hash_channels;
+	std::mutex _channels_mutex;
 };

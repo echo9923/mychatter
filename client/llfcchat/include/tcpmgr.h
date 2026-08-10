@@ -75,6 +75,7 @@ public:
     void StartPendingReplay();
     //§6.6：仅 emit queued signal，TCP 线程 slot 启动离线 pull 循环
     void StartOfflinePull();
+    void ReconnectChat(const QString& host, quint16 port);
 
 private:
     friend class Singleton<TcpMgr>;
@@ -82,6 +83,7 @@ private:
     void registerMetaType();
     void initHandlers();
     void handleMsg(ReqId id, int len, QByteArray data);
+    void finishReconnectFailure();
     void CreatePlaceholderImgMsgL(QString img_path_str, QString msg_content,
         int msg_id, int thread_id, int send_uid, int recv_id, int status, QString chat_time,
         std::vector<std::shared_ptr<ChatDataBase>>& chat_datas);
@@ -102,6 +104,9 @@ private:
     qint64        _bytes_sent;
     //是否正在发送
     bool _pending;
+    bool _manual_close;
+    bool _reconnecting;
+    bool _disconnect_notified;
     //—— 可靠重传状态（全部只在 TCP 线程访问）——
     QTimer* _retry_timer;                 // 250ms 扫描定时器，parent 到 this
     QList<PendingRequest> _pending_requests;
@@ -139,6 +144,7 @@ private:
 public slots:
     void slot_tcp_close();
     void slot_tcp_connect(std::shared_ptr<ServerInfo> si);
+    void slot_reconnect_chat(QString host, quint16 port);
     void slot_send_data(ReqId reqId, QByteArray data);
     void slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
     void slot_retry_timeout();
@@ -154,6 +160,8 @@ public slots:
 signals:
     void sig_close();
     void sig_con_success(bool bsuccess);
+    void sig_reconnect_chat(QString host, quint16 port);
+    void sig_reconnect_finished(bool success);
     void sig_send_data(ReqId reqId, QByteArray data);
     //线程边界信号：公有 API 只 emit 此信号，slot_send_reliable_chat 在 TCP 线程执行
     void sig_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);

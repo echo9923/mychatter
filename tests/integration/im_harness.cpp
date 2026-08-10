@@ -265,41 +265,26 @@ std::string MakeStatusIni() {
 	s += "Host = 0.0.0.0\n";
 	s += MysqlBlock();
 	s += RedisBlock();
-	s += "[chatservers]\nName = chatserver1,chatserver2\n";
-	s += "[chatserver1]\nName = chatserver1\nHost = 127.0.0.1\nPort = "
-		+ std::to_string(CHAT1_TCP_PORT) + "\n";
-	s += "[chatserver2]\nName = chatserver2\nHost = 127.0.0.1\nPort = "
-		+ std::to_string(CHAT2_TCP_PORT) + "\n";
 	return s;
 }
 
 std::string MakeChatIni(const std::string& self_name, unsigned short tcp_port,
-                        unsigned short rpc_port, int logic_workers) {
-	return MakeChatIniPeer(self_name, tcp_port, rpc_port, logic_workers,
-	                       "", 0, 0);
-}
-
-std::string MakeChatIniPeer(const std::string& self_name, unsigned short tcp_port,
-                            unsigned short rpc_port, int logic_workers,
-                            const std::string& peer_name,
-                            unsigned short peer_tcp_port,
-                            unsigned short peer_rpc_port) {
+                        unsigned short rpc_port, int logic_workers,
+                        unsigned short advertised_rpc_port) {
+	if (advertised_rpc_port == 0) advertised_rpc_port = rpc_port;
 	std::string s;
 	s += "[GateServer]\nPort = " + std::to_string(GATE_HTTP_PORT) + "\n";
 	s += "[VarifyServer]\nHost = 127.0.0.1\nPort = 50051\n";
 	s += "[StatusServer]\nHost = 127.0.0.1\nPort = "
 		+ std::to_string(STATUS_GRPC_PORT) + "\n";
-	s += "[SelfServer]\nName = " + self_name + "\nHost = 0.0.0.0\nPort  = "
-		+ std::to_string(tcp_port) + "\nRPCPort = " + std::to_string(rpc_port) + "\n";
+	s += "[SelfServer]\nName = " + self_name
+		+ "\nHost = 0.0.0.0\nRegisterHost = 127.0.0.1\nPort = "
+		+ std::to_string(tcp_port)
+		+ "\nRegisterPort = " + std::to_string(tcp_port)
+		+ "\nRPCPort = " + std::to_string(rpc_port)
+		+ "\nRegisterRPCPort = " + std::to_string(advertised_rpc_port) + "\n";
 	s += MysqlBlock();
 	s += RedisBlock();
-	if (peer_name.empty()) {
-		s += "[PeerServer]\nServers =\n";
-	} else {
-		s += "[PeerServer]\nServers = " + peer_name + "\n";
-		s += "[" + peer_name + "]\nName = " + peer_name + "\nHost = 127.0.0.1\nPort = "
-			+ std::to_string(peer_rpc_port) + "\n";
-	}
 	s += "[Concurrency]\nLogicWorkers = " + std::to_string(logic_workers)
 		+ "\nDeliveryWorkers = 4\n";
 	s += "[Delivery]\nOfflineTtlSeconds = 604800\nOfflinePullBatch = 100\n";
@@ -330,10 +315,6 @@ std::string MakeResourceIni() {
 	s += RedisBlock();
 	s += "[Output]\nPath = bin\n";
 	s += "[Static]\nPath = static\n";
-	s += "[chatserver1]\nName = chatserver1\nHost = 127.0.0.1\nPort = "
-		+ std::to_string(CHAT1_GRPC_PORT) + "\n";
-	s += "[chatserver2]\nName = chatserver2\nHost = 127.0.0.1\nPort = "
-		+ std::to_string(CHAT2_GRPC_PORT) + "\n";
 	s += "[Delivery]\nOfflineTtlSeconds = 604800\nOfflinePullBatch = 100\n";
 	s += "PullMaxBytes = 30000\nRpcDeadlineMs = 3000\nRpcMaxAttempts = 3\nRpcBackoffMs = 100\n";
 	return s;

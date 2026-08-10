@@ -1,10 +1,22 @@
 #include "ChatServerGrpcClient.h"
+#include "ChatServerRegistry.h"
+#include "ConfigMgr.h"
+#include "const.h"
 #include "MysqlMgr.h"
+#include "RedisMgr.h"
+#include <charconv>
 #include <iostream>
 #include <chrono>
+#include <nlohmann/json.hpp>
 #include <thread>
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
+
+using grpc::ClientContext;
+using grpc::Status;
+using message::ChatService;
+using message::NotifyChatImgReq;
+using message::NotifyChatImgRsp;
 
 namespace {
 /// 从 [Delivery] 读取整数配置；非法/缺失时回退 fallback（与 ChatServer 同一模式，计划4.2/5.7）
@@ -29,7 +41,59 @@ int ReadDeliveryInt(const std::string& key, int fallback) {
 /// 对端 ChatServer 应用层错误码（ResourceServer const.h 未定义这些语义，用字面量常量，计划5.7）
 constexpr int kAppRecipientOffline = 1015;  // RECIPIENT_OFFLINE：只记录 pending，不重试
 constexpr int kAppServerBusy = 1016;        // SERVER_BUSY：可重试
+
+bool ResolveRpcEndpoint(const std::string& server_name, std::string& endpoint) {
+	std::string lease;
+	if (!RedisMgr::GetInstance()->Get(llfc::ChatServerLeaseKey(server_name), lease) ||
+		lease.empty()) {
+		return false;
+	}
+	int load = 0;
+	const auto load_result = std::from_chars(
+		lease.data(), lease.data() + lease.size(), load);
+	if (load_result.ec != std::errc{} ||
+		load_result.ptr != lease.data() + lease.size() || load < 0) {
+		return false;
+	}
+
+	const std::string metadata = RedisMgr::GetInstance()->HGet(
+		llfc::kChatServerRegistryKey, server_name);
+	const auto data = nlohmann::json::parse(metadata, nullptr, false);
+	if (!data.is_object()) return false;
+	for (const char* key : { "name", "rpc_host", "rpc_port" }) {
+		if (!data.contains(key) || !data[key].is_string()) return false;
+	}
+	const std::string name = data["name"].get<std::string>();
+	const std::string host = data["rpc_host"].get<std::string>();
+	const std::string port_text = data["rpc_port"].get<std::string>();
+	int port = 0;
+	const auto port_result = std::from_chars(
+		port_text.data(), port_text.data() + port_text.size(), port);
+	if (name != server_name || host.empty() ||
+		port_result.ec != std::errc{} ||
+		port_result.ptr != port_text.data() + port_text.size() ||
+		port <= 0 || port > 65535) {
+		return false;
+	}
+	endpoint = host + ":" + port_text;
+	return true;
+}
 } // namespace
+
+std::shared_ptr<Channel> ChatServerGrpcClient::ResolveChannel(
+	const std::string& server_name) {
+	std::string endpoint;
+	if (!ResolveRpcEndpoint(server_name, endpoint)) return nullptr;
+
+	std::lock_guard<std::mutex> lock(_channels_mutex);
+	auto found = _hash_channels.find(server_name);
+	if (found != _hash_channels.end() && found->second.endpoint == endpoint) {
+		return found->second.channel;
+	}
+	auto channel = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
+	_hash_channels[server_name] = { endpoint, channel };
+	return channel;
+}
 
 NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(int message_id, std::string chatserver)
 {
@@ -43,8 +107,8 @@ NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(int message_id, std::string 
 	int backoff_ms = ReadDeliveryInt("RpcBackoffMs", 100);
 	if (backoff_ms < 1) backoff_ms = 100;
 
-	auto find_iter = _hash_channels.find(chatserver);
-	if (find_iter == _hash_channels.end()) {
+	auto channel = ResolveChannel(chatserver);
+	if (!channel) {
 		//未知 server：配置/路由缺失，参数类错误，立即停止不重试（计划5.7）
 		result.grpc_code = grpc::StatusCode::NOT_FOUND;
 		result.app_error = ErrorCodes::RPCFailed;
@@ -83,7 +147,6 @@ NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(int message_id, std::string 
 	}
 	request.set_total_size(file_size);
 
-	auto& channel = find_iter->second;
 	for (int attempt = 1; attempt <= max_attempts; ++attempt) {
 		//每次尝试新的 stub + ClientContext，deadline 固定 RpcDeadlineMs（计划5.7）
 		auto stub = ChatService::NewStub(channel);
@@ -125,16 +188,4 @@ NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(int message_id, std::string 
 	}
 
 	return result;
-}
-
-ChatServerGrpcClient::ChatServerGrpcClient()
-{
-	auto& gCfgMgr = ConfigMgr::Inst();
-	std::string host1 = gCfgMgr["chatserver1"]["Host"];
-	std::string port1 = gCfgMgr["chatserver1"]["Port"];
-	_hash_channels["chatserver1"] = grpc::CreateChannel(host1 + ":" + port1, grpc::InsecureChannelCredentials());
-
-	std::string host2 = gCfgMgr["chatserver2"]["Host"];
-	std::string port2 = gCfgMgr["chatserver2"]["Port"];
-	_hash_channels["chatserver2"] = grpc::CreateChannel(host2 + ":" + port2, grpc::InsecureChannelCredentials());
 }

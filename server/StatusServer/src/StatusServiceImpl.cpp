@@ -1,36 +1,102 @@
 #include "StatusServiceImpl.h"
-#include "ConfigMgr.h"
-#include "const.h"
+
+#include "ChatServerRegistry.h"
 #include "RedisMgr.h"
-#include <climits>
+#include "const.h"
 
-std::string generate_unique_string() {
-	// 创建UUID对象
-	boost::uuids::uuid uuid = boost::uuids::random_generator()();
+#include <algorithm>
+#include <charconv>
+#include <nlohmann/json.hpp>
+#include <unordered_map>
+#include <vector>
 
-	// 将UUID转换为字符串
-	std::string unique_string = to_string(uuid);
+using json = nlohmann::json;
 
-	return unique_string;
+namespace {
+
+bool ParseNonNegativeInt(const std::string& value, int& parsed) {
+	if (value.empty()) return false;
+	int result = 0;
+	const char* begin = value.data();
+	const char* end = begin + value.size();
+	const auto conversion = std::from_chars(begin, end, result);
+	if (conversion.ec != std::errc{} || conversion.ptr != end || result < 0) {
+		return false;
+	}
+	parsed = result;
+	return true;
 }
 
-Status StatusServiceImpl::GetChatServer(ServerContext* context, const GetChatServerReq* request, GetChatServerRsp* reply)
-{
-	// --- Least-loaded live node selection ---
-	const auto& server = getChatServer();
+bool IsValidPort(const std::string& value) {
+	int port = 0;
+	return ParseNonNegativeInt(value, port) && port > 0 && port <= 65535;
+}
+
+bool ParseRegistration(const std::string& field, const std::string& value,
+	ChatServer& server) {
+	try {
+		const auto data = json::parse(value);
+		if (!data.is_object()) return false;
+		for (const char* key : { "name", "tcp_host", "tcp_port", "rpc_host", "rpc_port" }) {
+			if (!data.contains(key) || !data[key].is_string()) return false;
+		}
+
+		const std::string name = data["name"].get<std::string>();
+		const std::string tcp_host = data["tcp_host"].get<std::string>();
+		const std::string tcp_port = data["tcp_port"].get<std::string>();
+		const std::string rpc_host = data["rpc_host"].get<std::string>();
+		const std::string rpc_port = data["rpc_port"].get<std::string>();
+		if (name != field || tcp_host.empty() || rpc_host.empty() ||
+			!IsValidPort(tcp_port) || !IsValidPort(rpc_port)) {
+			return false;
+		}
+
+		server.name = name;
+		server.host = tcp_host;
+		server.port = tcp_port;
+		return true;
+	} catch (const json::exception&) {
+		return false;
+	}
+}
+
+std::string GenerateUniqueString() {
+	const boost::uuids::uuid uuid = boost::uuids::random_generator()();
+	return to_string(uuid);
+}
+
+} // namespace
+
+Status StatusServiceImpl::GetChatServer(ServerContext*,
+	const GetChatServerReq* request, GetChatServerRsp* reply) {
+	const bool reassignment = !request->token().empty();
+	if (reassignment) {
+		std::string stored_token;
+		const std::string token_key = USERTOKENPREFIX + std::to_string(request->uid());
+		if (!RedisMgr::GetInstance()->Get(token_key, stored_token)) {
+			reply->set_error(ErrorCodes::UidInvalid);
+			return Status::OK;
+		}
+		if (stored_token != request->token()) {
+			reply->set_error(ErrorCodes::TokenInvalid);
+			return Status::OK;
+		}
+	}
+
+	const auto server = getChatServer();
 	if (server.host.empty()) {
 		reply->set_error(ErrorCodes::NoAvailableChatServer);
 		return Status::OK;
 	}
 
-	// --- Issue login token: utoken_<uid> -> token (TTL 86400s) ---
-	std::string token = generate_unique_string();
-	std::string token_key = USERTOKENPREFIX + std::to_string(request->uid());
-
-	if (!RedisMgr::GetInstance()->SetEx(token_key, 86400, token)) {
-		// Redis failure: do not return server address.
-		reply->set_error(ErrorCodes::RPCFailed);
-		return Status::OK;
+	std::string token = request->token();
+	if (!reassignment) {
+		token = GenerateUniqueString();
+		const std::string token_key = USERTOKENPREFIX + std::to_string(request->uid());
+		if (!RedisMgr::GetInstance()->SetEx(token_key, 86400, token)) {
+			reply->set_error(ErrorCodes::RPCFailed);
+			return Status::OK;
+		}
 	}
 
 	reply->set_error(ErrorCodes::Success);
@@ -41,91 +107,45 @@ Status StatusServiceImpl::GetChatServer(ServerContext* context, const GetChatSer
 	return Status::OK;
 }
 
-StatusServiceImpl::StatusServiceImpl()
-{
-	auto& cfg = ConfigMgr::Inst();
-	auto server_list = cfg["chatservers"]["Name"];
-
-	std::vector<std::string> words;
-
-	std::stringstream ss(server_list);
-	std::string word;
-
-	while (std::getline(ss, word, ',')) {
-		words.push_back(word);
-	}
-
-	for (auto& word : words) {
-		if (cfg[word]["Name"].empty()) {
-			continue;
-		}
-
-		ChatServer server;
-		server.port = cfg[word]["Port"];
-		server.host = cfg[word]["Host"];
-		server.name = cfg[word]["Name"];
-		_servers[server.name] = server;
-		_server_order.push_back(server.name);
-	}
-
-}
-
 ChatServer StatusServiceImpl::getChatServer() {
-	std::lock_guard<std::mutex> guard(_server_mtx);
+	std::unordered_map<std::string, std::string> registrations;
+	if (!RedisMgr::GetInstance()->HGetAll(llfc::kChatServerRegistryKey, registrations)) {
+		return {};
+	}
 
-	// 1. 按 _server_order（配置出现顺序）逐个读取 lease
-	//    key = chatserver:lease:<name>，value = 已认证会话数（十进制字符串）
-	//    只把存在且可解析为非负整数的节点放入候选集
-	const std::string kLeasePrefix = "chatserver:lease:";
-	struct Candidate { std::string name; int load; };
+	struct Candidate {
+		ChatServer server;
+		int load;
+	};
 	std::vector<Candidate> candidates;
+	for (const auto& entry : registrations) {
+		ChatServer server;
+		if (!ParseRegistration(entry.first, entry.second, server)) continue;
 
-	for (const auto& name : _server_order) {
-		std::string val;
-		if (!RedisMgr::GetInstance()->Get(kLeasePrefix + name, val) || val.empty()) {
-			continue;  // lease 缺失：节点未上报或已过期
-		}
-		// 仅接受全数字（非负整数）的值
-		bool all_digit = true;
-		for (char c : val) {
-			if (c < '0' || c > '9') { all_digit = false; break; }
-		}
-		if (!all_digit) {
+		std::string lease_value;
+		int load = 0;
+		if (!RedisMgr::GetInstance()->Get(llfc::ChatServerLeaseKey(entry.first),
+			lease_value) || !ParseNonNegativeInt(lease_value, load)) {
 			continue;
 		}
-		int load = 0;
-		for (char c : val) { load = load * 10 + (c - '0'); }
-		candidates.push_back({ name, load });
+		candidates.push_back({ server, load });
 	}
 
-	if (candidates.empty()) {
-		// 无任何活节点：返回空 host，由 GetChatServer 映射为 NoAvailableChatServer
-		ChatServer none;
-		return none;
-	}
+	if (candidates.empty()) return {};
+	std::sort(candidates.begin(), candidates.end(),
+		[](const Candidate& lhs, const Candidate& rhs) {
+			return lhs.server.name < rhs.server.name;
+		});
 
-	// 2. 选最小负载
-	int min_load = candidates[0].load;
-	for (const auto& c : candidates) {
-		if (c.load < min_load) min_load = c.load;
-	}
+	const int min_load = std::min_element(candidates.begin(), candidates.end(),
+		[](const Candidate& lhs, const Candidate& rhs) {
+			return lhs.load < rhs.load;
+		})->load;
 
-	// 3. 负载相同的候选用原子计数轮转起点，避免配置表第一项长期占优
-	std::vector<Candidate> tied;
-	for (const auto& c : candidates) {
-		if (c.load == min_load) tied.push_back(c);
+	std::vector<ChatServer> tied;
+	for (const auto& candidate : candidates) {
+		if (candidate.load == min_load) tied.push_back(candidate.server);
 	}
-	size_t idx = _rr.fetch_add(1) % tied.size();
-	const std::string chosen = tied[idx].name;
-
-	// 4. 从静态地址簿取 host/port（lease 只携带负载，不含地址）
-	ChatServer best;
-	auto it = _servers.find(chosen);
-	if (it != _servers.end()) {
-		best = it->second;
-		best.con_count = min_load;
-	} else {
-		best.name = chosen;  // 配置缺地址：视为不可用（host 留空）
-	}
-	return best;
+	const std::size_t index = _rr.fetch_add(1) % tied.size();
+	return tied[index];
 }

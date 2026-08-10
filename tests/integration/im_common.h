@@ -37,8 +37,10 @@ inline const char* FixtureEmailForUid(int uid) {
 inline constexpr int  GATE_HTTP_PORT    = 18080;
 inline constexpr int  CHAT1_TCP_PORT    = 18090;
 inline constexpr int  CHAT2_TCP_PORT    = 18091;
+inline constexpr int  CHAT3_TCP_PORT    = 18092;
 inline constexpr int  CHAT1_GRPC_PORT   = 15055;
 inline constexpr int  CHAT2_GRPC_PORT   = 15056;
+inline constexpr int  CHAT3_GRPC_PORT   = 15058;
 inline constexpr int  STATUS_GRPC_PORT  = 15052;
 inline constexpr int  RESOURCE_HTTP_PORT = 18081;
 
@@ -129,6 +131,7 @@ inline bool Check(bool cond, const std::string& name, const std::string& detail)
 inline std::string ChatLeaseKey(const std::string& name) {
 	return "chatserver:lease:" + name;
 }
+inline constexpr const char* CHAT_REGISTRY_KEY = "chatserver:registry";
 inline std::string UserTokenKey(int uid) {
 	return "utoken_" + std::to_string(uid);
 }

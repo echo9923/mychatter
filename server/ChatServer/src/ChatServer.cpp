@@ -4,39 +4,47 @@
 #include "LogicSystem.h"
 #include <csignal>
 #include <thread>
-#include <mutex>
-#include <ctime>
+#include <cstdlib>
 #include <nlohmann/json.hpp>
 #include "AsioIOServicePool.h"
 #include "CServer.h"
 #include "ConfigMgr.h"
 #include "RedisMgr.h"
 #include "ChatServiceImpl.h"
-#include "const.h"
+#include "ChatServerRegistry.h"
 
 using json = nlohmann::json;
-
-using namespace std;
-bool bstop = false;
-std::condition_variable cond_quit;
-std::mutex mutex_quit;
 
 int main()
 {
 	auto& cfg = ConfigMgr::Inst();
 	auto server_name = cfg["SelfServer"]["Name"];
+	auto tcp_host = cfg["SelfServer"]["RegisterHost"];
+	if (tcp_host.empty()) tcp_host = cfg["SelfServer"]["Host"];
+	auto tcp_port = cfg["SelfServer"]["RegisterPort"];
+	if (tcp_port.empty()) tcp_port = cfg["SelfServer"]["Port"];
+	auto rpc_port = cfg["SelfServer"]["RegisterRPCPort"];
+	if (rpc_port.empty()) rpc_port = cfg["SelfServer"]["RPCPort"];
+	const std::string registration_json = json({
+		{ "name", server_name },
+		{ "tcp_host", tcp_host },
+		{ "tcp_port", tcp_port },
+		{ "rpc_host", tcp_host },
+		{ "rpc_port", rpc_port }
+	}).dump();
 	try {
 		auto pool = std::make_shared<AsioIOServicePool>(std::thread::hardware_concurrency());
 
-		// [Discovery] lease 上报配置：缺失/非法值回退默认（间隔 5s，TTL 15s）
+		// [Discovery] registration/lease refresh defaults to 2s with a 6s TTL.
 		std::string ri_str = cfg["Discovery"]["ReportIntervalSeconds"];
 		std::string ttl_str = cfg["Discovery"]["LeaseTtlSeconds"];
-		int report_interval = (!ri_str.empty() && atoi(ri_str.c_str()) > 0) ? atoi(ri_str.c_str()) : 5;
-		int lease_ttl = (!ttl_str.empty() && atoi(ttl_str.c_str()) > 0) ? atoi(ttl_str.c_str()) : 15;
+		int report_interval = (!ri_str.empty() && atoi(ri_str.c_str()) > 0) ? atoi(ri_str.c_str()) : 2;
+		int lease_ttl = (!ttl_str.empty() && atoi(ttl_str.c_str()) > 0) ? atoi(ttl_str.c_str()) : 6;
 
 		// 优雅退出：删除自己的 lease（chatserver:lease:<name>）并关闭 Redis 连接池
 		Defer derfer ([server_name]() {
-				RedisMgr::GetInstance()->Del("chatserver:lease:" + server_name);
+				RedisMgr::GetInstance()->HDel(llfc::kChatServerRegistryKey, server_name);
+				RedisMgr::GetInstance()->Del(llfc::ChatServerLeaseKey(server_name));
 				RedisMgr::GetInstance()->Close();
 			});
 
@@ -53,14 +61,18 @@ int main()
 		auto lease_timer = std::make_shared<boost::asio::steady_timer>(io_context);
 		std::weak_ptr<CServer> server_wp(pointer_server);
 		std::function<void(const boost::system::error_code&)> report_lease;
-		report_lease = [&server_name, report_interval, lease_ttl, server_wp, lease_timer, &report_lease](const boost::system::error_code& ec) {
+		report_lease = [&server_name, &registration_json, report_interval, lease_ttl, server_wp, lease_timer, &report_lease](const boost::system::error_code& ec) {
 			if (ec) {
 				return;
 			}
 			auto sp = server_wp.lock();
 			int auth_count = sp ? sp->GetAuthenticatedSessionCount() : 0;
-			const std::string lease_key = "chatserver:lease:" + server_name;
-			if (!RedisMgr::GetInstance()->SetEx(lease_key, lease_ttl, std::to_string(auth_count))) {
+			if (!RedisMgr::GetInstance()->HSet(
+				llfc::kChatServerRegistryKey, server_name, registration_json)) {
+				std::cerr << "registry report failed for " << server_name << std::endl;
+			}
+			if (!RedisMgr::GetInstance()->SetEx(llfc::ChatServerLeaseKey(server_name),
+				lease_ttl, std::to_string(auth_count))) {
 				std::cerr << "lease report failed for " << server_name << std::endl;
 			}
 			lease_timer->expires_after(std::chrono::seconds(report_interval));
@@ -107,7 +119,7 @@ int main()
 		return 0;
 	}
 	catch (std::exception& e) {
-		std::cerr << "Exception: " << e.what() << endl;
+		std::cerr << "Exception: " << e.what() << std::endl;
 	}
 
 }

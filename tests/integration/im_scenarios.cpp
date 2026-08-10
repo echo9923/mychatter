@@ -92,6 +92,10 @@ static void CleanupFootprint(Redis& redis, Mysql& mysql) {
 	// TTL<=8s 的 lease，导致下一场景的 Status 选中未启动的节点）。
 	redis.Del(ChatLeaseKey("chatserver1"));
 	redis.Del(ChatLeaseKey("chatserver2"));
+	redis.Del(ChatLeaseKey("chatserver3"));
+	redis.HDel(CHAT_REGISTRY_KEY, "chatserver1");
+	redis.HDel(CHAT_REGISTRY_KEY, "chatserver2");
+	redis.HDel(CHAT_REGISTRY_KEY, "chatserver3");
 }
 
 // Result of a Gate /user_login call: the per-user login token plus the address
@@ -100,6 +104,7 @@ struct GateLoginInfo {
 	bool           ok = false;
 	int            error = -1;
 	std::string    token;
+	std::string    server_name;
 	std::string    chat_host;
 	unsigned short chat_port = 0;
 };
@@ -130,10 +135,12 @@ static GateLoginInfo GateLogin(int uid) {
 		return info;
 	}
 	info.token     = j.value("token", "");
+	info.server_name = j.value("server_name", "");
 	info.chat_host = j.value("chathost", "");
 	const std::string port_str = j.value("chatport", "0");
 	info.chat_port = static_cast<unsigned short>(std::atoi(port_str.c_str()));
-	if (info.token.empty() || info.chat_host.empty() || info.chat_port == 0) {
+	if (info.token.empty() || info.server_name.empty() ||
+	    info.chat_host.empty() || info.chat_port == 0) {
 		std::printf("[login] /user_login uid=%d missing chat fields\n", uid);
 		return info;
 	}
@@ -1315,14 +1322,13 @@ bool ScenarioCrossServer() {
 	}
 	// chatserver1: peer = chatserver2, but routed THROUGH the proxy port.
 	if (!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
-		MakeChatIniPeer("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4,
-		                "chatserver2", CHAT2_TCP_PORT, CHAT2_PROXY_GRPC_PORT),
+		MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
 		CHAT1_TCP_PORT }, 15000)) {
 		Fail("cross-server: start chatserver1", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 	if (!pm.Start({ "chatserver2", { "chatserver2", "ChatServer.exe" },
-		MakeChatIniPeer("chatserver2", CHAT2_TCP_PORT, CHAT2_GRPC_PORT, 4,
-		                "chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT),
+		MakeChatIni("chatserver2", CHAT2_TCP_PORT, CHAT2_GRPC_PORT, 4,
+		            CHAT2_PROXY_GRPC_PORT),
 		CHAT2_TCP_PORT }, 15000)) {
 		Fail("cross-server: start chatserver2", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
@@ -1419,8 +1425,7 @@ bool ScenarioCrossServer() {
 
 	// Restart chatserver2 with the same config (direct, no proxy needed for pull).
 	if (!pm.Start({ "chatserver2", { "chatserver2", "ChatServer.exe" },
-		MakeChatIniPeer("chatserver2", CHAT2_TCP_PORT, CHAT2_GRPC_PORT, 4,
-		                "chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT),
+		MakeChatIni("chatserver2", CHAT2_TCP_PORT, CHAT2_GRPC_PORT, 4),
 		CHAT2_TCP_PORT }, 15000)) {
 		Fail("cross-server: restart chatserver2", "ready timeout");
 		cS.Close(); cleanup(); pm.StopAll(); return false;
@@ -1660,21 +1665,9 @@ bool ScenarioImageOffline() {
 // ---------------------------------------------------------------------------
 // status-discovery (plan 3.1)
 //
-// StatusServer selects the least-loaded live ChatServer by reading each node's
-// chatserver:lease:<name> (value = authenticated session count). This scenario
-// drives GetChatServer directly over gRPC and asserts:
-//   - both ChatServers publish a lease at startup (value "0", bounded TTL);
-//   - equal load round-robins between the two nodes;
-//   - decisive load (3 vs 1) selects the lighter node;
-//   - deleting a node's lease excludes it;
-//   - deleting all leases returns NoAvailableChatServer (1018, empty host).
-//
-// The decisive 3/1 load is seeded directly via Redis SET (EX): producing three
-// distinct authenticated sessions on one server is not possible with the two
-// fixture uids (same-uid re-login kicks the prior session, and LoginHandler
-// rejects uids absent from the user store). Seeding the lease value is exactly
-// what the ChatServer timer would publish for that authenticated count, so it
-// exercises the real StatusServer selection path deterministically.
+// ChatServers publish endpoint metadata to chatserver:registry and refresh a
+// short-lived load lease. StatusServer has no configured node list: every call
+// discovers, validates and selects from the current Redis state.
 // ---------------------------------------------------------------------------
 bool ScenarioStatusDiscovery() {
 	std::printf("\n=== scenario: status-discovery ===\n");
@@ -1687,19 +1680,46 @@ bool ScenarioStatusDiscovery() {
 
 	const std::string lease1 = ChatLeaseKey("chatserver1");
 	const std::string lease2 = ChatLeaseKey("chatserver2");
-	// Each successful GetChatServer writes the per-user login token to
-	// utoken_<uid> (SET ... EX TTL 86400). All calls below use uid=1, so a single key
-	// is overwritten each time; clear it on teardown.
+	const std::string lease3 = ChatLeaseKey("chatserver3");
+	const std::vector<std::string> registry_fields = {
+		"chatserver1", "chatserver2", "chatserver3",
+		"bad-json", "mismatched-name", "empty-endpoint", "bad-load"
+	};
 	auto cleanup = [&]() {
 		redis.Del(UserTokenKey(1));
 		redis.Del(lease1);
 		redis.Del(lease2);
+		redis.Del(lease3);
+		for (const auto& field : registry_fields) {
+			redis.Del(ChatLeaseKey(field));
+			redis.HDel(CHAT_REGISTRY_KEY, field);
+		}
 	};
+	cleanup();
 
 	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
 		MakeStatusIni(), STATUS_GRPC_PORT }, 15000)) {
 		Fail("status-discovery: start StatusServer", "ready timeout"); cleanup(); return false;
 	}
+
+	bool all_ok = true;
+	StatusClient sc;
+	if (!sc.Connect("127.0.0.1", STATUS_GRPC_PORT)) {
+		Fail("status-discovery: status client connect", "failed");
+		cleanup(); pm.StopAll(); return false;
+	}
+
+	// Status starts with no topology and therefore has no candidate.
+	int empty_error = -1;
+	std::string empty_name, empty_host, empty_port, empty_token;
+	bool empty_rpc = sc.GetChatServer(1, empty_error, empty_name, empty_host,
+		empty_port, empty_token);
+	bool initially_empty = empty_rpc && empty_error == ERR_NO_AVAILABLE_CHAT_SERVER
+		&& empty_name.empty() && empty_host.empty();
+	Check(initially_empty, "status-discovery: no registry entries -> no available node",
+		("err=" + std::to_string(empty_error) + " name=" + empty_name).c_str());
+	if (!initially_empty) all_ok = false;
+
 	if (!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
 		MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
 		CHAT1_TCP_PORT }, 15000)) {
@@ -1710,95 +1730,451 @@ bool ScenarioStatusDiscovery() {
 		CHAT2_TCP_PORT }, 15000)) {
 		Fail("status-discovery: start chatserver2", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
+	// This process uses the existing chatserver1 binary with an independent cwd.
+	// StatusServer is deliberately not restarted before the third node joins.
+	if (!pm.Start({ "chatserver3", { "chatserver1", "ChatServer.exe" },
+		MakeChatIni("chatserver3", CHAT3_TCP_PORT, CHAT3_GRPC_PORT, 4),
+		CHAT3_TCP_PORT }, 15000)) {
+		Fail("status-discovery: start chatserver3", "ready timeout"); cleanup(); pm.StopAll(); return false;
+	}
 
-	bool all_ok = true;
-
-	// 1. Poll (<=10s): both leases exist with value "0" and TTL in (0, 8].
-	auto wait_lease = [&](const std::string& key) -> bool {
+	// Every node must publish both its endpoint record and its live lease.
+	auto wait_registration = [&](const std::string& name, int tcp_port,
+	                             int rpc_port) -> bool {
 		for (int i = 0; i < 100; ++i) {  // 100 * 100ms = 10s
-			std::string v;
-			if (redis.Get(key, v) && v == "0") {
-				int ttl = redis.Ttl(key);
-				if (ttl > 0 && ttl <= 8) return true;
+			std::string lease_value;
+			std::string metadata;
+			if (redis.Get(ChatLeaseKey(name), lease_value) && lease_value == "0" &&
+			    redis.HGet(CHAT_REGISTRY_KEY, name, metadata)) {
+				int ttl = redis.Ttl(ChatLeaseKey(name));
+				auto j = ParseJson(metadata);
+				if (ttl > 0 && ttl <= 8 && j.is_object() &&
+				    j.value("name", "") == name &&
+				    j.value("tcp_host", "") == "127.0.0.1" &&
+				    j.value("tcp_port", "") == std::to_string(tcp_port) &&
+				    j.value("rpc_host", "") == "127.0.0.1" &&
+				    j.value("rpc_port", "") == std::to_string(rpc_port)) {
+					return true;
+				}
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		}
 		return false;
 	};
-	const bool l1 = wait_lease(lease1);
-	const bool l2 = wait_lease(lease2);
-	Check(l1, "status-discovery: chatserver1 lease at startup (0, ttl<=8)",
-		l1 ? "" : "lease missing/wrong/ttl out of range");
-	Check(l2, "status-discovery: chatserver2 lease at startup (0, ttl<=8)",
-		l2 ? "" : "lease missing/wrong/ttl out of range");
-	if (!l1 || !l2) { cleanup(); pm.StopAll(); return false; }
+	const bool r1 = wait_registration("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT);
+	const bool r2 = wait_registration("chatserver2", CHAT2_TCP_PORT, CHAT2_GRPC_PORT);
+	const bool r3 = wait_registration("chatserver3", CHAT3_TCP_PORT, CHAT3_GRPC_PORT);
+	Check(r1 && r2 && r3,
+		"status-discovery: three nodes self-register without Status restart",
+		("registered=" + std::to_string(r1) + "/" + std::to_string(r2) + "/" +
+		 std::to_string(r3)).c_str());
+	if (!r1 || !r2 || !r3) { cleanup(); pm.StopAll(); return false; }
 
-	// 2. Tie rotation: both load 0 -> two calls pick different nodes (error 0).
-	StatusClient sc;
-	if (!sc.Connect("127.0.0.1", STATUS_GRPC_PORT)) {
-		Fail("status-discovery: status client connect", "failed");
-		cleanup(); pm.StopAll(); return false;
-	}
-	int e1 = -1, e2 = -1;
-	std::string sn1, h1, p1, tok1, sn2, h2, p2, tok2;
+	// Stop reporters so seeded load values remain deterministic. Metadata stays
+	// in the hash, while liveness continues to be controlled by short leases.
+	pm.StopOne("chatserver1");
+	pm.StopOne("chatserver2");
+	pm.StopOne("chatserver3");
+
+	// Least load is selected from dynamically discovered records.
+	redis.SetEx(lease1, 8, "3");
+	redis.SetEx(lease2, 8, "1");
+	redis.SetEx(lease3, 8, "2");
+	int e1 = -1;
+	std::string sn1, h1, p1, tok1;
 	bool ok1 = sc.GetChatServer(1, e1, sn1, h1, p1, tok1);
-	bool ok2 = sc.GetChatServer(1, e2, sn2, h2, p2, tok2);
-	const std::string port1 = std::to_string(CHAT1_TCP_PORT);
 	const std::string port2 = std::to_string(CHAT2_TCP_PORT);
-	bool tie_ok = ok1 && ok2 && e1 == ERR_SUCCESS && e2 == ERR_SUCCESS
-		&& p1 == port1 && p2 == port2
-		&& !tok1.empty() && !tok2.empty();
-	Check(tie_ok, "status-discovery: tie rotation picks chat1 then chat2 (error 0, token)",
-		tie_ok ? "" : ("ports=" + p1 + "/" + p2 + " err="
-			+ std::to_string(e1) + "/" + std::to_string(e2)).c_str());
-	if (!tie_ok) all_ok = false;
+	bool least_ok = ok1 && e1 == ERR_SUCCESS && sn1 == "chatserver2" &&
+		p1 == port2 && !tok1.empty();
+	Check(least_ok, "status-discovery: least-loaded dynamic node selected",
+		("name=" + sn1 + " port=" + p1 + " err=" + std::to_string(e1)).c_str());
+	if (!least_ok) all_ok = false;
 
-	// Every successful GetChatServer writes utoken_<uid> with a bounded TTL.
+	// Initial assignment creates a bounded per-user token.
 	int ttl1 = redis.Ttl(UserTokenKey(1));
-	bool ttl_ok = tie_ok && ttl1 >= 1 && ttl1 <= 86400;
+	bool ttl_ok = least_ok && ttl1 >= 1 && ttl1 <= 86400;
 	Check(ttl_ok, "status-discovery: utoken_<uid> TTL in [1, 86400]",
 		ttl_ok ? "" : ("ttl=" + std::to_string(ttl1)).c_str());
 	if (!ttl_ok) all_ok = false;
 
-	// 3. Decisive load: chat1=3, chat2=1 -> must select chat2.
-	// Stop both ChatServers first: their 2s report timer would otherwise race
-	// the seeded lease values (overwrite with real 0/0 mid-assert). The lease
-	// keys survive termination (TTL <= 8s), and StatusServer selection reads
-	// only the lease keys, so steps 3-5 are fully deterministic.
-	pm.StopOne("chatserver1");
-	pm.StopOne("chatserver2");
-	if (!redis.SetEx(lease1, 8, "3") || !redis.SetEx(lease2, 8, "1")) {
-		Fail("status-discovery: seed decisive leases", "SetEx failed");
-		cleanup(); pm.StopAll(); return false;
+	// Equal loads rotate across all three names rather than favoring one entry.
+	redis.SetEx(lease1, 8, "0");
+	redis.SetEx(lease2, 8, "0");
+	redis.SetEx(lease3, 8, "0");
+	std::set<std::string> rotated;
+	for (int i = 0; i < 3; ++i) {
+		int error = -1;
+		std::string name, host, port, token;
+		if (sc.GetChatServer(1, error, name, host, port, token) &&
+		    error == ERR_SUCCESS) rotated.insert(name);
 	}
-	std::this_thread::sleep_for(std::chrono::milliseconds(300));
-	int e3 = -1; std::string sn3, h3, p3, tok3;
-	bool ok3 = sc.GetChatServer(1, e3, sn3, h3, p3, tok3);
-	bool least_ok = ok3 && e3 == ERR_SUCCESS && p3 == port2 && !tok3.empty();
-	Check(least_ok, "status-discovery: least-loaded selects chat2 (3 vs 1)",
-		least_ok ? "" : ("port=" + p3 + " err=" + std::to_string(e3)).c_str());
-	if (!least_ok) all_ok = false;
+	bool rotation_ok = rotated == std::set<std::string>{
+		"chatserver1", "chatserver2", "chatserver3" };
+	Check(rotation_ok, "status-discovery: equal load rotates across all live nodes",
+		("unique_nodes=" + std::to_string(rotated.size())).c_str());
+	if (!rotation_ok) all_ok = false;
 
-	// 4. Delete chat2 lease -> must select chat1.
+	// Removing one lease excludes only that node.
 	redis.Del(lease2);
-	std::this_thread::sleep_for(std::chrono::milliseconds(200));
-	int e4 = -1; std::string sn4, h4, p4, tok4;
-	bool ok4 = sc.GetChatServer(1, e4, sn4, h4, p4, tok4);
-	bool excl_ok = ok4 && e4 == ERR_SUCCESS && p4 == port1 && !tok4.empty();
-	Check(excl_ok, "status-discovery: chat2 lease removed -> selects chat1",
-		excl_ok ? "" : ("port=" + p4 + " err=" + std::to_string(e4)).c_str());
+	bool excl_ok = true;
+	for (int i = 0; i < 4; ++i) {
+		int error = -1;
+		std::string name, host, port, token;
+		excl_ok = sc.GetChatServer(1, error, name, host, port, token) &&
+			error == ERR_SUCCESS && name != "chatserver2" && excl_ok;
+	}
+	Check(excl_ok, "status-discovery: missing lease excludes registered node",
+		excl_ok ? "" : "chatserver2 was selected");
 	if (!excl_ok) all_ok = false;
 
-	// 5. Delete chat1 lease -> no candidates -> NoAvailableChatServer.
+	// Malformed records and malformed loads are ignored fail-closed.
 	redis.Del(lease1);
-	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	redis.Del(lease3);
+	redis.HSet(CHAT_REGISTRY_KEY, "bad-json", "{");
+	redis.SetEx(ChatLeaseKey("bad-json"), 8, "0");
+	redis.HSet(CHAT_REGISTRY_KEY, "mismatched-name",
+		R"({"name":"someone-else","tcp_host":"127.0.0.1","tcp_port":"1","rpc_host":"127.0.0.1","rpc_port":"2"})");
+	redis.SetEx(ChatLeaseKey("mismatched-name"), 8, "0");
+	redis.HSet(CHAT_REGISTRY_KEY, "empty-endpoint",
+		R"({"name":"empty-endpoint","tcp_host":"","tcp_port":"1","rpc_host":"127.0.0.1","rpc_port":"2"})");
+	redis.SetEx(ChatLeaseKey("empty-endpoint"), 8, "0");
+	redis.HSet(CHAT_REGISTRY_KEY, "bad-load",
+		R"({"name":"bad-load","tcp_host":"127.0.0.1","tcp_port":"1","rpc_host":"127.0.0.1","rpc_port":"2"})");
+	redis.SetEx(ChatLeaseKey("bad-load"), 8, "not-a-number");
 	int e5 = -1; std::string sn5, h5, p5, tok5;
 	bool ok5 = sc.GetChatServer(1, e5, sn5, h5, p5, tok5);
-	bool none_ok = ok5 && e5 == ERR_NO_AVAILABLE_CHAT_SERVER && h5.empty();
-	Check(none_ok, "status-discovery: no leases -> NoAvailableChatServer (1018, empty host)",
+	bool none_ok = ok5 && e5 == ERR_NO_AVAILABLE_CHAT_SERVER && sn5.empty() && h5.empty();
+	Check(none_ok, "status-discovery: malformed registry state is ignored",
 		none_ok ? "" : ("err=" + std::to_string(e5) + " host=" + h5).c_str());
 	if (!none_ok) all_ok = false;
 
+	cleanup();
+	pm.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// chat-failover
+//
+// Status issues the same Redis credential that Gate normally requests after
+// password validation. After the assigned ChatServer disappears, Gate asks
+// Status for another live node using that token without rotating or renewing it.
+// ---------------------------------------------------------------------------
+bool ScenarioChatFailover() {
+	std::printf("\n=== scenario: chat-failover ===\n");
+	ProcessManager pm;
+	Redis redis; Mysql mysql;
+	const std::string tag = RunTag();
+	const int failover_uid = SENDER_UID;
+	const int message_sender_uid = RECEIVER_UID;
+	if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)) {
+		Fail("chat-failover: connect redis", "failed");
+		return false;
+	}
+	if (!mysql.Connect(MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWD, MYSQL_SCHEMA)) {
+		Fail("chat-failover: connect MySQL", "failed");
+		return false;
+	}
+
+	auto cleanup = [&]() {
+		CleanupFootprint(redis, mysql);
+	};
+	cleanup();
+
+	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
+		MakeStatusIni(), STATUS_GRPC_PORT }, 15000) ||
+		!pm.Start({ "GateServer", { "GateServer", "GateServer.exe" },
+			MakeGateIni(), GATE_HTTP_PORT }, 15000) ||
+		!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
+			MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
+			CHAT1_TCP_PORT }, 15000) ||
+		!pm.Start({ "chatserver2", { "chatserver2", "ChatServer.exe" },
+			MakeChatIni("chatserver2", CHAT2_TCP_PORT, CHAT2_GRPC_PORT, 4),
+			CHAT2_TCP_PORT }, 15000)) {
+		Fail("chat-failover: start services", "ready timeout");
+		cleanup(); pm.StopAll(); return false;
+	}
+
+	auto wait_registered = [&](const std::string& name) {
+		for (int i = 0; i < 100; ++i) {
+			std::string metadata;
+			std::string lease;
+			if (redis.HGet(CHAT_REGISTRY_KEY, name, metadata) &&
+			    redis.Get(ChatLeaseKey(name), lease)) return true;
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+		return false;
+	};
+	if (!wait_registered("chatserver1") || !wait_registered("chatserver2")) {
+		Fail("chat-failover: wait for registrations", "registry or lease missing");
+		cleanup(); pm.StopAll(); return false;
+	}
+
+	bool all_ok = true;
+	GateLoginInfo initial;
+	StatusClient initial_status_client;
+	std::string initial_port_text;
+	const bool initial_assigned = initial_status_client.Connect(
+		"127.0.0.1", STATUS_GRPC_PORT) &&
+		initial_status_client.GetChatServer(failover_uid, initial.error,
+			initial.server_name, initial.chat_host, initial_port_text, initial.token);
+	initial.chat_port = static_cast<unsigned short>(std::atoi(initial_port_text.c_str()));
+	initial.ok = initial_assigned && initial.error == ERR_SUCCESS &&
+		!initial.server_name.empty() && !initial.chat_host.empty() &&
+		initial.chat_port != 0 && !initial.token.empty();
+	if (!initial.ok) {
+		Fail("chat-failover: Status assigns receiver and issues token",
+			("error=" + std::to_string(initial.error)).c_str());
+		cleanup(); pm.StopAll(); return false;
+	}
+	TcpClient original_receiver;
+	const bool original_connect = original_receiver.Connect(
+		initial.chat_host, initial.chat_port, 10000);
+	const auto original_login = original_connect
+		? ChatLogin(original_receiver, failover_uid, initial.token)
+		: ChatLoginOutcome{};
+	if (!original_connect || !original_login.ok) {
+		Fail("chat-failover: receiver login on assigned node",
+			("connected=" + std::to_string(original_connect) +
+			 " error=" + std::to_string(original_login.error)).c_str());
+		original_receiver.Close(); cleanup(); pm.StopAll(); return false;
+	}
+	std::string original_route;
+	const bool route_bound = redis.Get("uip_" + std::to_string(failover_uid),
+		original_route) && original_route == initial.server_name;
+	Check(route_bound, "chat-failover: receiver route points at assigned node",
+		("route=" + original_route + " expected=" + initial.server_name).c_str());
+	if (!route_bound) all_ok = false;
+
+	std::string stored_before;
+	const int ttl_before = redis.Ttl(UserTokenKey(failover_uid));
+	const bool token_before_ok = redis.Get(UserTokenKey(failover_uid), stored_before) &&
+		stored_before == initial.token && ttl_before > 0;
+	Check(token_before_ok, "chat-failover: initial token stored with TTL",
+		("ttl=" + std::to_string(ttl_before)).c_str());
+	if (!token_before_ok) all_ok = false;
+
+	const std::string stopped_name = initial.server_name;
+	const std::string survivor_name = stopped_name == "chatserver1"
+		? "chatserver2" : "chatserver1";
+	const unsigned short survivor_port = survivor_name == "chatserver1"
+		? CHAT1_TCP_PORT : CHAT2_TCP_PORT;
+	if (!pm.StopOne(stopped_name)) {
+		Fail("chat-failover: stop assigned node", stopped_name);
+		original_receiver.Close(); cleanup(); pm.StopAll(); return false;
+	}
+	original_receiver.Close();
+	// Forced test termination cannot run the process's graceful cleanup, so
+	// remove only its short lease to model expiry without an eight-second wait.
+	redis.Del(ChatLeaseKey(stopped_name));
+
+	// The receiver route still names the failed node. Persist a message through
+	// the surviving node and prove the failed live delivery remains recoverable.
+	StatusClient status_client;
+	int sender_status_error = -1;
+	std::string sender_server_name;
+	std::string sender_host;
+	std::string sender_port_text;
+	std::string sender_token;
+	const bool sender_assigned = status_client.Connect("127.0.0.1", STATUS_GRPC_PORT) &&
+		status_client.GetChatServer(message_sender_uid, sender_status_error,
+			sender_server_name, sender_host, sender_port_text, sender_token) &&
+		sender_status_error == ERR_SUCCESS && sender_server_name == survivor_name &&
+		!sender_token.empty();
+	const unsigned short sender_port = static_cast<unsigned short>(
+		std::atoi(sender_port_text.c_str()));
+	TcpClient sender;
+	const bool sender_connect = sender_assigned && sender_port != 0 &&
+		sender.Connect(sender_host, sender_port, 10000);
+	const auto sender_login = sender_connect
+		? ChatLogin(sender, message_sender_uid, sender_token)
+		: ChatLoginOutcome{};
+	if (!sender_connect || !sender_login.ok) {
+		Fail("chat-failover: sender login on surviving node",
+			("node=" + sender_server_name +
+			 " error=" + std::to_string(sender_login.error)).c_str());
+		sender.Close(); cleanup(); pm.StopAll(); return false;
+	}
+
+	const std::string unique_id = "imtest-failover-" + tag;
+	const std::string content = "message-during-chatserver-failure";
+	const std::string text_body = BuildTextReq(
+		message_sender_uid, failover_uid, THREAD_ID, content, unique_id);
+	Frame sender_rsp;
+	json sender_envelope;
+	int message_id = -1;
+	bool sender_ack = sender.Send(ID_TEXT_CHAT_MSG_REQ, text_body) &&
+		sender.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &sender_rsp);
+	if (sender_ack) {
+		const auto response_json = ParseJson(sender_rsp.body);
+		sender_ack = response_json.is_object() &&
+			response_json.value("error", -1) == ERR_SUCCESS &&
+			response_json.contains("chat_datas") &&
+			response_json["chat_datas"].is_array() &&
+			!response_json["chat_datas"].empty();
+		if (sender_ack) {
+			sender_envelope = response_json["chat_datas"][0];
+			message_id = sender_envelope.value("message_id", -1);
+			sender_ack = message_id > 0 &&
+				sender_envelope.value("unique_id", "") == unique_id;
+		}
+	}
+	Check(sender_ack, "chat-failover: sender receives persisted ACK during failure",
+		("message_id=" + std::to_string(message_id)).c_str());
+	if (!sender_ack) all_ok = false;
+
+	ChatMessageRow stored_message;
+	const auto pending_rows = mysql.QueryByUniqueId(message_sender_uid, unique_id);
+	const bool mysql_pending = pending_rows.size() == 1 &&
+		pending_rows[0].message_id == message_id &&
+		pending_rows[0].delivery_status == 0;
+	if (!pending_rows.empty()) stored_message = pending_rows[0];
+	Check(mysql_pending, "chat-failover: MySQL has exactly one pending row",
+		("rows=" + std::to_string(pending_rows.size()) +
+		 " message_id=" + std::to_string(message_id)).c_str());
+	if (!mysql_pending) all_ok = false;
+
+	const std::string offline_key = "offline_msg:" + std::to_string(failover_uid);
+	bool redis_pending = false;
+	for (int poll = 0; poll < 50 && !redis_pending; ++poll) {
+		std::vector<std::string> members;
+		redis.ZRange(offline_key, members);
+		redis_pending = std::find(members.begin(), members.end(),
+			std::to_string(message_id)) != members.end();
+		if (!redis_pending) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+	Check(redis_pending, "chat-failover: Redis records pending message id",
+		("message_id=" + std::to_string(message_id)).c_str());
+	if (!redis_pending) all_ok = false;
+
+	json request;
+	request["uid"] = failover_uid;
+	request["token"] = initial.token;
+	HttpResponse response = HttpPost("127.0.0.1", GATE_HTTP_PORT,
+		"/reassign_chat", request.dump(), "text/json", 10000);
+	auto body = ParseJson(response.body);
+	const int reassign_error = body.is_object() ? body.value("error", -1) : -1;
+	const std::string reassigned_name = body.is_object()
+		? body.value("server_name", "") : "";
+	const std::string reassigned_host = body.is_object()
+		? body.value("chathost", "") : "";
+	const std::string reassigned_port = body.is_object()
+		? body.value("chatport", "") : "";
+	const std::string returned_token = body.is_object()
+		? body.value("token", "") : "";
+	const bool reassigned = response.status == 200 &&
+		reassign_error == ERR_SUCCESS && reassigned_name == survivor_name &&
+		reassigned_host == "127.0.0.1" &&
+		reassigned_port == std::to_string(survivor_port) &&
+		(returned_token.empty() || returned_token == initial.token);
+	Check(reassigned, "chat-failover: Gate reassigns to surviving node",
+		("http=" + std::to_string(response.status) + " err=" +
+		 std::to_string(reassign_error) + " node=" + reassigned_name).c_str());
+	if (!reassigned) all_ok = false;
+
+	std::string stored_after;
+	const int ttl_after = redis.Ttl(UserTokenKey(failover_uid));
+	const bool token_unchanged = redis.Get(UserTokenKey(failover_uid), stored_after) &&
+		stored_after == stored_before && ttl_after > 0 && ttl_after <= ttl_before;
+	Check(token_unchanged, "chat-failover: reassignment preserves token and TTL",
+		("ttl_before=" + std::to_string(ttl_before) +
+		 " ttl_after=" + std::to_string(ttl_after)).c_str());
+	if (!token_unchanged) all_ok = false;
+
+	TcpClient recovered_receiver;
+	const bool connect_ok = recovered_receiver.Connect(
+		"127.0.0.1", survivor_port, 10000);
+	const auto login = connect_ok
+		? ChatLogin(recovered_receiver, failover_uid, initial.token)
+		: ChatLoginOutcome{};
+	Check(connect_ok && login.ok,
+		"chat-failover: original token logs into surviving ChatServer",
+		("connected=" + std::to_string(connect_ok) +
+		 " error=" + std::to_string(login.error)).c_str());
+	if (!connect_ok || !login.ok) all_ok = false;
+
+	json recovered_envelope;
+	bool recovered_message = false;
+	if (connect_ok && login.ok &&
+		recovered_receiver.Send(ID_PULL_OFFLINE_MSG_REQ,
+			BuildPullReq(failover_uid, 0, 100))) {
+		Frame pull_frame;
+		if (recovered_receiver.Wait(ID_PULL_OFFLINE_MSG_RSP, 10000, &pull_frame)) {
+			const auto pull = ParseJson(pull_frame.body);
+			if (pull.is_object() && pull.value("error", -1) == ERR_SUCCESS &&
+				pull.contains("messages") && pull["messages"].is_array()) {
+				for (const auto& message : pull["messages"]) {
+					if (message.value("message_id", -1) == message_id) {
+						recovered_envelope = message;
+						recovered_message = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	const bool envelope_preserved = recovered_message && mysql_pending &&
+		recovered_envelope.value("message_id", -1) == stored_message.message_id &&
+		recovered_envelope.value("unique_id", "") == stored_message.unique_id &&
+		recovered_envelope.value("thread_id", -1) == stored_message.thread_id &&
+		recovered_envelope.value("fromuid", -1) == stored_message.sender_id &&
+		recovered_envelope.value("touid", -1) == stored_message.recv_id &&
+		recovered_envelope.value("content", "") == stored_message.content &&
+		!stored_message.chat_time.empty() &&
+		recovered_envelope.value("chat_time", "") == stored_message.chat_time;
+	Check(envelope_preserved,
+		"chat-failover: recovered envelope preserves persisted message",
+		("recovered=" + std::to_string(recovered_message) +
+		 " message_id=" + std::to_string(message_id)).c_str());
+	if (!envelope_preserved) all_ok = false;
+
+	bool ack_ok = false;
+	if (recovered_message && recovered_receiver.Send(
+		ID_CHAT_DELIVERY_ACK_REQ, BuildAckReq(failover_uid, {message_id}))) {
+		Frame ack_frame;
+		if (recovered_receiver.Wait(ID_CHAT_DELIVERY_ACK_RSP, 10000, &ack_frame)) {
+			const auto ack = ParseJson(ack_frame.body);
+			ack_ok = ack.is_object() && ack.value("error", -1) == ERR_SUCCESS;
+		}
+	}
+	Check(ack_ok, "chat-failover: recovered message ACK succeeds",
+		ack_ok ? "" : "1049/1050 failed");
+	if (!ack_ok) all_ok = false;
+
+	bool cleanup_after_ack = false;
+	for (int poll = 0; poll < 50 && !cleanup_after_ack; ++poll) {
+		const auto rows = mysql.QueryByMessageId(message_id);
+		std::vector<std::string> members;
+		redis.ZRange(offline_key, members);
+		const bool absent = std::find(members.begin(), members.end(),
+			std::to_string(message_id)) == members.end();
+		cleanup_after_ack = rows.size() == 1 &&
+			rows[0].delivery_status == 1 && absent;
+		if (!cleanup_after_ack)
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+	Check(cleanup_after_ack,
+		"chat-failover: ACK clears MySQL pending state and Redis ZSET",
+		cleanup_after_ack ? "" : ("message_id=" + std::to_string(message_id)).c_str());
+	if (!cleanup_after_ack) all_ok = false;
+
+	request["token"] = "forged-reassign-token";
+	HttpResponse forged_response = HttpPost("127.0.0.1", GATE_HTTP_PORT,
+		"/reassign_chat", request.dump(), "text/json", 10000);
+	auto forged = ParseJson(forged_response.body);
+	const bool forged_rejected = forged_response.status == 200 && forged.is_object() &&
+		forged.value("error", -1) == ERR_TOKEN_INVALID &&
+		forged.value("server_name", "").empty() &&
+		forged.value("chathost", "").empty() &&
+		forged.value("chatport", "").empty();
+	Check(forged_rejected, "chat-failover: forged token returns no endpoint",
+		forged.is_object() ? ("err=" + std::to_string(forged.value("error", -1))).c_str()
+		                   : "non-json response");
+	if (!forged_rejected) all_ok = false;
+
+	sender.Close();
+	recovered_receiver.Close();
 	cleanup();
 	pm.StopAll();
 	return all_ok;
@@ -1837,6 +2213,10 @@ bool ScenarioSimpleAuth() {
 		redis.Del("uip_"       + std::to_string(SENDER_UID));
 		redis.Del("usession_"  + std::to_string(SENDER_UID));
 		redis.Del("ubaseinfo_" + std::to_string(SENDER_UID));
+		redis.Del(ChatLeaseKey("chatserver1"));
+		redis.Del(ChatLeaseKey("chatserver2"));
+		redis.HDel(CHAT_REGISTRY_KEY, "chatserver1");
+		redis.HDel(CHAT_REGISTRY_KEY, "chatserver2");
 	};
 
 	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },

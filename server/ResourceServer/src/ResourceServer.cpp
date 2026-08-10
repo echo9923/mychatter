@@ -1,23 +1,18 @@
-﻿#include "LogicSystem.h"
 #include <csignal>
+#include <cstdlib>
+#include <iostream>
+#include <memory>
 #include <thread>
-#include <mutex>
+#include <boost/asio.hpp>
 #include "AsioIOServicePool.h"
 #include "CServer.h"
 #include "ConfigMgr.h"
-#include <boost/filesystem.hpp>
-
-using namespace std;
-bool bstop = false;
-std::condition_variable cond_quit;
-std::mutex mutex_quit;
 
 int main()
 {
 	auto& cfg = ConfigMgr::Inst();
-	auto server_name = cfg["SelfServer"]["Name"];
 
-	std::shared_ptr<AsioIOServicePool> pool = nullptr;
+	std::shared_ptr<AsioIOServicePool> pool;
 	try {
 		pool = std::make_shared<AsioIOServicePool>(std::thread::hardware_concurrency());
 
@@ -35,7 +30,9 @@ int main()
 		if (pool) {
 			pool->Stop();
 		}
-		std::cerr << "Exception: " << e.what() << endl;
+		std::cerr << "Exception: " << e.what() << std::endl;
+		return EXIT_FAILURE;
 	}
 
+	return EXIT_SUCCESS;
 }
