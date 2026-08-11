@@ -29,8 +29,6 @@ public:
 	bool CheckPwd(const std::string& name, const std::string& pwd, UserInfo& userInfo);
 	/// 添加好友申请记录
 	bool AddFriendApply(const int& from, const int& to, const std::string& desc, const std::string& back_name);
-	/// 认证好友申请（同意）
-	bool AuthFriendApply(const int& from, const int& to);
 	/// 添加好友关系（双向插入）
 	bool AddFriend(const int& from, const int& to, std::string back_name, std::vector<std::shared_ptr<AddFriendMsg>>& msg_list);
 	/// 根据uid获取用户信息
@@ -57,8 +55,6 @@ public:
 		std::vector<std::string>& conflict_unique_ids);
 	/// 插入单条聊天消息（幂等），返回持久化结果
 	SaveMessageResult AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
-	/// 根据消息ID获取单条消息
-	std::shared_ptr<ChatMessage> GetChatMsg(int message_id);
 	/// 拉取接收者的待投递消息（delivery_status=0，排除未上传完成的图片），多取一条供 has_more
 	std::vector<std::shared_ptr<ChatMessage>> GetPendingMessages(int recv_uid,
 		int after_message_id, int limit);

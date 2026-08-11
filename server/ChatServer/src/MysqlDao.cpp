@@ -219,42 +219,6 @@ bool MysqlDao::AddFriendApply(const int& from, const int& to,
 	return true;
 }
 
-bool MysqlDao::AuthFriendApply(const int& from, const int& to) {
-	auto con = pool_->getConnection();
-	if (con == nullptr) {
-		return false;
-	}
-
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
-	try {
-		// 准备SQL语句
-		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement("UPDATE friend_apply SET status = 1 "
-			"WHERE from_uid = ? AND to_uid = ?"));
-		//反过来的申请时from，验证时to
-		pstmt->setInt(1, to); // from id
-		pstmt->setInt(2, from);
-		// 执行更新
-		int rowAffected = pstmt->executeUpdate();
-		if (rowAffected < 0) {
-			return false;
-		}
-		return true;
-	}
-	catch (sql::SQLException& e) {
-		std::cerr << "SQLException: " << e.what();
-		std::cerr << " (MySQL error code: " << e.getErrorCode();
-		std::cerr << ", SQLState: " << e.getSQLState() << " )" << std::endl;
-		return false;
-	}
-
-
-	return true;
-}
-
-
 bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
 	std::vector<std::shared_ptr<AddFriendMsg>>& chat_datas) {
 	auto con = pool_->getConnection();
@@ -1109,58 +1073,6 @@ SaveMessageResult MysqlDao::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
 		std::cerr << "SQLException: " << e.what() << std::endl;
 		conn->rollback();
 		return SaveMessageResult::Failed;
-	}
-}
-
-std::shared_ptr<ChatMessage> MysqlDao::GetChatMsg(int message_id)
-{
-	auto con = pool_->getConnection();
-	if (!con) {
-		return nullptr;
-	}
-
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
-	auto& conn = con->_con;
-
-	try {
-		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
-			conn->prepareStatement(
-				"SELECT message_id, thread_id, sender_id, recv_id, "
-				"content, created_at, updated_at, status, msg_type, "
-				"unique_id, content_size, delivery_status "
-				"FROM chat_message WHERE message_id = ?"
-			)
-			);
-
-		pstmt->setUInt64(1, message_id);
-		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
-
-		if (rs->next()) {
-			auto msg = std::make_shared<ChatMessage>();
-			msg->message_id = rs->getUInt64("message_id");
-			msg->thread_id = rs->getUInt64("thread_id");
-			msg->sender_id = rs->getUInt64("sender_id");
-			msg->recv_id = rs->getUInt64("recv_id");
-			msg->content = rs->getString("content");
-			msg->chat_time = rs->getString("created_at");
-			msg->status = rs->getInt("status");
-			msg->msg_type = rs->getInt("msg_type");
-			msg->unique_id = rs->getString("unique_id");
-			msg->content_size = rs->getUInt64("content_size");
-			msg->delivery_status = static_cast<DeliveryStatus>(rs->getInt("delivery_status"));
-
-			return msg;
-		}
-
-		return nullptr;
-
-	}
-	catch (sql::SQLException& e) {
-		std::cerr << "GetChatMessageById SQLException: " << e.what() << std::endl;
-		return nullptr;
 	}
 }
 

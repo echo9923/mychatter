@@ -58,12 +58,6 @@ enum MsgStatus {
 
 
 enum MSG_IDS {
-	ID_TEST_MSG_REQ = 1001,       //测试消息
-	ID_TEST_MSG_RSP = 1002,       //测试消息回包
-	ID_UPLOAD_FILE_REQ = 1003,    //发送文件请求
-	ID_UPLOAD_FILE_RSP = 1004,    //发送文件回复
-	ID_SYNC_FILE_REQ = 1005,      //同步文件信息请求
-	ID_SYNC_FILE_RSP = 1006,      //同步文件回复回复
 	ID_UPLOAD_HEAD_ICON_REQ = 1031,      //上传头像请求
 	ID_UPLOAD_HEAD_ICON_RSP = 1032,      //上传头像回复
 	ID_DOWN_LOAD_FILE_REQ = 1033,        //下载文件请求
