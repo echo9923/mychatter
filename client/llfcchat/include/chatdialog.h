@@ -29,13 +29,10 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override ;
 
     void handleGlobalMousePress(QMouseEvent *event) ;
-    void CloseFindDlg();
-    void UpdateChatMsg(std::vector<std::shared_ptr<TextChatData>> msgdata);
     void LoadHeadIcon(QString avatarPath, QLabel* icon_label, QString file_name, QString req_type);
 private:
     void showLoadingDlg(bool show = true);
     void AddLBGroup(StateWidget* lb); 
-    void loadMoreChatUser();
     void ClearLabelState(StateWidget* lb);
     void loadMoreConUser();
     void SetSelectChatItem(int thread_id = 0);
@@ -49,8 +46,6 @@ private:
     ChatUIMode _mode;
     ChatUIMode _state;
     QWidget* _last_widget;
-    //todo...
-    //QMap<int, QListWidgetItem*> _chat_items_added;
     //chat_thred_id和对应的item的映射关系。
     QMap<int, QListWidgetItem*>  _chat_thread_items;
     int _cur_chat_thread_id;
@@ -59,12 +54,10 @@ private:
     std::shared_ptr<ChatThreadData> _cur_load_chat;
  
 public slots:
-    void slot_loading_chat_user();
     void slot_side_chat();
     void slot_side_contact();
     void slot_side_setting();
     void slot_text_changed(const QString & str);
-    void slot_focus_out();
     void slot_loading_contact_user();
     void slot_switch_apply_friend_page();
     void slot_friend_info_page(std::shared_ptr<UserInfo> user_info);

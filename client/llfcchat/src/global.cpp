@@ -23,13 +23,6 @@ std::function<QString(QString)> xorString = [](QString input){
 
 QString gate_url_prefix = "";
 
-void delay_run(int msecs) {
-    QEventLoop loop;
-    // singleShot 到时后会触发 loop.quit()，从而退出事件循环
-    QTimer::singleShot(msecs, &loop, &QEventLoop::quit);
-    loop.exec();
-}
-
 QString generateUniqueFileName(const QString& originalName){
 
      QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);

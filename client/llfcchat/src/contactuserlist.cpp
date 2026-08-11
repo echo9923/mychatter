@@ -82,22 +82,6 @@ void ContactUserList::addContactUserList()
     }
 
     UserMgr::GetInstance()->UpdateContactLoadedCount();
-
-    // 模拟列表， 创建QListWidgetItem，并设置自定义的widget
-    for(int i = 0; i < 13; i++){
-        int randomValue = QRandomGenerator::global()->bounded(100); // 生成0到99之间的随机整数
-        int str_i = randomValue%strs.size();
-        int head_i = randomValue%heads.size();
-        int name_i = randomValue%names.size();
-
-        auto *con_user_wid = new ConUserItem();
-        con_user_wid->SetInfo(0,names[name_i], heads[head_i]);
-        QListWidgetItem *item = new QListWidgetItem;
-        //qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
-        item->setSizeHint(con_user_wid->sizeHint());
-        this->addItem(item);
-        this->setItemWidget(item, con_user_wid);
-    }
 }
 
 bool ContactUserList::eventFilter(QObject *watched, QEvent *event)
@@ -126,11 +110,10 @@ bool ContactUserList::eventFilter(QObject *watched, QEvent *event)
         QScrollBar *scrollBar = this->verticalScrollBar();
         int maxScrollValue = scrollBar->maximum();
         int currentValue = scrollBar->value();
-        //int pageSize = 10; // 每页加载的联系人数量
 
         if (maxScrollValue - currentValue <= 0) {
 
-            auto b_loaded = UserMgr::GetInstance()->IsLoadChatFin();
+            auto b_loaded = UserMgr::GetInstance()->IsLoadConFin();
             if(b_loaded){
                 return true;
             }
@@ -210,10 +193,6 @@ void ContactUserList::slot_add_auth_firend(std::shared_ptr<AuthInfo> auth_info)
         return;
     }
     // 在 groupitem 之后插入新项
-    int randomValue = QRandomGenerator::global()->bounded(100); // 生成0到99之间的随机整数
-    int str_i = randomValue%strs.size();
-    int head_i = randomValue%heads.size();
-
     auto *con_user_wid = new ConUserItem();
     con_user_wid->SetInfo(auth_info);
     QListWidgetItem *item = new QListWidgetItem;
@@ -237,10 +216,6 @@ void ContactUserList::slot_auth_rsp(std::shared_ptr<AuthRsp> auth_rsp)
         return;
     }
     // 在 groupitem 之后插入新项
-    int randomValue = QRandomGenerator::global()->bounded(100); // 生成0到99之间的随机整数
-    int str_i = randomValue%strs.size();
-    int head_i = randomValue%heads.size();
-
     auto *con_user_wid = new ConUserItem();
     con_user_wid->SetInfo(auth_rsp->_uid ,auth_rsp->_name, auth_rsp->_icon);
     QListWidgetItem *item = new QListWidgetItem;

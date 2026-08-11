@@ -1,4 +1,4 @@
-﻿#ifndef USERMGR_H
+#ifndef USERMGR_H
 #define USERMGR_H
 #include <QObject>
 #include <memory>
@@ -31,9 +31,6 @@ public:
     std::vector<std::shared_ptr<ApplyInfo>> GetApplyList();
     void AddApplyList(std::shared_ptr<ApplyInfo> app);
     bool AlreadyApply(int uid);
-    std::vector<std::shared_ptr<UserInfo>> GetChatListPerPage();
-    bool IsLoadChatFin();
-    void UpdateChatLoadedCount();
     std::vector<std::shared_ptr<UserInfo>> GetConListPerPage();
     void UpdateContactLoadedCount();
     bool IsLoadConFin();
@@ -81,7 +78,6 @@ private:
     std::vector<std::shared_ptr<UserInfo>> _friend_list;
     QMap<int, std::shared_ptr<UserInfo>> _friend_map;
     QString _token;
-    int _chat_loaded;
     int _contact_loaded;
     //建立会话id到数据的映射关系
     QMap<int, std::shared_ptr<ChatThreadData>> _chat_map;
@@ -106,10 +102,6 @@ private:
     QHash<QString, std::shared_ptr<MsgInfo> > _name_to_msg_info;
     //传输文件用的锁
     std::mutex _trans_mtx;
-
-public slots:
-    void SlotAddFriendRsp(std::shared_ptr<AuthRsp> rsp);
-    void SlotAddFriendAuth(std::shared_ptr<AuthInfo> auth);
 };
 
 #endif // USERMGR_H

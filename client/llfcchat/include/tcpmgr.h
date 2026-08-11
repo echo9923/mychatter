@@ -68,7 +68,6 @@ class TcpMgr:public QObject, public Singleton<TcpMgr>,
 public:
    ~ TcpMgr();
     void CloseConnection();
-    void SendData(ReqId reqId, QByteArray data);
     //可靠发送：payload + unique_ids 进入持久 pending，按退避无限重传直到 1018/1036 或冲突（§6.1）
     void SendReliableChat(ReqId id, QByteArray payload, const QStringList& unique_ids);
     //§6.2 纠错：仅 emit queued signal，TCP 线程 slot 解析 pending→DTO→emit 给 GUI 线程重建
@@ -153,10 +152,6 @@ public slots:
     void slot_start_offline_pull();
     void slot_offline_pull_timeout();
     void slot_msg_processed(int message_id);
-    void slot_test() {
-        qDebug() << "receve thread is " << QThread::currentThread();
-        qDebug() << "slot test......";
-    }
 signals:
     void sig_close();
     void sig_con_success(bool bsuccess);

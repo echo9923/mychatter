@@ -450,24 +450,8 @@ void ChatPage::on_send_btn_clicked() {
         if (type == MsgType::TEXT_MSG)
         {
             pBubble = new TextBubble(role, msgList[i]->_text_or_url);
-            if (txt_size + msgList[i]->_text_or_url.length() > 1024) {
-                textObj["fromuid"] = user_info->_uid;
-                textObj["touid"] = _chat_data->GetOtherId();
-                textObj["thread_id"] = thread_id;
-                textObj["text_array"] = textArray;
-                QJsonDocument doc(textObj);
-                QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-                //可靠发送（持久重传）
-                TcpMgr::GetInstance()->SendReliableChat(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData, textUniqueIds);
-                //发送并清空之前累计的文本列表
-                txt_size = 0;
-                textArray = QJsonArray();
-                textObj = QJsonObject();
-                textUniqueIds.clear();
-            }
 
             //将bubble和uid绑定，以后可以等网络返回消息后设置是否送达
-            //_bubble_map[uuidString] = pBubble;
             txt_size += msgList[i]->_text_or_url.length();
             QJsonObject obj;
             QByteArray utf8Message = msgList[i]->_text_or_url.toUtf8();

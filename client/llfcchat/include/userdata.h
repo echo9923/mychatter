@@ -157,7 +157,6 @@ public:
     QString GetContent() { return _content; }
     int GetSendUid() { return _send_uid; }
     QString GetMsgContent(){return _content;}
-    void SetUniqueId(int unique_id);
     QString GetUniqueId();
     int GetStatus() { return _status; }
     void SetMsgId(int msg_id) { _msg_id = msg_id; }
@@ -254,10 +253,8 @@ public:
     void MoveMsg(std::shared_ptr<ChatDataBase> msg);
     void UpdateProgress(std::shared_ptr<MsgInfo> msg);
     void SetLastMsgId(int msg_id);
-    void SetOtherId(int other_id);
     int  GetOtherId();
     QString GetGroupName();
-    QMap<int, std::shared_ptr<ChatDataBase>> GetMsgMap();
     int  GetThreadId();
     QMap<int, std::shared_ptr<ChatDataBase>>&  GetMsgMapRef();
     void AppendMsg(int msg_id, std::shared_ptr<ChatDataBase> base_msg);
