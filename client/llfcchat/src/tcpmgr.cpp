@@ -71,12 +71,6 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
 
        });
 
-       //5.15 之后版本
-//       QObject::connect(&_socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred), [&](QAbstractSocket::SocketError socketError) {
-//           Q_UNUSED(socketError)
-//           qDebug() << "Error:" << _socket.errorString();
-//       });
-
        // 处理错误（适用于Qt 5.15之前的版本）
         QObject::connect(&_socket, static_cast<void (QTcpSocket::*)(QTcpSocket::SocketError)>(&QTcpSocket::error),
                             this,
@@ -243,11 +237,6 @@ void TcpMgr::ReconnectChat(const QString& host, quint16 port)
     emit sig_reconnect_chat(host, port);
 }
 
-void TcpMgr::SendData(ReqId reqId, QByteArray data)
-{
-    emit sig_send_data(reqId, data);
-}
-
 void TcpMgr::SendReliableChat(ReqId id, QByteArray payload, const QStringList& unique_ids)
 {
     //公有 API：只发 signal，实际 pending/发送在 TCP 线程的 slot 中执行
@@ -277,7 +266,6 @@ TcpMgr::~TcpMgr(){
 
 void TcpMgr::initHandlers()
 {
-    //auto self = shared_from_this();
     _handlers.insert(ID_CHAT_LOGIN_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
         qDebug()<< "handle id is "<< id ;
@@ -473,7 +461,6 @@ void TcpMgr::initHandlers()
             auto send_uid = data["sender"].toInt();
             auto msg_id = data["msg_id"].toInt();
             auto thread_id = data["thread_id"].toInt();
-            auto unique_id = data["unique_id"].toInt();
             auto msg_content = data["msg_content"].toString();
             QString chat_time = data["chat_time"].toString();
             auto status = data["status"].toInt();
@@ -557,7 +544,6 @@ void TcpMgr::initHandlers()
             auto send_uid = data["sender"].toInt();
             auto msg_id = data["msg_id"].toInt();
             auto thread_id = data["thread_id"].toInt();
-            auto unique_id = data["unique_id"].toInt();
             auto msg_content = data["msg_content"].toString();
             auto status = data["status"].toInt();
             auto chat_data = std::make_shared<TextChatData>(msg_id, thread_id, ChatFormType::PRIVATE,
@@ -853,17 +839,17 @@ void TcpMgr::initHandlers()
 
         if (!jsonObj.contains("error")) {
             int err = ErrorCodes::ERR_JSON;
-            qDebug() << "parse create private chat json parse failed " << err;
+            qDebug() << "parse load chat msg json parse failed " << err;
             return;
         }
 
         int err = jsonObj["error"].toInt();
         if (err != ErrorCodes::SUCCESS) {
-            qDebug() << "get create private chat failed, error is " << err;
+            qDebug() << "get load chat msg failed, error is " << err;
             return;
         }
 
-        qDebug() << "Receive create private chat rsp Success";
+        qDebug() << "Receive load chat msg rsp Success";
 
         int thread_id = jsonObj["thread_id"].toInt();
         int last_msg_id = jsonObj["last_message_id"].toInt();
@@ -874,7 +860,6 @@ void TcpMgr::initHandlers()
             auto send_uid = data["sender"].toInt();
             auto msg_id = data["msg_id"].toInt();
             auto thread_id = data["thread_id"].toInt();
-            auto unique_id = data["unique_id"].toInt();
             auto msg_content = data["msg_content"].toString();
             QString chat_time = data["chat_time"].toString();
             int status = data["status"].toInt();
@@ -954,14 +939,14 @@ void TcpMgr::initHandlers()
 
         if (!jsonObj.contains("error")) {
             int err = ErrorCodes::ERR_JSON;
-            qDebug() << "parse create private chat json parse failed " << err;
+            qDebug() << "parse img chat msg json parse failed " << err;
             return;
         }
 
         int err = jsonObj["error"].toInt();
         if (err == ErrorCodes::MESSAGE_CONFLICT) {
             //永久冲突：停止该 unique_id 重传并标 SEND_FAILED
-            qDebug() << "Img Chat Conflict (1017), stopping retry";
+            qDebug() << "Img Chat Conflict (1035), stopping retry";
             QString conflict_id;
             if (jsonObj.contains("conflict_unique_ids")) {
                 auto arr = jsonObj["conflict_unique_ids"].toArray();
@@ -977,11 +962,11 @@ void TcpMgr::initHandlers()
         }
         if (err != ErrorCodes::SUCCESS) {
             //transient（1014/1016）：不清 pending，定时器继续重传
-            qDebug() << "get create private chat transient error, will retry: " << err;
+            qDebug() << "get img chat msg transient error, will retry: " << err;
             return;
         }
 
-        qDebug() << "Receive create private chat rsp Success";
+        qDebug() << "Receive img chat msg rsp Success";
 
         //收到消息后转发给页面
         auto thread_id = jsonObj["thread_id"].toInt();
@@ -1059,7 +1044,6 @@ void TcpMgr::initHandlers()
             file_obj["last"] = 0;
         }
 
-        //发送文件  todo 留作以后收到服务器返回消息后再发送
 		QJsonDocument doc_file(file_obj);
 		QByteArray fileData = doc_file.toJson(QJsonDocument::Compact);
 
@@ -1082,18 +1066,15 @@ void TcpMgr::initHandlers()
          QJsonObject jsonObj = jsonDoc.object();
          qDebug() << "receive notify img chat msg req success" ;
 
-         //§6.4 统一 envelope（计划6.4）：兼容旧 sender_id/receiver_id/img_name/total_size
+         //§6.4 统一 envelope
          int message_id = jsonObj["message_id"].toInt();
          QString unique_id = jsonObj["unique_id"].toString();
          int thread_id = jsonObj["thread_id"].toInt();
-         int fromuid = jsonObj["fromuid"].toInt(jsonObj["sender_id"].toInt());
-         int touid = jsonObj["touid"].toInt(jsonObj["receiver_id"].toInt());
+         int fromuid = jsonObj["fromuid"].toInt();
+         int touid = jsonObj["touid"].toInt();
          int msg_type = jsonObj["msg_type"].toInt(static_cast<int>(ChatMsgType::PIC));
-         QString content = jsonObj["content"].toString(jsonObj["img_name"].toString());
+         QString content = jsonObj["content"].toString();
          qint64 content_size = jsonObj["content_size"].toString().toLongLong();
-         if (content_size == 0) {
-             content_size = jsonObj["total_size"].toString().toLongLong();
-         }
          //服务端不返回 chat_time/status，客户端按现有下载状态构造
          dispatchIncomingMessage(message_id, unique_id, thread_id, fromuid, touid,
              msg_type, content, content_size, QString(), MsgStatus::READED);
@@ -1298,9 +1279,7 @@ void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
     _bytes_sent = 0;            // ← 归零
     _pending = true;         // ← 标记正在发送
 
-    qint64 written = _socket.write(_current_block);
-   /* qDebug() << "tcp mgr send byte data is" << _current_block
-        << ", write() returned" << written;*/
+    _socket.write(_current_block);
 }
 
 //—— 可靠重传实现（均在 TCP 线程执行）——

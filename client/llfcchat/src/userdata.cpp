@@ -36,11 +36,6 @@ ChatDataBase::ChatDataBase(int msg_id, QString unique_id, int thread_id, ChatFor
 
 }
 
-void ChatDataBase::SetUniqueId(int unique_id)
-{
-    _unique_id = unique_id;
-}
-
 QString ChatDataBase::GetUniqueId()
 {
     return _unique_id;
@@ -86,11 +81,6 @@ void ChatThreadData::SetLastMsgId(int msg_id)
     _last_msg_id = msg_id;
 }
 
-void ChatThreadData::SetOtherId(int other_id)
-{
-    _other_id = other_id;
-}
-
 int  ChatThreadData::GetOtherId() {
     return _other_id;
 }
@@ -98,10 +88,6 @@ int  ChatThreadData::GetOtherId() {
 QString ChatThreadData::GetGroupName()
 {
     return _group_name;
-}
-
-QMap<int, std::shared_ptr<ChatDataBase>> ChatThreadData::GetMsgMap() {
-    return _msg_map;
 }
 
 int ChatThreadData::GetThreadId()

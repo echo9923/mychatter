@@ -1,4 +1,4 @@
-﻿#ifndef CHATPAGE_H
+#ifndef CHATPAGE_H
 #define CHATPAGE_H
 
 #include <QWidget>
@@ -42,7 +42,6 @@ private:
     void clearItems();
     Ui::ChatPage *ui;
     std::shared_ptr<ChatThreadData> _chat_data;
-    QMap<QString, QWidget*>  _bubble_map;
     //管理未回复聊天信息
     QHash<QString, ChatItemBase*> _unrsp_item_map;
     //管理已经回复的消息

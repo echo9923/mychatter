@@ -67,8 +67,6 @@ ChatDialog::ChatDialog(QWidget* parent) :
 
 	ui->search_edit->SetMaxLength(15);
 
-	//连接加载信号和槽
-	connect(ui->chat_user_list, &ChatUserList::sig_loading_chat_user, this, &ChatDialog::slot_loading_chat_user);
 	//刷新头像信号和槽函数
 	connect(ui->user_info_page, &UserInfoPage::sig_reset_head, this, &ChatDialog::slot_reset_head);
 	
@@ -420,23 +418,6 @@ void ChatDialog::handleGlobalMousePress(QMouseEvent* event)
 	}
 }
 
-void ChatDialog::CloseFindDlg()
-{
-	ui->search_list->CloseFindDlg();
-}
-
-void ChatDialog::UpdateChatMsg(std::vector<std::shared_ptr<TextChatData> > msgdata)
-{
-	for (auto& msg : msgdata) {
-		if (msg->GetThreadId() != _cur_chat_thread_id) {
-			break;
-		}
-
-		ui->chat_page->AppendChatMsg(msg);
-	}
-}
-
-
 void ChatDialog::slot_load_chat_thread(bool load_more, int last_thread_id,
 	std::vector<std::shared_ptr<ChatThreadInfo>> chat_threads)
 {
@@ -637,80 +618,6 @@ void ChatDialog::AddLBGroup(StateWidget* lb)
 	_lb_list.push_back(lb);
 }
 
-
-
-//void ChatDialog::addChatUserList()
-//{
-//    //先按照好友列表加载聊天记录，等以后客户端实现聊天记录数据库之后再按照最后信息排序
-//    auto friend_list = UserMgr::GetInstance()->GetChatListPerPage();
-//    if (friend_list.empty() == false) {
-//        for(auto & friend_ele : friend_list){
-//            auto find_iter = _chat_items_added.find(friend_ele->_uid);
-//            if(find_iter != _chat_items_added.end()){
-//                continue;
-//            }
-//            auto *chat_user_wid = new ChatUserWid();
-//            auto user_info = std::make_shared<UserInfo>(friend_ele);
-//            chat_user_wid->SetInfo(user_info);
-//            QListWidgetItem *item = new QListWidgetItem;
-//            //qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
-//            item->setSizeHint(chat_user_wid->sizeHint());
-//            ui->chat_user_list->addItem(item);
-//            ui->chat_user_list->setItemWidget(item, chat_user_wid);
-//            _chat_items_added.insert(friend_ele->_uid, item);
-//        }
-//
-//        //更新已加载条目
-//        UserMgr::GetInstance()->UpdateChatLoadedCount();
-//    }
-//
-//    //模拟测试条目
-//    // 创建QListWidgetItem，并设置自定义的widget
-//    for(int i = 0; i < 13; i++){
-//        int randomValue = QRandomGenerator::global()->bounded(100); // 生成0到99之间的随机整数
-//        int str_i = randomValue%strs.size();
-//        int head_i = randomValue%heads.size();
-//        int name_i = randomValue%names.size();
-//
-//        auto *chat_user_wid = new ChatUserWid();
-//        auto user_info = std::make_shared<UserInfo>(0,names[name_i],
-//                                                    names[name_i],heads[head_i],0,strs[str_i]);
-//        chat_user_wid->SetInfo(user_info);
-//        QListWidgetItem *item = new QListWidgetItem;
-//        //qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
-//        item->setSizeHint(chat_user_wid->sizeHint());
-//        ui->chat_user_list->addItem(item);
-//        ui->chat_user_list->setItemWidget(item, chat_user_wid);
-//    }
-//
-//}
-
-//todo: 加载更多联系人，后期从数据库里添加
-void ChatDialog::loadMoreChatUser() {
-	//auto friend_list = UserMgr::GetInstance()->GetChatListPerPage();
-	//if (friend_list.empty() == false) {
-	//	for (auto& friend_ele : friend_list) {
-	//		auto find_iter = _chat_items_added.find(friend_ele->_uid);
-	//		if (find_iter != _chat_items_added.end()) {
-	//			continue;
-	//		}
-	//		auto* chat_user_wid = new ChatUserWid();
-	//		auto user_info = std::make_shared<UserInfo>(friend_ele);
-	//		chat_user_wid->SetInfo(user_info);
-	//		QListWidgetItem* item = new QListWidgetItem;
-	//		//qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
-	//		item->setSizeHint(chat_user_wid->sizeHint());
-	//		ui->chat_user_list->addItem(item);
-	//		ui->chat_user_list->setItemWidget(item, chat_user_wid);
-	//		_chat_items_added.insert(friend_ele->_uid, item);
-	//	}
-
-	//	//更新已加载条目
-	//	UserMgr::GetInstance()->UpdateChatLoadedCount();
-	//}
-}
-
-
 void ChatDialog::ClearLabelState(StateWidget* lb)
 {
 	for (auto& ele : _lb_list) {
@@ -881,24 +788,6 @@ void ChatDialog::ShowSearch(bool bsearch)
 	}
 }
 
-void ChatDialog::slot_loading_chat_user()
-{
-	if (_b_loading) {
-		return;
-	}
-
-	_b_loading = true;
-	LoadingDlg* loadingDialog = new LoadingDlg(this);
-	loadingDialog->setModal(true);
-	loadingDialog->show();
-	qDebug() << "add new data to list.....";
-	loadMoreChatUser();
-	// 加载完成后关闭对话框
-	loadingDialog->deleteLater();
-
-	_b_loading = false;
-}
-
 void ChatDialog::slot_side_chat()
 {
 	qDebug() << "receive side chat clicked";
@@ -944,12 +833,6 @@ void ChatDialog::slot_text_changed(const QString& str)
 	if (!str.isEmpty()) {
 		ShowSearch(true);
 	}
-}
-
-void ChatDialog::slot_focus_out()
-{
-	qDebug() << "receive focus out signal";
-	ShowSearch(false);
 }
 
 void ChatDialog::slot_loading_contact_user()

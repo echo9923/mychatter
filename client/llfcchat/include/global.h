@@ -34,12 +34,6 @@ extern std::function<void(QWidget*)> repolish;
 
 extern std::function<QString(QString)> xorString;
 
-/*
-* @brief 延迟执行
-*/
-
-extern void delay_run(int msecs);
-
 enum ReqId{
     ID_GET_VARIFY_CODE = 1001, //获取验证码
     ID_REG_USER = 1002, //注册用户
@@ -242,29 +236,12 @@ const QString add_prefix = "添加标签 ";
 const int  tip_offset = 5;
 
 
-const std::vector<QString>  strs ={"hello world !",
-                             "nice to meet u",
-                             "New year，new life",
-                            "You have to love yourself",
-                            "My love is written in the wind ever since the whole world is you"};
-
 const std::vector<QString> heads = {
     ":/res/head_1.jpg",
     ":/res/head_2.jpg",
     ":/res/head_3.jpg",
     ":/res/head_4.jpg",
     ":/res/head_5.jpg"
-};
-
-const std::vector<QString> names = {
-    "HanMeiMei",
-    "Lily",
-    "Ben",
-    "Androw",
-    "Max",
-    "Summer",
-    "Candy",
-    "Hunter"
 };
 
 const int CHAT_COUNT_PER_PAGE = 13;

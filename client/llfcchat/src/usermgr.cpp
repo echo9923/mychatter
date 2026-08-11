@@ -125,27 +125,6 @@ bool UserMgr::AlreadyApply(int uid)
     return false;
 }
 
-std::vector<std::shared_ptr<UserInfo>> UserMgr::GetChatListPerPage() {
-    std::lock_guard<std::mutex> lock(_mtx);
-    std::vector<std::shared_ptr<UserInfo>> friend_list;
-    int begin = _chat_loaded;
-    int end = begin + CHAT_COUNT_PER_PAGE;
-
-    if (begin >= _friend_list.size()) {
-        return friend_list;
-    }
-
-    if (end > _friend_list.size()) {
-        friend_list = std::vector<std::shared_ptr<UserInfo>>(_friend_list.begin() + begin, _friend_list.end());
-        return friend_list;
-    }
-
-
-    friend_list = std::vector<std::shared_ptr<UserInfo>>(_friend_list.begin() + begin, _friend_list.begin()+ end);
-    return friend_list;
-}
-
-
 std::vector<std::shared_ptr<UserInfo>> UserMgr::GetConListPerPage() {
     std::lock_guard<std::mutex> lock(_mtx);
     std::vector<std::shared_ptr<UserInfo>> friend_list;
@@ -167,45 +146,9 @@ std::vector<std::shared_ptr<UserInfo>> UserMgr::GetConListPerPage() {
 }
 
 
-UserMgr::UserMgr():_user_info(nullptr), _chat_loaded(0),_contact_loaded(0), _last_chat_thread_id(0),_cur_load_chat_index(0)
+UserMgr::UserMgr():_user_info(nullptr), _contact_loaded(0), _last_chat_thread_id(0),_cur_load_chat_index(0)
 {
 
-}
-
-void UserMgr::SlotAddFriendRsp(std::shared_ptr<AuthRsp> rsp)
-{
-    AddFriend(rsp);
-}
-
-void UserMgr::SlotAddFriendAuth(std::shared_ptr<AuthInfo> auth)
-{
-    AddFriend(auth);
-}
-
-bool UserMgr::IsLoadChatFin() {
-    std::lock_guard<std::mutex> lock(_mtx);
-    if (_chat_loaded >= _friend_list.size()) {
-        return true;
-    }
-
-    return false;
-}
-
-void UserMgr::UpdateChatLoadedCount() {
-    std::lock_guard<std::mutex> lock(_mtx);
-    int begin = _chat_loaded;
-    int end = begin + CHAT_COUNT_PER_PAGE;
-
-    if (begin >= _friend_list.size()) {
-        return ;
-    }
-
-    if (end > _friend_list.size()) {
-        _chat_loaded = _friend_list.size();
-        return ;
-    }
-
-    _chat_loaded = end;
 }
 
 void UserMgr::UpdateContactLoadedCount() {

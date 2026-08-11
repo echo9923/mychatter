@@ -56,13 +56,6 @@ _bytes_sent(0), _pending(false), _authenticated(false), _cwnd_size(0)
 
 		});
 
-
-	//5.15 之后版本
-//       QObject::connect(&_socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred), [&](QAbstractSocket::SocketError socketError) {
-//           Q_UNUSED(socketError)
-//           qDebug() << "Error:" << _socket.errorString();
-//       });
-
 	// 处理错误（适用于Qt 5.15之前的版本）
 	QObject::connect(&_socket, static_cast<void (QTcpSocket::*)(QTcpSocket::SocketError)>(&QTcpSocket::error),
 		this,
@@ -296,15 +289,12 @@ void FileTcpMgr::initHandlers()
 		if (!recvObj.contains("error")) {
 			int err = ErrorCodes::ERR_JSON;
 			qDebug() << "icon upload_failed, err is Json Parse Err" << err;
-			//todo ... 提示上传失败
-			//emit upload_failed();
 			return;
 		}
 
 		int err = recvObj["error"].toInt();
 		if (err != ErrorCodes::SUCCESS) {
 			qDebug() << "Login Failed, err is " << err;
-			//emit upload_failed();
 			return;
 		}
 
@@ -483,19 +473,15 @@ void FileTcpMgr::initHandlers()
 		if (!recvObj.contains("error")) {
 			int err = ErrorCodes::ERR_JSON;
 			qDebug() << "icon upload_failed, err is Json Parse Err" << err;
-			//todo ... 提示上传失败,将来可能断点重传等
-			//emit upload_failed();
 			return;
 		}
 
 		int err = recvObj["error"].toInt();
 		if (err != ErrorCodes::SUCCESS) {
 			qDebug() << "Login Failed, err is " << err;
-			//emit upload_failed();
 			return;
 		}
 
-		//为了简单起见，先处理网络正常情况  
 		auto seq = recvObj["seq"].toInt();
 		auto name = recvObj["name"].toString();
 		auto receiver = recvObj["receiver"].toInt();
@@ -522,7 +508,6 @@ void FileTcpMgr::initHandlers()
 			//更新已经传输的文件大小
 			file_info->_rsp_size = file_info->_total_size;
 			//将文件移动到用户自己的资源目录
-			//客户端存储聊天记录，按照如下格式存储C:\Users\secon\AppData\Roaming\llfcchat\chatimg\uid, uid为对方uid
 			auto uid = UserMgr::GetInstance()->GetUid();
 			QString storageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 			QString img_path_str = storageDir + "/user/" + QString::number(uid) + "/chatimg/" + QString::number(file_info->_sender);
@@ -532,7 +517,6 @@ void FileTcpMgr::initHandlers()
 			//通知界面显示
 			emit sig_update_upload_progress(file_info);
 			UserMgr::GetInstance()->RmvTransFileByName(name);
-			//todo 此处添加发送其他待发送的文件
 			auto free_file = UserMgr::GetInstance()->GetFreeUploadFile();
 			if (free_file == nullptr) {
 				return;
@@ -569,15 +553,12 @@ void FileTcpMgr::initHandlers()
 		if (!recvObj.contains("error")) {
 			int err = ErrorCodes::ERR_JSON;
 			qDebug() << "icon upload_failed, err is Json Parse Err" << err;
-			//todo ... 提示上传失败
-			//emit upload_failed();
 			return;
 		}
 
 		int err = recvObj["error"].toInt();
 		if (err != ErrorCodes::SUCCESS) {
 			qDebug() << "Login Failed, err is " << err;
-			//emit upload_failed();
 			return;
 		}
 
@@ -620,7 +601,6 @@ void FileTcpMgr::initHandlers()
 			//通知界面显示
 			emit sig_update_upload_progress(file_info);
 			UserMgr::GetInstance()->RmvTransFileByName(name);
-			//todo 此处添加发送其他待发送的文件
 			auto free_file = UserMgr::GetInstance()->GetFreeUploadFile();
 			if (free_file == nullptr) {
 				return;
@@ -658,15 +638,12 @@ void FileTcpMgr::initHandlers()
 		if (!recvObj.contains("error")) {
 			int err = ErrorCodes::ERR_JSON;
 			qDebug() << "icon upload_failed, err is Json Parse Err" << err;
-			//todo ... 提示上传失败
-			//emit upload_failed();
 			return;
 		}
 
 		int err = recvObj["error"].toInt();
 		if (err != ErrorCodes::SUCCESS) {
 			qDebug() << "Login Failed, err is " << err;
-			//emit upload_failed();
 			return;
 		}
 
@@ -705,7 +682,6 @@ void FileTcpMgr::initHandlers()
 			//通知界面显示
 			emit sig_update_upload_progress(file_info);
 			UserMgr::GetInstance()->RmvTransFileByName(name);
-			//todo 此处添加发送其他待发送的文件
 			auto free_file = UserMgr::GetInstance()->GetFreeUploadFile();
 			if (free_file == nullptr) {
 				return;
@@ -857,13 +833,13 @@ void FileTcpMgr::initHandlers()
 
 		if (!jsonObj.contains("error")) {
 			int err = ErrorCodes::ERR_JSON;
-			qDebug() << "parse create private chat json parse failed " << err;
+			qDebug() << "parse download file info json parse failed " << err;
 			return;
 		}
 
 		int err = jsonObj["error"].toInt();
 		if (err != ErrorCodes::SUCCESS) {
-			qDebug() << "get create private chat failed, error is " << err;
+			qDebug() << "get download file info failed, error is " << err;
 			return;
 		}
 
@@ -879,7 +855,6 @@ void FileTcpMgr::initHandlers()
 		QString total_size_str = jsonObj["total_size"].toString();
 		int64_t total_size = total_size_str.toLongLong();  // 64位整数
 		auto uid = UserMgr::GetInstance()->GetUid();
-		//客户端存储聊天记录，按照如下格式存储C:\Users\secon\AppData\Roaming\llfcchat\chatimg\uid, uid为对方uid
 		QString storageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 		QString img_path_str = storageDir + "/user/" + QString::number(uid) + "/chatimg/" + QString::number(sender_id);
 		auto file_info = UserMgr::GetInstance()->GetTransFileByName(name);
@@ -907,7 +882,6 @@ void FileTcpMgr::initHandlers()
 		//3.2 token/uid/sender_id 由 Resource 从 session 派生，不再发送
 		jsonObj_send["receiver_id"] = recv_id;
 		jsonObj_send["message_id"] = message_id;
-		//客户端存储聊天记录，按照如下格式存储C:\Users\secon\AppData\Roaming\llfcchat\chatimg\uid, uid为对方uid
 		QDir chatimgDir(img_path_str);
 		jsonObj["client_path"] = img_path_str;
 		if (!chatimgDir.exists()) {
@@ -925,7 +899,6 @@ void FileTcpMgr::initHandlers()
 
 void FileTcpMgr::CopyFile(QString src_path, QString dst_path, QString dst_dir) {
 	//将文件移动到用户自己的资源目录
-	//客户端存储聊天记录，按照如下格式存储C:\Users\secon\AppData\Roaming\llfcchat\chatimg\uid, uid为对方uid
 
 	QDir chatimgDir(dst_dir);
 	if (!chatimgDir.exists()) {
@@ -1014,7 +987,6 @@ void FileTcpMgr::BatchSend(std::shared_ptr<MsgInfo> msg_info, int sender, int re
 		//直接发送，其实是放入tcpmgr发送队列
 		SendData(ID_IMG_CHAT_UPLOAD_REQ, send_data);
 		_cwnd_size++;
-		//如果
 		if (b_last) {
 			break;
 		}
@@ -1095,7 +1067,6 @@ void FileTcpMgr::slot_continue_upload_file(QString unique_name) {
 		//直接发送，其实是放入tcpmgr发送队列
 		SendData(ID_IMG_CHAT_CONTINUE_UPLOAD_REQ, send_data);
 		_cwnd_size++;
-		//如果
 		if (b_last) {
 			break;
 		}
