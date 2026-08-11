@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "const.h"
 #include <thread>
 #include <jdbc/mysql_driver.h>
@@ -92,14 +92,6 @@ public:
 	 * @return 是否成功
 	 */
 	bool AddFriendApply(const int& from, const int& to, const std::string& desc, const std::string& back_name);
-
-	/**
-	 * @brief 认证好友申请（更新申请状态为已同意）
-	 * @param from 认证者uid
-	 * @param to 申请者uid
-	 * @return 是否成功
-	 */
-	bool AuthFriendApply(const int& from, const int& to);
 
 	/**
 	 * @brief 添加好友关系（双向插入好友表，并生成聊天数据）
@@ -200,13 +192,6 @@ public:
 	 * @return 持久化结果
 	 */
 	SaveMessageResult AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
-
-	/**
-	 * @brief 根据消息ID获取单条聊天消息
-	 * @param message_id 消息ID
-	 * @return 消息智能指针，不存在则返回nullptr
-	 */
-	std::shared_ptr<ChatMessage> GetChatMsg(int message_id);
 
 	/**
 	 * @brief 拉取接收者的待投递消息（delivery_status=0），排除尚未上传完成的图片

@@ -35,7 +35,6 @@ public:
 	bool IsAuthed() const;
 	int GetUserId() const;
 	void Start();
-	void Send(char* msg,  short max_length, short msgid);
 	void Send(std::string msg, short msgid);
 	void Close();
 	std::shared_ptr<CSession> SharedSelf();

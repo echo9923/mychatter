@@ -477,9 +477,6 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 		session->Send(return_str, ID_AUTH_FRIEND_RSP);
 		});
 
-	//先更新数据库， 放到事务中，此处不再处理
-	//MysqlMgr::GetInstance()->AuthFriendApply(uid, touid);
-
 	std::vector<std::shared_ptr<AddFriendMsg>> chat_datas;
 
 	//更新数据库添加好友

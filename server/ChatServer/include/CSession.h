@@ -91,14 +91,6 @@ public:
 	void Start();
 
 	/**
-	 * @brief 向客户端发送消息（原始字节数组版本）
-	 * @param msg 消息数据指针
-	 * @param max_length 数据长度
-	 * @param msgid 消息类型ID
-	 */
-	void Send(char* msg,  short max_length, short msgid);
-
-	/**
 	 * @brief 向客户端发送消息（字符串版本）
 	 * @param msg 消息内容字符串（通常为JSON）
 	 * @param msgid 消息类型ID

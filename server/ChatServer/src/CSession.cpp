@@ -90,33 +90,6 @@ void CSession::Send(std::string msg, short msgid) {
 		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
 }
 
-void CSession::Send(char* msg, short max_length, short msgid) {
-	std::lock_guard<std::mutex> lock(_send_lock);
-	if (_close_after_send) {
-		//已安排写完即关的终帧，后续发送一律拒绝
-		return;
-	}
-	//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出，拒绝并入队（计划5.3）
-	if (static_cast<int>(max_length) > kMaxSendPayload) {
-		std::cout << "session: " << _session_id << " drop oversize payload, msgid=" << msgid
-			<< " length=" << max_length << " exceeds " << kMaxSendPayload << endl;
-		return;
-	}
-	int send_que_size = _send_que.size();
-	if (send_que_size > MAX_SENDQUE) {
-		std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
-		return;
-	}
-
-	_send_que.push(make_shared<SendNode>(msg, max_length, msgid));
-	if (send_que_size>0) {
-		return;
-	}
-	auto& msgnode = _send_que.front();
-	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len), 
-		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
-}
-
 void CSession::SendAndClose(std::string msg, short msgid) {
 	std::lock_guard<std::mutex> lock(_send_lock);
 	if (_close_after_send) {
@@ -403,11 +376,6 @@ void CSession::NotifyChatImgRecv(const ::message::NotifyChatImgReq* request) {
 	rtvalue["msg_type"] = static_cast<int>(ChatMsgType::PIC);
 	rtvalue["content"] = request->file_name();
 	rtvalue["content_size"] = std::to_string(request->total_size());
-	//旧字段保留兼容（sender_id/receiver_id/img_name/total_size）
-	rtvalue["sender_id"] = request->from_uid();
-	rtvalue["receiver_id"] = request->to_uid();
-	rtvalue["img_name"] = request->file_name();
-	rtvalue["total_size"] = std::to_string(request->total_size());
 
 	std::string return_str = rtvalue.dump(4);
 	//通知图片聊天信息

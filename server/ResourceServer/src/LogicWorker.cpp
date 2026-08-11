@@ -10,9 +10,6 @@
 static short ReqToRspId(short msg_id)
 {
 	switch (msg_id) {
-	case ID_TEST_MSG_REQ:                   return ID_TEST_MSG_RSP;
-	case ID_UPLOAD_FILE_REQ:                return ID_UPLOAD_FILE_RSP;
-	case ID_SYNC_FILE_REQ:                  return ID_SYNC_FILE_RSP;
 	case ID_UPLOAD_HEAD_ICON_REQ:           return ID_UPLOAD_HEAD_ICON_RSP;
 	case ID_DOWN_LOAD_FILE_REQ:             return ID_DOWN_LOAD_FILE_RSP;
 	case ID_IMG_CHAT_UPLOAD_REQ:            return ID_IMG_CHAT_UPLOAD_RSP;
@@ -72,137 +69,6 @@ void LogicWorker::PostTask(std::shared_ptr<LogicNode> task)
 
 void LogicWorker::RegisterCallBacks()
 {
-	_fun_callbacks[ID_TEST_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
-		const string& msg_data) {
-			auto root = json::parse(msg_data, nullptr, false);
-			auto data = root["data"].get<std::string>();
-			std::cout << "recv test data is  " << data << std::endl;
-
-			json  rtvalue;
-			Defer defer([this, &rtvalue, session]() {
-				std::string return_str = rtvalue.dump(4);
-				session->Send(return_str, ID_TEST_MSG_RSP);
-				});
-
-			rtvalue["error"] = ErrorCodes::Success;
-			rtvalue["data"] = data;
-	};
-
-	_fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
-		const string& msg_data) {
-			auto root = json::parse(msg_data, nullptr, false);
-			auto md5 = root["md5"].get<std::string>();
-			auto seq = root["seq"].get<int>();
-			auto name = root["name"].get<std::string>();
-			auto total_size = root["total_size"].get<int>();
-			auto trans_size = root["trans_size"].get<int>();
-			auto last = root["last"].get<int>();
-			auto file_data = root["data"].get<std::string>();
-			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto uid = session->GetUserId();
-			//转化为字符串
-			auto uid_str = std::to_string(uid);
-			auto file_path_str = (file_path / uid_str/ name).string();
-			json  rtvalue;
-
-			auto callback = [=](const json& result) {
-
-				// 在异步任务完成后调用
-				json rtvalue = result;
-				rtvalue["error"] = ErrorCodes::Success;
-				rtvalue["total_size"] = total_size;
-				rtvalue["seq"] = seq;
-				rtvalue["name"] = name;
-				rtvalue["trans_size"] = trans_size;
-				rtvalue["last"] = last;
-				rtvalue["md5"] = md5;
-				rtvalue["uid"] = uid;
-				std::string return_str = rtvalue.dump(4);
-				session->Send(return_str, ID_UPLOAD_FILE_RSP);
-			};
-			
-			// 使用 std::hash 对字符串进行哈希
-			std::hash<std::string> hash_fn;
-			size_t hash_value = hash_fn(name); // 生成哈希值
-			int index = hash_value % FILE_WORKER_COUNT;
-			std::cout << "Hash value: " << hash_value << std::endl;
-
-			//第一个包
-			if (seq == 1) {
-				//构造数据存储
-				auto file_info = std::make_shared<FileInfo>();
-				file_info->_file_path_str = file_path_str;
-				file_info->_name = name;
-				file_info->_seq = seq;
-				file_info->_total_size = total_size;
-				file_info->_trans_size = trans_size;
-				//todo... 后期改为redis,以及mysql 持久化存储
-				bool success = RedisMgr::GetInstance()->SetFileInfo(md5, file_info);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_UPLOAD_HEAD_ICON_RSP);
-					return;
-				}
-			}
-			else {
-				auto file_info = RedisMgr::GetInstance()->GetFileInfo(md5);
-				if (file_info == nullptr) {
-					rtvalue["error"] = ErrorCodes::FileNotExists;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_UPLOAD_FILE_RSP);
-					return;
-				}
-				file_info->_seq = seq;
-				file_info->_trans_size = trans_size;
-				bool success = RedisMgr::GetInstance()->SetFileInfo(md5, file_info);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_UPLOAD_FILE_RSP);
-					return;
-				}
-			}
-
-
-			FileSystem::GetInstance()->PostMsgToQue(
-				std::make_shared<FileTask>(session, ID_UPLOAD_FILE_REQ, uid, file_path_str, name, seq, total_size,
-					trans_size, last, file_data, callback),
-				index
-			);
-	};
-
-
-
-	_fun_callbacks[ID_SYNC_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
-		const string& msg_data) {
-
-			auto root = json::parse(msg_data, nullptr, false);
-
-			json  rtvalue;
-			Defer defer([this, &rtvalue, session]() {
-				std::string return_str = rtvalue.dump(4);
-				session->Send(return_str, ID_SYNC_FILE_RSP);
-				});
-
-			auto md5 = root["md5"].get<std::string>();
-
-			auto file = LogicSystem::GetInstance()->GetFileInfo(md5);
-			if (file == nullptr) {
-				rtvalue["error"] = ErrorCodes::FileNotExists;
-				return;
-			}
-
-			rtvalue["error"] = ErrorCodes::Success;
-			rtvalue["total_size"] = std::to_string(file->_total_size);
-			rtvalue["seq"] = file->_seq;
-			rtvalue["name"] = file->_name;
-			rtvalue["trans_size"] = std::to_string(file->_trans_size);
-			rtvalue["md5"] = md5;
-
-	};
-
-
 	_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
@@ -252,8 +118,6 @@ void LogicWorker::RegisterCallBacks()
 				file_info->_seq = seq;
 				file_info->_total_size = total_size;
 				file_info->_trans_size = trans_size;
-				//LogicSystem::GetInstance()->AddMD5File(md5, file_info);
-				//改为用redis存储
 				bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
 				if (!success) {
 					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
@@ -263,8 +127,6 @@ void LogicWorker::RegisterCallBacks()
 				}
 			}
 			else {
-				//auto file_info = LogicSystem::GetInstance()->GetFileInfo(md5);
-				//改为从redis中加载
 				auto file_info = RedisMgr::GetInstance()->GetFileInfo(name);
 				if (file_info == nullptr) {
 					rtvalue["error"] = ErrorCodes::FileNotExists;
@@ -632,7 +494,6 @@ void LogicWorker::RegisterCallBacks()
 				return;
 			}
 
-			// 在异步任务完成后调用
 			json rtvalue ;
 			rtvalue["error"] = ErrorCodes::Success;
 			rtvalue["message_id"] = chat_msg->message_id;
@@ -681,8 +542,6 @@ void LogicWorker::RegisterCallBacks()
 
 
 			auto sender_str = std::to_string(sender);
-			//转化为字符串
-			auto uid_str = std::to_string(uid);
 			auto file_path_str = (file_path / sender_str / name).string();
 
 		    auto down_load_task = std::make_shared<DownloadTask>(session, uid, name, seq, file_path_str, callback);

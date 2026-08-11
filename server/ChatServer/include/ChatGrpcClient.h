@@ -65,15 +65,6 @@ public:
 	AuthFriendRsp NotifyAuthFriend(std::string server_ip, const AuthFriendReq& req);
 
 	/**
-	 * @brief 从 Redis 中获取用户基本信息
-	 * @param base_key Redis中用户信息的键前缀
-	 * @param uid 用户ID
-	 * @param userinfo [out] 输出参数，存储查询到的用户信息
-	 * @return 是否成功获取到用户信息
-	 */
-	bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
-
-	/**
 	 * @brief 向目标ChatServer转发文本聊天消息（带 deadline + 有界重试，计划5.6）
 	 *
 	 * 每次尝试创建新的 ClientContext，deadline = [Delivery] RpcDeadlineMs（回退 3000）；

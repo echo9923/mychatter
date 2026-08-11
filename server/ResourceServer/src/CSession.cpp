@@ -61,23 +61,6 @@ void CSession::Send(std::string msg, short msgid) {
 		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
 }
 
-void CSession::Send(char* msg, short max_length, short msgid) {
-	std::lock_guard<std::mutex> lock(_send_lock);
-	int send_que_size = _send_que.size();
-	if (send_que_size > MAX_SENDQUE) {
-		std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
-		return;
-	}
-
-	_send_que.push(make_shared<SendNode>(msg, max_length, msgid));
-	if (send_que_size>0) {
-		return;
-	}
-	auto& msgnode = _send_que.front();
-	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len), 
-		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
-}
-
 void CSession::Close() {
 	_socket.close();
 	_b_close = true;
@@ -110,12 +93,10 @@ void CSession::AsyncReadBody(int total_len)
 			memcpy(_recv_msg_node->_data , _data , bytes_transfered);
 			_recv_msg_node->_cur_len += bytes_transfered;
 			_recv_msg_node->_data[_recv_msg_node->_total_len] = '\0';
-			//cout << "receive data is " << _recv_msg_node->_data << endl;
 			// 使用 std::hash 对字符串进行哈希
 			std::hash<std::string> hash_fn;
 			size_t hash_value = hash_fn(_session_id); // 生成哈希值
 			int index = hash_value % LOGIC_WORKER_COUNT;
-			//std::cout << "Hash value: " << hash_value << std::endl;
 			//此处将消息投递到逻辑队列中
 			LogicSystem::GetInstance()->PostMsgToQue(make_shared<LogicNode>(shared_from_this(), _recv_msg_node), index);
 			//继续监听头部接受事件
@@ -189,7 +170,6 @@ void CSession::HandleWrite(const boost::system::error_code& error, std::shared_p
 	try {
 		if (!error) {
 			std::lock_guard<std::mutex> lock(_send_lock);
-			//cout << "send data " << _send_que.front()->_data+HEAD_LENGTH << endl;
 			_send_que.pop();
 			if (!_send_que.empty()) {
 				auto& msgnode = _send_que.front();

@@ -30,10 +30,6 @@ bool MysqlMgr::AddFriendApply(const int& from, const int& to, const std::string&
 	return _dao.AddFriendApply(from, to, desc, back_name);
 }
 
-bool MysqlMgr::AuthFriendApply(const int& from, const int& to) {
-	return _dao.AuthFriendApply(from, to);
-}
-
 bool MysqlMgr::AddFriend(const int& from, const int& to, std::string back_name, 
 	std::vector<std::shared_ptr<AddFriendMsg>>& msg_list) {
 	return _dao.AddFriend(from, to, back_name, msg_list);
@@ -86,11 +82,6 @@ SaveMessageResult MysqlMgr::AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>
 
 SaveMessageResult MysqlMgr::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
 	return _dao.AddChatMsg(chat_data);
-}
-
-std::shared_ptr<ChatMessage> MysqlMgr::GetChatMsg(int message_id)
-{
-	return _dao.GetChatMsg(message_id);
 }
 
 std::vector<std::shared_ptr<ChatMessage>> MysqlMgr::GetPendingMessages(int recv_uid,
