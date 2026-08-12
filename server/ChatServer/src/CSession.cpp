@@ -87,7 +87,10 @@ void CSession::Send(std::string msg, short msg_type) {
 	}
 	auto& msgnode = _send_que.front();
 	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
+		[self = SharedSelf(), this](const boost::system::error_code& error,
+			std::size_t /*bytes_transferred*/) {
+				HandleWrite(error, self);
+			});
 }
 
 void CSession::SendAndClose(std::string msg, short msg_type) {
@@ -111,7 +114,10 @@ void CSession::SendAndClose(std::string msg, short msg_type) {
 	}
 	auto& msgnode = _send_que.front();
 	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
+		[self = SharedSelf(), this](const boost::system::error_code& error,
+			std::size_t /*bytes_transferred*/) {
+				HandleWrite(error, self);
+			});
 }
 
 void CSession::Close() {
@@ -295,7 +301,10 @@ void CSession::HandleWrite(const boost::system::error_code& error, std::shared_p
 				if (!_send_que.empty()) {
 					auto& msgnode = _send_que.front();
 					boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-						std::bind(&CSession::HandleWrite, this, std::placeholders::_1, shared_self));
+						[shared_self, this](const boost::system::error_code& error,
+							std::size_t /*bytes_transferred*/) {
+								HandleWrite(error, shared_self);
+							});
 				}
 				else {
 					//队列已排空：若是 SendAndClose 安排的终帧，现在才真正关闭

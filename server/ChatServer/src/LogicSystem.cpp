@@ -166,41 +166,65 @@ void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
 }
 
 void LogicSystem::RegisterCallBacks() {
-	_fun_callbacks[MSG_CHAT_LOGIN] = std::bind(&LogicSystem::LoginHandler, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[MSG_CHAT_LOGIN] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			LoginHandler(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_SEARCH_USER_REQ] = std::bind(&LogicSystem::SearchInfo, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_SEARCH_USER_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			SearchInfo(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_ADD_FRIEND_REQ] = std::bind(&LogicSystem::AddFriendApply, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_ADD_FRIEND_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			AddFriendApply(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_AUTH_FRIEND_REQ] = std::bind(&LogicSystem::AuthFriendApply, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_AUTH_FRIEND_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			AuthFriendApply(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_TEXT_CHAT_MSG_REQ] = std::bind(&LogicSystem::DealChatTextMsg, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_TEXT_CHAT_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			DealChatTextMsg(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_HEART_BEAT_REQ] = std::bind(&LogicSystem::HeartBeatHandler, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_HEART_BEAT_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			HeartBeatHandler(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = std::bind(&LogicSystem::GetUserThreadsHandler, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			GetUserThreadsHandler(session, msg_type, msg_data);
+		};
 	
-	_fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = std::bind(&LogicSystem::CreatePrivateChat, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			CreatePrivateChat(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = std::bind(&LogicSystem::LoadChatMsg, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			LoadChatMsg(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_IMG_CHAT_MSG_REQ] = std::bind(&LogicSystem::DealChatImgMsg, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_IMG_CHAT_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			DealChatImgMsg(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_CHAT_DELIVERY_ACK_REQ] = std::bind(&LogicSystem::DealDeliveryAck, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_CHAT_DELIVERY_ACK_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			DealDeliveryAck(session, msg_type, msg_data);
+		};
 
-	_fun_callbacks[ID_PULL_OFFLINE_MSG_REQ] = std::bind(&LogicSystem::PullOfflineMsg, this,
-		placeholders::_1, placeholders::_2, placeholders::_3);
+	_fun_callbacks[ID_PULL_OFFLINE_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			PullOfflineMsg(session, msg_type, msg_data);
+		};
 
 }
 

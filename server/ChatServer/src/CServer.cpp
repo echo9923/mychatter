@@ -34,7 +34,10 @@ void CServer::HandleAccept(shared_ptr<CSession> new_session, const boost::system
 void CServer::StartAccept() {
 	auto &io_context = _pool->GetIOService();
 	shared_ptr<CSession> new_session = make_shared<CSession>(io_context, this);
-	_acceptor.async_accept(new_session->GetSocket(), std::bind(&CServer::HandleAccept, this, new_session, placeholders::_1));
+	_acceptor.async_accept(new_session->GetSocket(),
+		[this, new_session](const boost::system::error_code& error) {
+			HandleAccept(new_session, error);
+		});
 }
 
 //根据session 的id删除session，并移除用户和session的关联
