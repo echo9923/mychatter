@@ -149,31 +149,22 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 		return Status::OK;
 	}
 
-	//统一十字段 live envelope（计划5.5）：TextChatData proto 已携带
-	//unique_id/msg_id/msgcontent/chat_time，thread_id/fromuid/touid 来自 req，
-	//msg_type=TEXT/status=UN_READ/content_size="0" 为常量。旧 content/unique_id/
-	//message_id/chat_time/status 字段名保留兼容。
+	//统一顶层拍平 live envelope（计划5.5，单条化后与 1039 图片通知同构）：
+	//textmsg proto 字段携带 unique_id/msg_id/msgcontent/chat_time，thread_id/fromuid/touid
+	//来自 req，msg_type=TEXT/status=UN_READ/content_size="0" 为常量。
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
 	rtvalue["touid"] = request->touid();
 	rtvalue["thread_id"] = request->thread_id();
-	json text_array;
-	for (auto& msg : request->textmsgs()) {
-		json element;
-		element["message_id"] = msg.msg_id();
-		element["unique_id"] = msg.unique_id();
-		element["thread_id"] = request->thread_id();
-		element["fromuid"] = request->fromuid();
-		element["touid"] = request->touid();
-		element["msg_type"] = static_cast<int>(ChatMsgType::TEXT);
-		element["content"] = msg.msgcontent();
-		element["content_size"] = "0";
-		element["chat_time"] = msg.chat_time();
-		element["status"] = MsgStatus::UN_READ;
-		text_array.push_back(element);
-	}
-	rtvalue["chat_datas"] = text_array;
+	const auto& msg = request->textmsg();
+	rtvalue["message_id"] = msg.msg_id();
+	rtvalue["unique_id"] = msg.unique_id();
+	rtvalue["msg_type"] = static_cast<int>(ChatMsgType::TEXT);
+	rtvalue["content"] = msg.msgcontent();
+	rtvalue["content_size"] = "0";
+	rtvalue["chat_time"] = msg.chat_time();
+	rtvalue["status"] = MsgStatus::UN_READ;
 
 	std::string return_str = rtvalue.dump(4);
 

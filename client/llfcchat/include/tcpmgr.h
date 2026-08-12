@@ -21,11 +21,11 @@ private:
     QThread* _tcp_thread;
 };
 
-//持久化待重传请求（§6.1）
+//持久化待重传请求（§6.1，单条化：一条 pending = 一条消息 = 一个 unique_id）
 struct PendingRequest {
     ReqId id;                  // 1017 文本 / 1035 图片
     QByteArray payload;        // 原始 JSON payload
-    QStringList unique_ids;    // 本批次客户端唯一标识
+    QString unique_id;         // 客户端唯一标识（幂等键）
     qint64 retry_delay_ms;     // 当前退避间隔（倍增上限 30s）
     qint64 next_send_epoch_ms; // 下次发送时刻（epoch ms）
 };
@@ -37,12 +37,12 @@ struct AckPending {
 };
 
 //§6.2 纠错：跨线程 replay DTO（TCP 线程解析内存 pending 构造，queued 传到 GUI 线程）
-//禁止携带裸指针；仅含值类型字段。文本 pending 摘要
+//禁止携带裸指针；仅含值类型字段。文本 pending 摘要（单条化：一个 DTO 一条消息）
 struct TextReplayDTO {
     int thread_id;
     int fromuid;
-    QStringList unique_ids;   // 仍 pending 的 unique_id（与 contents 一一对应）
-    QStringList contents;     // 对应文本内容
+    QString unique_id;    // 仍 pending 的 unique_id
+    QString content;      // 文本内容
 };
 //图片 pending 摘要
 struct ImageReplayDTO {
@@ -68,8 +68,8 @@ class TcpMgr:public QObject, public Singleton<TcpMgr>,
 public:
    ~ TcpMgr();
     void CloseConnection();
-    //可靠发送：payload + unique_ids 进入持久 pending，按退避无限重传直到 1018/1036 或冲突（§6.1）
-    void SendReliableChat(ReqId id, QByteArray payload, const QStringList& unique_ids);
+    //可靠发送：payload + unique_id 进入持久 pending，按退避无限重传直到 1018/1036 或冲突（§6.1）
+    void SendReliableChat(ReqId id, QByteArray payload, const QString& unique_id);
     //§6.2 纠错：仅 emit queued signal，TCP 线程 slot 解析 pending→DTO→emit 给 GUI 线程重建
     void StartPendingReplay();
     //§6.6：仅 emit queued signal，TCP 线程 slot 启动离线 pull 循环
@@ -122,12 +122,12 @@ private:
     int _offline_pull_batch;              // 配置 OfflinePullBatch
     //可靠重传内部方法（均在 TCP 线程执行）
     void loadDeliveryConfig();
-    void addPendingRequest(ReqId id, QByteArray payload, QStringList unique_ids);
+    void addPendingRequest(ReqId id, QByteArray payload, const QString& unique_id);
     void persistPendingRequests();
     void restorePendingRequests(int uid);
     void loadPendingFromDisk(int uid);
     void removePendingByUniqueId(const QString& unique_id);
-    void handleTextConflict(int thread_id, int fromuid, const QStringList& conflict_ids);
+    void handleTextConflict(const QString& conflict_id);
     void handleImageConflict(const QString& conflict_id);
     //§6.4 统一 envelope 分发（1019/1039/1052 共用）：文本走 sig_text_chat_msg，图片走 sig_img_chat_msg+下载
     void dispatchIncomingMessage(int message_id, const QString& unique_id,
@@ -145,7 +145,7 @@ public slots:
     void slot_tcp_connect(std::shared_ptr<ServerInfo> si);
     void slot_reconnect_chat(QString host, quint16 port);
     void slot_send_data(ReqId reqId, QByteArray data);
-    void slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
+    void slot_send_reliable_chat(ReqId id, QByteArray payload, QString unique_id);
     void slot_retry_timeout();
     void slot_start_pending_replay();
     void slot_replay_done(QStringList failed_unique_ids);
@@ -159,7 +159,7 @@ signals:
     void sig_reconnect_finished(bool success);
     void sig_send_data(ReqId reqId, QByteArray data);
     //线程边界信号：公有 API 只 emit 此信号，slot_send_reliable_chat 在 TCP 线程执行
-    void sig_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids);
+    void sig_send_reliable_chat(ReqId id, QByteArray payload, QString unique_id);
     //§6.2：公有 StartPendingReplay 只 emit 此信号，slot_start_pending_replay 在 TCP 线程执行
     void sig_start_pending_replay();
     //§6.2 纠错：TCP 线程解析 pending → DTO，queued 到 GUI 线程重建 bubble/MsgInfo/QPixmap
@@ -179,7 +179,7 @@ signals:
     void sig_friend_apply(std::shared_ptr<AddFriendApply>);
     void sig_add_auth_friend(std::shared_ptr<AuthInfo>);
     void sig_auth_rsp(std::shared_ptr<AuthRsp>);
-    void sig_text_chat_msg(std::vector<std::shared_ptr<TextChatData>> msg_list);
+    void sig_text_chat_msg(std::shared_ptr<TextChatData> msg);
     void sig_notify_offline();
     void sig_connection_closed();
     void sig_load_chat_thread(bool load_more, int last_thread_id, 
@@ -188,7 +188,7 @@ signals:
     void sig_load_chat_msg(int thread_id, int message_id, bool load_more,
         std::vector<std::shared_ptr<ChatDataBase>> msg_list);
 
-    void sig_chat_msg_rsp(int thread_id, std::vector<std::shared_ptr<TextChatData>> msg_list);
+    void sig_chat_msg_rsp(int thread_id, std::shared_ptr<TextChatData> msg);
     void sig_chat_img_rsp(int thread_id, std::shared_ptr<ImgChatData> msg_list);
     void sig_img_chat_msg(std::shared_ptr<ImgChatData> msg_list);
 };

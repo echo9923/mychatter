@@ -105,16 +105,15 @@ async def main():
         try:
             while True:
                 mid, body = await recv_frame(r)
+                # 单条化：1018/1019 均为顶层拍平 envelope，unique_id 直接在顶层
                 if mid == 1018:
                     if body.get("error", 0) != 0: ack_err[uid] = ack_err.get(uid, 0) + 1
-                    for env in body.get("chat_datas", []):
-                        uq = env.get("unique_id")
-                        if uq in send_t0.get(uid, {}):
-                            rtts.append((time.perf_counter() - send_t0[uid].pop(uq)) * 1000)
-                            acked[uid].add(uq)
+                    uq = body.get("unique_id")
+                    if uq in send_t0.get(uid, {}):
+                        rtts.append((time.perf_counter() - send_t0[uid].pop(uq)) * 1000)
+                        acked[uid].add(uq)
                 elif mid == 1019:
-                    for env in body.get("chat_datas", []):
-                        recv_got.setdefault(uid, set()).add(env.get("unique_id"))
+                    recv_got.setdefault(uid, set()).add(body.get("unique_id"))
         except (asyncio.IncompleteReadError, ConnectionError, OSError):
             pass
 
@@ -127,7 +126,7 @@ async def main():
                 await asyncio.sleep(0.0005)
             send_t0[a][uq] = time.perf_counter()
             await send_frame(w, 1017, {"fromuid": a, "touid": b, "thread_id": tid,
-                "text_array": [{"content": CONTENT, "unique_id": uq}]})
+                "content": CONTENT, "unique_id": uq})
 
     readers = [asyncio.create_task(reader_loop(u)) for u in conns]
     t0 = time.perf_counter()

@@ -58,11 +58,12 @@ message TextChatData {
   string chat_time = 4;
 }
 
+//单条化：一次跨服投递固定携带一条文本消息（text_array 批量设计已删除）
 message TextChatMsgReq {
   int32 fromuid = 1;
   int32 touid = 2;
   int32 thread_id = 3;
-  repeated TextChatData textmsgs = 4;
+  TextChatData textmsg = 4;
 }
 
 message TextChatMsgRsp {
@@ -70,7 +71,7 @@ message TextChatMsgRsp {
   int32 fromuid = 2;
   int32 touid = 3;
   int32 thread_id = 4;
-  repeated TextChatData textmsgs = 5;
+  reserved 5; //原 repeated TextChatData textmsgs，单条化后无人消费，删除
 }
 
 // ========== 踢人 ==========

@@ -569,7 +569,9 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	auto touid = root["touid"].get<int>();
 	auto thread_id = root["thread_id"].get<int>();
 
-	const json  arrays = root["text_array"];
+	//单条化：content/unique_id 顶层平铺（text_array 批量设计已删除）
+	auto content = root["content"].get<std::string>();
+	auto unique_id = root["unique_id"].get<std::string>();
 
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
@@ -577,29 +579,21 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	rtvalue["touid"] = touid;
 	rtvalue["thread_id"] = thread_id;
 
-	//逐条构造 ChatMessage：status 统一 UN_READ，content_size 固定 0（计划5.4/3.2）
-	auto timestamp = getCurrentTimestamp();
-	std::vector<std::shared_ptr<ChatMessage>> chat_datas;
-	for (const auto& txt_obj : arrays) {
-		auto content = txt_obj["content"].get<std::string>();
-		auto unique_id = txt_obj["unique_id"].get<std::string>();
-		auto chat_msg = std::make_shared<ChatMessage>();
-		chat_msg->chat_time = timestamp;
-		chat_msg->sender_id = uid;
-		chat_msg->recv_id = touid;
-		chat_msg->unique_id = unique_id;
-		chat_msg->thread_id = thread_id;
-		chat_msg->content = content;
-		chat_msg->status = MsgStatus::UN_READ;
-		chat_msg->msg_type = static_cast<int>(ChatMsgType::TEXT);
-		chat_msg->content_size = 0;
-		chat_datas.push_back(chat_msg);
-	}
+	//构造 ChatMessage：status 统一 UN_READ，content_size 固定 0（计划5.4/3.2）
+	auto chat_msg = std::make_shared<ChatMessage>();
+	chat_msg->chat_time = getCurrentTimestamp();
+	chat_msg->sender_id = uid;
+	chat_msg->recv_id = touid;
+	chat_msg->unique_id = unique_id;
+	chat_msg->thread_id = thread_id;
+	chat_msg->content = content;
+	chat_msg->status = MsgStatus::UN_READ;
+	chat_msg->msg_type = static_cast<int>(ChatMsgType::TEXT);
+	chat_msg->content_size = 0;
 
-	//插入数据库（同一事务；任一 conflict/SQL 错误回滚本批新行）。DAO 在 commit 后回写
+	//插入数据库（单条自成事务）。DAO 在 commit 后回写
 	//canonical message_id/status/chat_time/delivery_status（计划3.3）
-	std::vector<std::string> conflict_unique_ids;
-	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_datas, conflict_unique_ids);
+	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_msg);
 	if (save_res == SaveMessageResult::Failed) {
 		//持久化失败：不 ACK、不转发，sender 按 transient 重传（计划3.5/5.4）
 		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
@@ -607,33 +601,24 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 		return;
 	}
 	if (save_res == SaveMessageResult::Conflict) {
-		//永久冲突：原消息不变，sender 停止重传对应 unique_id（计划3.5/5.4）
+		//永久冲突：原消息不变，sender 停止重传该 unique_id（计划3.5/5.4）
 		rtvalue["error"] = ErrorCodes::MESSAGE_CONFLICT;
-		rtvalue["conflict_unique_ids"] = conflict_unique_ids;
+		rtvalue["unique_id"] = chat_msg->unique_id;
 		session->Send(rtvalue.dump(4), ID_TEXT_CHAT_MSG_RSP);
 		return;
 	}
 
-	//Stored/Duplicate：用 canonical 持久值构造相同 sender response。每项为统一十字段
-	//envelope（兼容旧 message_id/unique_id/content/status/chat_time 字段）（计划5.4/5.3）
-	for (const auto& chat_data : chat_datas) {
-		rtvalue["chat_datas"].push_back(BuildMessageEnvelope(chat_data));
-	}
+	//Stored/Duplicate：canonical 持久值 envelope 拍平到响应顶层（计划5.4/5.3）
+	rtvalue.update(BuildMessageEnvelope(chat_msg));
 
 	//【关键顺序】事务已提交 → 先发 1018（语义固定为“服务端已持久化”），再做 pending
 	//激活与 live delivery。不得用 Defer 延后：那会让 Redis/live 先于 sender ACK（计划5.4）
 	std::string sender_rsp = rtvalue.dump(4);
 	session->Send(sender_rsp, ID_TEXT_CHAT_MSG_RSP);
 
-	//仅 canonical delivery_status==Pending 的行才写 pending ZSET 并尝试 live delivery。
+	//仅 canonical delivery_status==Pending 才写 pending ZSET 并尝试 live delivery。
 	//已 ACK 的 duplicate 只重发上面的 sender response，绝不重新打开 pending（计划5.4）
-	std::vector<std::shared_ptr<ChatMessage>> pending_rows;
-	for (const auto& chat_data : chat_datas) {
-		if (chat_data->delivery_status == DeliveryStatus::Pending) {
-			pending_rows.push_back(chat_data);
-		}
-	}
-	if (pending_rows.empty()) {
+	if (chat_msg->delivery_status != DeliveryStatus::Pending) {
 		return;
 	}
 
@@ -644,12 +629,10 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	if (ttl < 1) ttl = 604800;
 	std::string zkey = OFFLINE_MSG_PREFIX + std::to_string(touid);
 	auto redis = RedisMgr::GetInstance();
-	for (const auto& chat_data : pending_rows) {
-		std::string mid = std::to_string(chat_data->message_id);
-		if (!redis->ZAdd(zkey, chat_data->message_id, mid)) {
-			std::cout << "DealChatTextMsg ZAdd failed, key=" << zkey
-				<< " message_id=" << chat_data->message_id << std::endl;
-		}
+	std::string mid = std::to_string(chat_msg->message_id);
+	if (!redis->ZAdd(zkey, chat_msg->message_id, mid)) {
+		std::cout << "DealChatTextMsg ZAdd failed, key=" << zkey
+			<< " message_id=" << chat_msg->message_id << std::endl;
 	}
 	if (!redis->Expire(zkey, ttl)) {
 		std::cout << "DealChatTextMsg Expire failed, key=" << zkey << std::endl;
@@ -668,15 +651,9 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	auto& cfg = ConfigMgr::Inst();
 	auto self_name = cfg["SelfServer"]["Name"];
 	if (to_ip_value == self_name) {
-		//本机 recipient：构造统一十字段 live envelope，纳入 recipient uid 分片（计划1.5/5.5）
-		json notify;
+		//本机 recipient：顶层拍平 envelope（与 1039 图片通知同构），纳入 recipient uid 分片（计划1.5/5.5）
+		json notify = BuildMessageEnvelope(chat_msg);
 		notify["error"] = ErrorCodes::Success;
-		notify["fromuid"] = uid;
-		notify["touid"] = touid;
-		notify["thread_id"] = thread_id;
-		for (const auto& chat_data : pending_rows) {
-			notify["chat_datas"].push_back(BuildMessageEnvelope(chat_data));
-		}
 		std::string notify_str = notify.dump(4);
 		PostToUser(touid, [touid, notify_str]() {
 			auto session = UserMgr::GetInstance()->GetSession(touid);
@@ -687,22 +664,20 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 		return;
 	}
 
-	//远端：TextChatMsgReq 携带 unique_id/msg_id/content/chat_time。投递经 sender uid
-	//固定的 delivery shard，避免 3s deadline 阻塞 logic shard，且同一 sender 的多次跨服
-	//调用在 delivery worker 上保持顺序（计划5.6）。带重试的 NotifyTextChatMsg 内部按
-	//[Delivery] 配置 deadline/最多尝试次数/退避，重试耗尽只日志：pending 已在 RPC 前
-	//建立，receiver 后续 pull 兜底；不撤销 sender ACK、不改 DB。
+	//远端：TextChatMsgReq 携带 unique_id/msg_id/content/chat_time（单条 textmsg 字段）。
+	//投递经 sender uid 固定的 delivery shard，避免 3s deadline 阻塞 logic shard，且同一
+	//sender 的多次跨服调用在 delivery worker 上保持顺序（计划5.6）。带重试的
+	//NotifyTextChatMsg 内部按 [Delivery] 配置 deadline/最多尝试次数/退避，重试耗尽只日志：
+	//pending 已在 RPC 前建立，receiver 后续 pull 兜底；不撤销 sender ACK、不改 DB。
 	TextChatMsgReq text_msg_req;
 	text_msg_req.set_fromuid(uid);
 	text_msg_req.set_touid(touid);
 	text_msg_req.set_thread_id(thread_id);
-	for (const auto& chat_data : pending_rows) {
-		auto* text_msg = text_msg_req.add_textmsgs();
-		text_msg->set_unique_id(chat_data->unique_id);
-		text_msg->set_msgcontent(chat_data->content);
-		text_msg->set_msg_id(chat_data->message_id);
-		text_msg->set_chat_time(chat_data->chat_time);
-	}
+	auto* text_msg = text_msg_req.mutable_textmsg();
+	text_msg->set_unique_id(chat_msg->unique_id);
+	text_msg->set_msgcontent(chat_msg->content);
+	text_msg->set_msg_id(chat_msg->message_id);
+	text_msg->set_chat_time(chat_msg->chat_time);
 
 	//拷贝 server_ip / proto req 进闭包（按值捕获），闭包在 sender 固定的 delivery worker 上执行
 	std::string server_ip = to_ip_value;
@@ -1103,9 +1078,8 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 		return;
 	}
 	if (save_res == SaveMessageResult::Conflict) {
-		//永久冲突：原消息不变，不创建第二行
+		//永久冲突：原消息不变，不创建第二行（unique_id 已在 rtvalue 顶层）
 		rtvalue["error"] = ErrorCodes::MESSAGE_CONFLICT;
-		rtvalue["conflict_unique_ids"] = std::vector<std::string>{chat_msg->unique_id};
 		session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
 		return;
 	}

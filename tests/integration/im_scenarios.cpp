@@ -224,17 +224,15 @@ static bool LoginUserPinned(TcpClient& c, int uid, Redis& redis,
 	return false;
 }
 
-// Build a 1017 body carrying a single text message.
+// Build a 1017 body carrying a single text message (单条化：content/unique_id 顶层平铺).
 static std::string BuildTextReq(int fromuid, int touid, int thread_id,
                                 const std::string& content, const std::string& unique_id) {
 	json j;
 	j["fromuid"] = fromuid;
 	j["touid"]   = touid;
 	j["thread_id"] = thread_id;
-	json item;
-	item["content"]  = content;
-	item["unique_id"] = unique_id;
-	j["text_array"] = json::array({ item });
+	j["content"]   = content;
+	j["unique_id"] = unique_id;
 	return j.dump();
 }
 
@@ -364,10 +362,10 @@ static void OrderConsumer(OrderSide& s, std::atomic<int>& gseq, int deadline_ms)
 		if (f.id != ID_TEXT_CHAT_MSG_RSP) continue;  // drain 1019 etc.
 		auto j = ParseJson(f.body);
 		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { s.ok = false; return; }
-		const auto& cd = j.value("chat_datas", json::array());
-		if (!cd.is_array() || cd.empty()) { s.ok = false; return; }
-		const std::string uid = cd[0].value("unique_id", "");
-		const int mid = cd[0].value("message_id", 0);
+		//单条化：1018 成功响应为顶层拍平 envelope
+		const std::string uid = j.value("unique_id", "");
+		const int mid = j.value("message_id", 0);
+		if (uid.empty() || mid <= 0) { s.ok = false; return; }
 		auto it = s.uid_to_idx->find(uid);
 		if (it == s.uid_to_idx->end()) continue;
 		const int idx = it->second;
@@ -606,11 +604,9 @@ bool ScenarioDedup() {
 		bool g2 = c.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &r2);
 		int mid1 = -1, mid2 = -1, err1 = -1, err2 = -1;
 		if (g1) { auto j = ParseJson(r1.body); err1 = j.value("error", -1);
-			if (err1 == 0 && j.contains("chat_datas") && !j["chat_datas"].empty())
-				mid1 = j["chat_datas"][0].value("message_id", -1); }
+			if (err1 == 0) mid1 = j.value("message_id", -1); }
 		if (g2) { auto j = ParseJson(r2.body); err2 = j.value("error", -1);
-			if (err2 == 0 && j.contains("chat_datas") && !j["chat_datas"].empty())
-				mid2 = j["chat_datas"][0].value("message_id", -1); }
+			if (err2 == 0) mid2 = j.value("message_id", -1); }
 
 		Check(s1 && s2 && g1 && g2 && err1 == 0 && err2 == 0,
 			"dedup: both re-sends get 1018 success",
@@ -637,8 +633,7 @@ bool ScenarioDedup() {
 		Frame ro; bool go = c.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &ro);
 		int mid_orig = -1, err_orig = -1;
 		if (go) { auto j = ParseJson(ro.body); err_orig = j.value("error", -1);
-			if (err_orig == 0 && j.contains("chat_datas") && !j["chat_datas"].empty())
-				mid_orig = j["chat_datas"][0].value("message_id", -1); }
+			if (err_orig == 0) mid_orig = j.value("message_id", -1); }
 		Check(so && go && err_orig == 0 && mid_orig > 0, "dedup: establish baseline row",
 			("err=" + std::to_string(err_orig) + " mid=" + std::to_string(mid_orig)).c_str());
 
@@ -955,9 +950,7 @@ bool ScenarioOffline() {
 		if (!cS.Wait(ID_TEXT_CHAT_MSG_RSP, 15000, &f)) { send_ok = false; break; }
 		auto j = ParseJson(f.body);
 		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { send_ok = false; break; }
-		const auto& cd = j.value("chat_datas", json::array());
-		if (cd.is_array() && !cd.empty())
-			sent_mids.push_back(cd[0].value("message_id", 0));
+		sent_mids.push_back(j.value("message_id", 0));
 	}
 	Check(send_ok && (int)sent_mids.size() == MSG_COUNT,
 		"offline: sender received 100x 1018",
@@ -1115,9 +1108,8 @@ bool ScenarioLostAck() {
 	int sent_mid = -1;
 	if (got_rsp) {
 		auto j = ParseJson(rsp.body);
-		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS &&
-		    j.contains("chat_datas") && !j["chat_datas"].empty())
-			sent_mid = j["chat_datas"][0].value("message_id", -1);
+		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS)
+			sent_mid = j.value("message_id", -1);
 	}
 	Check(got_rsp && sent_mid > 0, "lost-ack: message sent and persisted",
 		("mid=" + std::to_string(sent_mid)).c_str());
@@ -1385,9 +1377,8 @@ bool ScenarioCrossServer() {
 	int sent_mid = -1;
 	if (got_1018) {
 		auto j = ParseJson(rsp.body);
-		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS &&
-		    j.contains("chat_datas") && !j["chat_datas"].empty())
-			sent_mid = j["chat_datas"][0].value("message_id", -1);
+		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS)
+			sent_mid = j.value("message_id", -1);
 	}
 	Check(got_1018 && sent_mid > 0, "cross-server: sender got 1018 despite broken RPC",
 		("mid=" + std::to_string(sent_mid)).c_str());
@@ -2026,11 +2017,9 @@ bool ScenarioChatFailover() {
 		const auto response_json = ParseJson(sender_rsp.body);
 		sender_ack = response_json.is_object() &&
 			response_json.value("error", -1) == ERR_SUCCESS &&
-			response_json.contains("chat_datas") &&
-			response_json["chat_datas"].is_array() &&
-			!response_json["chat_datas"].empty();
+			response_json.contains("message_id");
 		if (sender_ack) {
-			sender_envelope = response_json["chat_datas"][0];
+			sender_envelope = response_json;
 			message_id = sender_envelope.value("message_id", -1);
 			sender_ack = message_id > 0 &&
 				sender_envelope.value("unique_id", "") == unique_id;

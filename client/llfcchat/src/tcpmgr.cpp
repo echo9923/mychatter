@@ -237,11 +237,10 @@ void TcpMgr::ReconnectChat(const QString& host, quint16 port)
     emit sig_reconnect_chat(host, port);
 }
 
-void TcpMgr::SendReliableChat(ReqId id, QByteArray payload, const QStringList& unique_ids)
+void TcpMgr::SendReliableChat(ReqId id, QByteArray payload, const QString& unique_id)
 {
     //公有 API：只发 signal，实际 pending/发送在 TCP 线程的 slot 中执行
-    QStringList ids = unique_ids;
-    emit sig_send_reliable_chat(id, payload, ids);
+    emit sig_send_reliable_chat(id, payload, unique_id);
 }
 
 void TcpMgr::StartPendingReplay()
@@ -581,17 +580,9 @@ void TcpMgr::initHandlers()
 
         int err = jsonObj["error"].toInt();
         if (err == ErrorCodes::MESSAGE_CONFLICT) {
-            //永久冲突：按 conflict_unique_ids 停止重传并标 SEND_FAILED
-            qDebug() << "Text Chat Conflict (1017), stopping retry for conflicted items";
-            auto thread_id = jsonObj.value("thread_id").toInt();
-            auto sender = jsonObj.value("fromuid").toInt();
-            QStringList conflict_ids;
-            if (jsonObj.contains("conflict_unique_ids")) {
-                for (const auto& v : jsonObj["conflict_unique_ids"].toArray()) {
-                    conflict_ids.append(v.toString());
-                }
-            }
-            handleTextConflict(thread_id, sender, conflict_ids);
+            //永久冲突：停止该 unique_id 重传并标 SEND_FAILED（单条化后冲突响应带顶层 unique_id）
+            qDebug() << "Text Chat Conflict (1017), stopping retry";
+            handleTextConflict(jsonObj.value("unique_id").toString());
             return;
         }
         if (err != ErrorCodes::SUCCESS) {
@@ -605,25 +596,21 @@ void TcpMgr::initHandlers()
         auto thread_id = jsonObj["thread_id"].toInt();
         auto sender = jsonObj["fromuid"].toInt();
 
-
-        std::vector<std::shared_ptr<TextChatData>> chat_datas;
-        for (const QJsonValue& data : jsonObj["chat_datas"].toArray()) {      
-            auto msg_id = data["message_id"].toInt();
-            auto unique_id = data["unique_id"].toString();
-            auto msg_content = data["content"].toString();
-            QString chat_time = data["chat_time"].toString();
-            int status = data["status"].toInt();
-            auto chat_data = std::make_shared<TextChatData>(msg_id,unique_id, thread_id, ChatFormType::PRIVATE,
-                ChatMsgType::TEXT, msg_content, sender, status, chat_time);
-            chat_datas.push_back(chat_data);
-            //清理已确认的 unique_id（批量未覆盖部分保留继续重传）
-            removePendingByUniqueId(unique_id);
-        }
+        //单条化：1018 成功响应为顶层拍平 envelope
+        auto msg_id = jsonObj["message_id"].toInt();
+        auto unique_id = jsonObj["unique_id"].toString();
+        auto msg_content = jsonObj["content"].toString();
+        QString chat_time = jsonObj["chat_time"].toString();
+        int status = jsonObj["status"].toInt();
+        auto chat_data = std::make_shared<TextChatData>(msg_id, unique_id, thread_id, ChatFormType::PRIVATE,
+            ChatMsgType::TEXT, msg_content, sender, status, chat_time);
+        //清理已确认的 unique_id
+        removePendingByUniqueId(unique_id);
         //pending 变更后持久化
         persistPendingRequests();
 
         //发送信号通知界面
-        emit sig_chat_msg_rsp(thread_id, chat_datas);
+        emit sig_chat_msg_rsp(thread_id, chat_data);
 
       });
 
@@ -652,26 +639,19 @@ void TcpMgr::initHandlers()
 
         qDebug() << "Receive Text Chat Notify Success " ;
 
-        //§6.4 统一 envelope：顶层 thread_id/fromuid/touid，每个 chat_datas 元素含 per-message 字段
-        auto top_thread_id = jsonObj["thread_id"].toInt();
-        auto top_fromuid = jsonObj["fromuid"].toInt();
-        auto top_touid = jsonObj.value("touid").toInt();
-
-        for (const QJsonValue& elem : jsonObj["chat_datas"].toArray()) {
-            int msg_id = elem["message_id"].toInt();
-            QString unique_id = elem["unique_id"].toString();
-            QString msg_content = elem["content"].toString();
-            QString chat_time = elem["chat_time"].toString();
-            int status = elem["status"].toInt();
-            int msg_type = elem["msg_type"].toInt(static_cast<int>(ChatMsgType::TEXT));
-            qint64 content_size = elem["content_size"].toString().toLongLong();
-            //元素可自带 thread_id/fromuid（统一 envelope），回退到顶层
-            int el_thread = elem["thread_id"].toInt(top_thread_id);
-            int el_from = elem["fromuid"].toInt(top_fromuid);
-            int el_to = elem["touid"].toInt(top_touid);
-            dispatchIncomingMessage(msg_id, unique_id, el_thread, el_from, el_to,
-                msg_type, msg_content, content_size, chat_time, status);
-        }
+        //§6.4 顶层拍平 envelope（单条化后与 1039 图片通知同构）
+        int msg_id = jsonObj["message_id"].toInt();
+        QString unique_id = jsonObj["unique_id"].toString();
+        QString msg_content = jsonObj["content"].toString();
+        QString chat_time = jsonObj["chat_time"].toString();
+        int status = jsonObj["status"].toInt();
+        int msg_type = jsonObj["msg_type"].toInt(static_cast<int>(ChatMsgType::TEXT));
+        qint64 content_size = jsonObj["content_size"].toString().toLongLong();
+        int el_thread = jsonObj["thread_id"].toInt();
+        int el_from = jsonObj["fromuid"].toInt();
+        int el_to = jsonObj.value("touid").toInt();
+        dispatchIncomingMessage(msg_id, unique_id, el_thread, el_from, el_to,
+            msg_type, msg_content, content_size, chat_time, status);
       });
 
     _handlers.insert(ID_NOTIFY_OFF_LINE_REQ,[this](ReqId id, int len, QByteArray data){
@@ -945,19 +925,9 @@ void TcpMgr::initHandlers()
 
         int err = jsonObj["error"].toInt();
         if (err == ErrorCodes::MESSAGE_CONFLICT) {
-            //永久冲突：停止该 unique_id 重传并标 SEND_FAILED
+            //永久冲突：停止该 unique_id 重传并标 SEND_FAILED（顶层 unique_id）
             qDebug() << "Img Chat Conflict (1035), stopping retry";
-            QString conflict_id;
-            if (jsonObj.contains("conflict_unique_ids")) {
-                auto arr = jsonObj["conflict_unique_ids"].toArray();
-                if (!arr.isEmpty()) {
-                    conflict_id = arr.at(0).toString();
-                }
-            }
-            if (conflict_id.isEmpty() && jsonObj.contains("unique_id")) {
-                conflict_id = jsonObj["unique_id"].toString();
-            }
-            handleImageConflict(conflict_id);
+            handleImageConflict(jsonObj["unique_id"].toString());
             return;
         }
         if (err != ErrorCodes::SUCCESS) {
@@ -1341,12 +1311,10 @@ void TcpMgr::dispatchIncomingMessage(int message_id, const QString& unique_id,
         QJsonDocument doc(jsonObj_send);
         FileTcpMgr::GetInstance()->SendData(ID_IMG_CHAT_DOWN_REQ, doc.toJson());
     } else {
-        //文本消息（默认 TEXT）
+        //文本消息（默认 TEXT，单条化：直接 emit 单条信号）
         auto chat_data = std::make_shared<TextChatData>(message_id, unique_id, thread_id,
             ChatFormType::PRIVATE, ChatMsgType::TEXT, content, fromuid, status, chat_time);
-        std::vector<std::shared_ptr<TextChatData>> chat_datas;
-        chat_datas.push_back(chat_data);
-        emit sig_text_chat_msg(chat_datas);
+        emit sig_text_chat_msg(chat_data);
     }
 }
 
@@ -1389,14 +1357,15 @@ void TcpMgr::loadDeliveryConfig()
 }
 
 //3.2 一次性净化旧 QSettings 离线队列：删除每条 payload 中的 token 键，无法解析的 record 删除并提示。
-//迁移完成后写入 auth_payload_version=2，后续启动跳过。
+//单条化（v3）：旧格式 record（payload 含 text_array，或 record 含 unique_ids 数组）直接丢弃——
+//新服务端不再识别 text_array，重发必然失败。迁移完成后写入 auth_payload_version=3，后续启动跳过。
 void TcpMgr::sanitizeLegacyDeliverySettings()
 {
     QSettings delivery_settings(QSettings::IniFormat, QSettings::UserScope,
                                 "llfc", "llfcchat-delivery");
 
-    //已迁移到 v2，跳过
-    if (delivery_settings.value("auth_payload_version").toInt() == 2) {
+    //已迁移到 v3，跳过
+    if (delivery_settings.value("auth_payload_version").toInt() == 3) {
         return;
     }
 
@@ -1423,6 +1392,14 @@ void TcpMgr::sanitizeLegacyDeliverySettings()
         bool group_dirty = false;
         for (int i = 0; i < arr.size(); ++i) {
             QJsonObject obj = arr.at(i).toObject();
+            //v3：旧格式 record（unique_ids 数组）直接丢弃
+            if (obj.contains("unique_ids")) {
+                qWarning() << "[Delivery] dropped legacy batch-format pending record in" << group;
+                dropped_any = true;
+                dirty = true;
+                group_dirty = true;
+                continue;
+            }
             QString payload_str = obj["payload"].toString();
             QJsonDocument pdoc = QJsonDocument::fromJson(payload_str.toUtf8());
             if (pdoc.isNull() || !pdoc.isObject()) {
@@ -1430,9 +1407,18 @@ void TcpMgr::sanitizeLegacyDeliverySettings()
                 qWarning() << "[Delivery] dropped unparseable pending record in" << group;
                 dropped_any = true;
                 dirty = true;
+                group_dirty = true;
                 continue;
             }
             QJsonObject payload = pdoc.object();
+            //v3：payload 含 text_array 的旧批量格式直接丢弃
+            if (payload.contains("text_array")) {
+                qWarning() << "[Delivery] dropped legacy text_array pending record in" << group;
+                dropped_any = true;
+                dirty = true;
+                group_dirty = true;
+                continue;
+            }
             if (payload.contains("token")) {
                 //删除 token 键（fromuid/touid 等业务字段保留）
                 payload.remove("token");
@@ -1453,20 +1439,20 @@ void TcpMgr::sanitizeLegacyDeliverySettings()
     if (dirty) {
         delivery_settings.sync();
     }
-    //写入 v2 marker（全局顶层 key）
-    delivery_settings.setValue("auth_payload_version", 2);
+    //写入 v3 marker（全局顶层 key）
+    delivery_settings.setValue("auth_payload_version", 3);
     delivery_settings.sync();
 
     if (dropped_any) {
         QMessageBox::warning(nullptr, tr("数据迁移"),
-            tr("检测到无法解析的旧离线消息记录，已自动删除以保证安全。"));
+            tr("检测到旧格式的离线消息记录，已自动删除以保证安全。"));
     }
 }
 
-void TcpMgr::slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList unique_ids)
+void TcpMgr::slot_send_reliable_chat(ReqId id, QByteArray payload, QString unique_id)
 {
     //此 slot 由 queued connection 在 TCP 线程执行
-    addPendingRequest(id, payload, unique_ids);
+    addPendingRequest(id, payload, unique_id);
 
     //立即发送一次（如果已连接）
     if (_socket.state() == QAbstractSocket::ConnectedState) {
@@ -1479,7 +1465,7 @@ void TcpMgr::slot_send_reliable_chat(ReqId id, QByteArray payload, QStringList u
     }
 }
 
-void TcpMgr::addPendingRequest(ReqId id, QByteArray payload, QStringList unique_ids)
+void TcpMgr::addPendingRequest(ReqId id, QByteArray payload, const QString& unique_id)
 {
     if (_delivery_uid == 0) {
         auto info = UserMgr::GetInstance()->GetUserInfo();
@@ -1491,7 +1477,7 @@ void TcpMgr::addPendingRequest(ReqId id, QByteArray payload, QStringList unique_
     PendingRequest req;
     req.id = id;
     req.payload = payload;
-    req.unique_ids = unique_ids;
+    req.unique_id = unique_id;
     req.retry_delay_ms = _retry_initial_ms;
     req.next_send_epoch_ms = QDateTime::currentMSecsSinceEpoch() + _retry_initial_ms;
 
@@ -1517,7 +1503,7 @@ void TcpMgr::slot_retry_timeout()
         PendingRequest& req = _pending_requests[i];
         if (req.next_send_epoch_ms <= now) {
             qDebug() << "[Delivery] Retrying id=" << req.id
-                     << " unique_ids=" << req.unique_ids
+                     << " unique_id=" << req.unique_id
                      << " delay=" << req.retry_delay_ms << "ms";
             slot_send_data(req.id, req.payload);
             //倍增退避，上限 _retry_max_ms
@@ -1688,11 +1674,8 @@ void TcpMgr::persistPendingRequests()
         QJsonObject obj;
         obj["id"] = static_cast<int>(req.id);
         obj["payload"] = QString::fromUtf8(req.payload);
-        QJsonArray uid_arr;
-        for (int j = 0; j < req.unique_ids.size(); ++j) {
-            uid_arr.append(req.unique_ids[j]);
-        }
-        obj["unique_ids"] = uid_arr;
+        //单条化：unique_id 单值落盘
+        obj["unique_id"] = req.unique_id;
         arr.append(obj);
     }
 
@@ -1743,12 +1726,10 @@ void TcpMgr::loadPendingFromDisk(int uid)
         req.retry_delay_ms = _retry_initial_ms;
         req.next_send_epoch_ms = 0; //立即发送（由 slot_start_pending_replay 触发）
 
-        QJsonArray uid_arr = obj["unique_ids"].toArray();
-        for (int j = 0; j < uid_arr.size(); ++j) {
-            req.unique_ids.append(uid_arr.at(j).toString());
-        }
-
-        if (req.unique_ids.isEmpty()) {
+        //单条化：unique_id 单值。旧格式（unique_ids 数组）已被 sanitizeLegacyDeliverySettings
+        //丢弃（v3），此处读到空串视为损坏记录直接跳过
+        req.unique_id = obj["unique_id"].toString();
+        if (req.unique_id.isEmpty()) {
             continue;
         }
 
@@ -1776,21 +1757,13 @@ void TcpMgr::slot_start_pending_replay()
         QJsonDocument doc = QJsonDocument::fromJson(req.payload);
         QJsonObject obj = doc.object();
         if (req.id == ID_TEXT_CHAT_MSG_REQ) {
+            //单条化：payload 顶层平铺 content/unique_id
             TextReplayDTO dto;
             dto.thread_id = obj["thread_id"].toInt();
             dto.fromuid = obj["fromuid"].toInt();
-            QJsonArray arr = obj["text_array"].toArray();
-            for (int j = 0; j < arr.size(); ++j) {
-                QJsonObject item = arr.at(j).toObject();
-                QString uid = item["unique_id"].toString();
-                if (req.unique_ids.contains(uid)) {
-                    dto.unique_ids.append(uid);
-                    dto.contents.append(item["content"].toString());
-                }
-            }
-            if (!dto.unique_ids.isEmpty()) {
-                texts.push_back(dto);
-            }
+            dto.unique_id = req.unique_id;
+            dto.content = obj["content"].toString();
+            texts.push_back(dto);
         } else if (req.id == ID_IMG_CHAT_MSG_REQ) {
             ImageReplayDTO dto;
             dto.thread_id = obj["thread_id"].toInt();
@@ -1803,7 +1776,7 @@ void TcpMgr::slot_start_pending_replay()
             if (obj.contains("content_size")) {
                 dto.content_size = obj["content_size"].toString().toLongLong();
             }
-            dto.unique_id = req.unique_ids.isEmpty() ? QString() : req.unique_ids.first();
+            dto.unique_id = req.unique_id;
             images.push_back(dto);
         }
     }
@@ -1818,89 +1791,42 @@ void TcpMgr::removePendingByUniqueId(const QString& unique_id)
         return;
     }
 
+    //单条化：一条 pending 对应一个 unique_id，命中即整项移除
     for (int i = _pending_requests.size() - 1; i >= 0; --i) {
-        PendingRequest& req = _pending_requests[i];
-        if (req.unique_ids.removeAll(unique_id) > 0) {
-            if (req.unique_ids.isEmpty()) {
-                _pending_requests.removeAt(i);
-            }
+        if (_pending_requests[i].unique_id == unique_id) {
+            _pending_requests.removeAt(i);
         }
     }
 }
 
-void TcpMgr::handleTextConflict(int thread_id, int fromuid, const QStringList& conflict_ids)
+void TcpMgr::handleTextConflict(const QString& conflict_id)
 {
-    //批量回滚且无法映射单个 item：conflict_ids 为空时整批停止标失败
-    bool batch_rollback = conflict_ids.isEmpty();
-    bool has_thread_info = (thread_id > 0);
-
-    std::vector<std::shared_ptr<TextChatData>> failed;
-    int emit_thread_id = 0;
+    //单条化：1018 冲突响应带顶层 unique_id，直接定位对应 pending
+    if (conflict_id.isEmpty()) {
+        return;
+    }
 
     for (int i = _pending_requests.size() - 1; i >= 0; --i) {
         PendingRequest& req = _pending_requests[i];
-        if (req.id != ID_TEXT_CHAT_MSG_REQ) {
+        if (req.id != ID_TEXT_CHAT_MSG_REQ || req.unique_id != conflict_id) {
             continue;
         }
 
         QJsonDocument doc = QJsonDocument::fromJson(req.payload);
         QJsonObject obj = doc.object();
-        int req_thread = obj["thread_id"].toInt();
-        int req_from = obj["fromuid"].toInt();
+        int thread_id = obj["thread_id"].toInt();
+        int fromuid = obj["fromuid"].toInt();
 
-        //按 thread_id 过滤（有信息时）
-        if (has_thread_info && req_thread != thread_id) {
-            continue;
-        }
+        //通过 sig_chat_msg_rsp 信号路径标 SEND_FAILED（MoveMsg + UpdateChatStatus）
+        auto msg = std::make_shared<TextChatData>(
+            conflict_id, thread_id,
+            ChatFormType::PRIVATE, ChatMsgType::TEXT,
+            obj["content"].toString(), fromuid,
+            MsgStatus::SEND_FAILED);
+        emit sig_chat_msg_rsp(thread_id, msg);
 
-        //确定本请求中哪些 unique_id 要标失败
-        QStringList fail_in_this_req;
-        if (batch_rollback) {
-            fail_in_this_req = req.unique_ids; //整批
-            if (emit_thread_id == 0) {
-                emit_thread_id = req_thread;
-            }
-        } else {
-            for (int j = 0; j < req.unique_ids.size(); ++j) {
-                if (conflict_ids.contains(req.unique_ids[j])) {
-                    fail_in_this_req.append(req.unique_ids[j]);
-                }
-            }
-        }
-
-        if (fail_in_this_req.isEmpty()) {
-            continue;
-        }
-
-        //构造失败 TextChatData 并从 pending 移除
-        QJsonArray text_arr = obj["text_array"].toArray();
-        for (int j = 0; j < text_arr.size(); ++j) {
-            QJsonObject item = text_arr.at(j).toObject();
-            QString item_uid = item["unique_id"].toString();
-            if (!fail_in_this_req.contains(item_uid)) {
-                continue;
-            }
-
-            auto msg = std::make_shared<TextChatData>(
-                item_uid, req_thread,
-                ChatFormType::PRIVATE, ChatMsgType::TEXT,
-                item["content"].toString(), req_from,
-                MsgStatus::SEND_FAILED);
-            failed.push_back(msg);
-            if (emit_thread_id == 0) {
-                emit_thread_id = req_thread;
-            }
-            req.unique_ids.removeAll(item_uid);
-        }
-
-        if (req.unique_ids.isEmpty()) {
-            _pending_requests.removeAt(i);
-        }
-    }
-
-    //通过现有 sig_chat_msg_rsp 信号路径标 SEND_FAILED（MoveMsg + UpdateChatStatus）
-    if (!failed.empty()) {
-        emit sig_chat_msg_rsp(emit_thread_id, failed);
+        _pending_requests.removeAt(i);
+        break;
     }
 
     persistPendingRequests();
@@ -1917,7 +1843,7 @@ void TcpMgr::handleImageConflict(const QString& conflict_id)
         if (req.id != ID_IMG_CHAT_MSG_REQ) {
             continue;
         }
-        if (!req.unique_ids.contains(conflict_id)) {
+        if (req.unique_id != conflict_id) {
             continue;
         }
 
@@ -1937,10 +1863,7 @@ void TcpMgr::handleImageConflict(const QString& conflict_id)
             emit sig_chat_img_rsp(thread_id, img_msg);
         }
 
-        req.unique_ids.removeAll(conflict_id);
-        if (req.unique_ids.isEmpty()) {
-            _pending_requests.removeAt(i);
-        }
+        _pending_requests.removeAt(i);
         break;
     }
 

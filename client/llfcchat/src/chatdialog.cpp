@@ -283,35 +283,31 @@ void ChatDialog::slot_item_clicked(QListWidgetItem* item)
 //添加聊天消息, 将消息放到用户区和thread_id关联
 //§6.4 recipient 去重：ContainsMessage 已有 ID 不再加 bubble 但仍视为成功接收，
 //thread 不存在时复用 createPrivateChatItem 先建 ChatThreadData/列表项，禁止空指针。
-void ChatDialog::slot_text_chat_msg(std::vector<std::shared_ptr<TextChatData>> msglists)
+void ChatDialog::slot_text_chat_msg(std::shared_ptr<TextChatData> msg)
 {
-	for (auto& msg : msglists) {
+	//更新数据
+	auto thread_id = msg->GetThreadId();
+	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
 
-		//更新数据
-		auto thread_id = msg->GetThreadId();
-		auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-
-		//thread 不存在时复用 createPrivateChatItem 构造逻辑先建 ChatThreadData/列表项
-		if (!thread_data) {
-			createPrivateChatItem(msg->GetSendUid(), thread_id);
-			thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-		}
-		if (!thread_data) {
-			continue; //safety
-		}
-
-		int msg_id = msg->GetMsgId();
-		//去重：已有 ID 不再加 bubble 但仍视为成功接收
-		if (!thread_data->ContainsMessage(msg_id)) {
-			thread_data->AddMsg(msg);
-			if (_cur_chat_thread_id == thread_id) {
-				ui->chat_page->AppendChatMsg(msg);
-			}
-		}
-		//插入成功或识别 duplicate 后通知 TCP 线程可 ACK（queued 回 TCP 线程）
-		emit TcpMgr::GetInstance()->sig_chat_msg_processed(msg_id);
+	//thread 不存在时复用 createPrivateChatItem 构造逻辑先建 ChatThreadData/列表项
+	if (!thread_data) {
+		createPrivateChatItem(msg->GetSendUid(), thread_id);
+		thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
+	}
+	if (!thread_data) {
+		return; //safety
 	}
 
+	int msg_id = msg->GetMsgId();
+	//去重：已有 ID 不再加 bubble 但仍视为成功接收
+	if (!thread_data->ContainsMessage(msg_id)) {
+		thread_data->AddMsg(msg);
+		if (_cur_chat_thread_id == thread_id) {
+			ui->chat_page->AppendChatMsg(msg);
+		}
+	}
+	//插入成功或识别 duplicate 后通知 TCP 线程可 ACK（queued 回 TCP 线程）
+	emit TcpMgr::GetInstance()->sig_chat_msg_processed(msg_id);
 }
 
 //§6.4 recipient 图片消息去重 + thread 创建 + ACK
@@ -348,20 +344,16 @@ void ChatDialog::slot_replay_pending(std::vector<TextReplayDTO> texts, std::vect
 {
 	QStringList failed_unique_ids;
 
-	//文本：为每个 pending item 重建未响应 bubble（AppendUnRspMsg）
+	//文本：为每个 pending 重建未响应气泡数据（AppendUnRspMsg），单条化后一个 DTO 一条消息
 	for (const auto& dto : texts) {
 		auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
 		if (!thread_data) {
 			//thread 尚未加载（重启后首次登录），1018 响应到达时由 MoveMsg/AddMsg 处理
 			continue;
 		}
-		for (int j = 0; j < dto.unique_ids.size(); ++j) {
-			const QString& unique_id = dto.unique_ids[j];
-			const QString& content = dto.contents[j];
-			auto txt_msg = std::make_shared<TextChatData>(unique_id, dto.thread_id,
-				ChatFormType::PRIVATE, ChatMsgType::TEXT, content, dto.fromuid, MsgStatus::UN_READ);
-			thread_data->AppendUnRspMsg(unique_id, txt_msg);
-		}
+		auto txt_msg = std::make_shared<TextChatData>(dto.unique_id, dto.thread_id,
+			ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content, dto.fromuid, MsgStatus::UN_READ);
+		thread_data->AppendUnRspMsg(dto.unique_id, txt_msg);
 	}
 
 	//图片：QFile::exists 判定本地文件缺失→标 SEND_FAILED，否则重建 MsgInfo + AddTransFile
@@ -555,22 +547,20 @@ void ChatDialog::slot_load_chat_msg(int thread_id, int msg_id, bool load_more,
 }
 
 
-void ChatDialog::slot_add_chat_msg(int thread_id, std::vector<std::shared_ptr<TextChatData>> msglists) {
+void ChatDialog::slot_add_chat_msg(int thread_id, std::shared_ptr<TextChatData> msg) {
 	auto chat_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
 	if (chat_data == nullptr) {
 		return;
 	}
 
 	//将消息放入数据中管理
-	for (auto& msg : msglists) {
-		chat_data->MoveMsg(msg);
+	chat_data->MoveMsg(msg);
 
-		if (_cur_chat_thread_id != thread_id) {
-			continue;
-		}
-		//更新聊天界面信息
-		ui->chat_page->UpdateChatStatus(msg);
-	}	
+	if (_cur_chat_thread_id != thread_id) {
+		return;
+	}
+	//更新聊天界面信息
+	ui->chat_page->UpdateChatStatus(msg);
 }
 
 
