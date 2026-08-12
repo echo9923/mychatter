@@ -13,18 +13,18 @@ using json = nlohmann::json;
 
 class CSession;
 struct FileTask {
-	FileTask(std::shared_ptr<CSession> session,  MSG_IDS msg_id, int uid, std::string path, std::string name,
-		int seq, int total_size, int trans_size, int last, 
+	FileTask(std::shared_ptr<CSession> session,  MSG_TYPES msg_type, int uid, std::string path, std::string name,
+		int seq, int total_size, int trans_size, int last,
 		std::string file_data,
 		std::function<void(const json&)> callback,int chat_msg_id=0,
-		int sender = 0, int receiver = 0) :_session(session), _msg_id(msg_id),_uid(uid),
+		int sender = 0, int receiver = 0) :_session(session), _msg_type(msg_type),_uid(uid),
 		_seq(seq), _path(path), _name(name), _total_size(total_size),
 		_trans_size(trans_size), _last(last), _file_data(file_data), _callback(callback), _chat_msg_id(chat_msg_id),
 		_sender(sender), _receiver(receiver)
 	{}
 	~FileTask(){}
 	std::shared_ptr<CSession> _session;
-	MSG_IDS _msg_id;
+	MSG_TYPES _msg_type;
 	int _uid;
 	int _seq ;
 	std::string _path;
@@ -67,7 +67,7 @@ private:
 	void task_callback(std::shared_ptr<FileTask>);
 	//图片上传完成点统一处理：UpdateUploadStatus 成功后激活 pending（ZADD+EXPIRE）并尝试跨服 live 通知（计划5.7）
 	void CompleteChatImageUpload(std::shared_ptr<FileTask> task);
-	std::unordered_map<MSG_IDS, std::function<void(std::shared_ptr<FileTask>)> > _handlers;
+	std::unordered_map<MSG_TYPES, std::function<void(std::shared_ptr<FileTask>)> > _handlers;
 	std::thread _work_thread;
 	std::queue<std::function<void()>> _task_que;
 	std::atomic<bool> _b_stop;

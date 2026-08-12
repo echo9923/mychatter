@@ -36,13 +36,13 @@
 - 完整消息格式示例与解析思路（文本、图片、文件传输）
 
 该协议在客户端与服务端分别实现：
-- 客户端使用 Qt 的 QTcpSocket 进行读写，采用“2字节ID + 2字节长度”的固定头，体部为 JSON。
-- 服务端基于 Boost.Asio 实现异步 I/O，同样以“2字节ID + 2字节长度”的固定头，体部为 JSON。
+- 客户端使用 Qt 的 QTcpSocket 进行读写，采用“2字节类型 + 2字节长度”的固定头，体部为 JSON。
+- 服务端基于 Boost.Asio 实现异步 I/O，同样以“2字节类型 + 2字节长度”的固定头，体部为 JSON。
 
 ## 项目结构
 LLFCChat 的 TCP 通信相关代码主要分布在：
 - 客户端：TcpMgr（聊天消息）、FileTcpMgr（文件/图片传输）
-- 服务端：CSession（会话读写）、MsgNode（发送/接收节点封装）、const.h（常量与消息ID）
+- 服务端：CSession（会话读写）、MsgNode（发送/接收节点封装）、const.h（常量与消息类型）
 - 协议定义：proto/chat_service/chat.proto（服务间 gRPC 接口，非 TCP 帧协议）
 
 ```mermaid
@@ -55,7 +55,7 @@ end
 subgraph "服务端"
 D["CSession<br/>会话读写/粘包处理"]
 E["MsgNode<br/>SendNode/RecvNode"]
-F["const.h<br/>MSG_IDS/错误码"]
+F["const.h<br/>MSG_TYPES/错误码"]
 end
 A --> D
 B --> D
@@ -88,7 +88,7 @@ E --> D
 - 客户端 FileTcpMgr：负责大文件/图片分片上传下载，复用相同帧格式。
 - 服务端 CSession：基于 Asio 的异步读/写，读取固定长度的头部后按长度读取体部，投递至逻辑层。
 - 服务端 MsgNode：封装发送/接收缓冲，构造带头的二进制帧。
-- 常量定义：全局 ReqId、ErrorCodes、MSG_IDS、消息状态等。
+- 常量定义：全局 ReqId、ErrorCodes、MSG_TYPES、消息状态等。
 
 章节来源
 - [tcpmgr.h:22-87](file://client/llfcchat/include/tcpmgr.h#L22-L87)
@@ -108,12 +108,12 @@ participant Client as "客户端(TcpMgr/FileTcpMgr)"
 participant Net as "网络"
 participant Server as "服务端(CSession)"
 participant Logic as "逻辑层(LogicSystem)"
-Client->>Net : 写入帧(2B ID + 2B Len + JSON体)
+Client->>Net : 写入帧(2B Type + 2B Len + JSON体)
 Net-->>Server : 到达数据
 Server->>Server : 读取头部(HEAD_TOTAL_LEN=4)
-Server->>Server : 校验ID/长度合法性
+Server->>Server : 校验类型/长度合法性
 Server->>Server : 读取体部(按Len)
-Server->>Logic : 投递RecvNode(含ID/体)
+Server->>Logic : 投递RecvNode(含类型/体)
 Logic-->>Server : 处理并构造响应帧
 Server-->>Client : 返回响应帧
 ```
@@ -132,8 +132,8 @@ Server-->>Client : 返回响应帧
 - 体部（变长）：JSON 字符串，包含业务字段与 error 状态码
 
 说明：
-- 客户端使用 QDataStream 设置 BigEndian 写入 ID 和 Length，随后拼接 JSON 体。
-- 服务端使用 boost::asio 将 ID 与 Length 转为网络字节序后写入帧头。
+- 客户端使用 QDataStream 设置 BigEndian 写入 Type 和 Length，随后拼接 JSON 体。
+- 服务端使用 boost::asio 将 Type 与 Length 转为网络字节序后写入帧头。
 
 章节来源
 - [tcpmgr.cpp:1044-1069](file://client/llfcchat/src/tcpmgr.cpp#L1044-L1069)
@@ -151,20 +151,20 @@ Server-->>Client : 返回响应帧
 
 ### 粘包/拆包解决方案
 - 客户端：
-  - 使用循环读取 readyRead 的数据追加到 _buffer，先解析头部（2B ID + 2B Len），再判断剩余数据是否满足体部长度，不足则等待更多数据，满足则切出体部并调用 handleMsg。
+  - 使用循环读取 readyRead 的数据追加到 _buffer，先解析头部（2B Type + 2B Len），再判断剩余数据是否满足体部长度，不足则等待更多数据，满足则切出体部并调用 handleMsg。
 - 服务端：
-  - AsyncReadHead 读取固定 HEAD_TOTAL_LEN=4 字节，解析 ID 与 Length，校验合法性后进入 AsyncReadBody 读取指定长度体部，完成后投递到逻辑层并继续监听头部。
+  - AsyncReadHead 读取固定 HEAD_TOTAL_LEN=4 字节，解析 Type 与 Length，校验合法性后进入 AsyncReadBody 读取指定长度体部，完成后投递到逻辑层并继续监听头部。
 
 ```mermaid
 flowchart TD
 Start(["开始"]) --> ReadAll["读取所有可用数据到缓冲区"]
 ReadAll --> CheckHead{"缓冲区足够解析头部?"}
 CheckHead -- 否 --> WaitMore["等待更多数据"]
-CheckHead -- 是 --> ParseHead["解析ID与Length"]
+CheckHead -- 是 --> ParseHead["解析Type与Length"]
 ParseHead --> CheckBody{"缓冲区剩余长度 >= Length?"}
 CheckBody -- 否 --> SetPending["标记待接收并等待"]
 CheckBody -- 是 --> ExtractBody["切出体部数据"]
-ExtractBody --> Dispatch["按ID分发到处理器"]
+ExtractBody --> Dispatch["按类型分发到处理器"]
 Dispatch --> Loop["继续循环处理下一帧"]
 WaitMore --> End(["结束"])
 SetPending --> End
@@ -177,8 +177,8 @@ Loop --> ReadAll
 - [CSession.cpp:130-191](file://server/ChatServer/src/CSession.cpp#L130-L191)
 
 ### 消息路由机制
-- 客户端 TcpMgr 内部维护一个映射表 handlers，键为 ReqId，值为处理函数。收到体部后，根据 ID 查找处理器并执行。
-- 服务端 CSession 将 RecvNode（含 ID 与体部）投递给 LogicSystem，由逻辑层进一步分发。
+- 客户端 TcpMgr 内部维护一个映射表 handlers，键为 ReqId，值为处理函数。收到体部后，根据类型查找处理器并执行。
+- 服务端 CSession 将 RecvNode（含类型与体部）投递给 LogicSystem，由逻辑层进一步分发。
 
 章节来源
 - [tcpmgr.h:47-47](file://client/llfcchat/include/tcpmgr.h#L47-L47)
@@ -231,7 +231,7 @@ class FileTcpMgr {
 }
 class CSession {
 +Start()
-+Send(msg, msgid)
++Send(msg, msg_type)
 -AsyncReadHead(total_len)
 -AsyncReadBody(total_len)
 -HandleWrite(error, shared_self)
@@ -243,10 +243,10 @@ class MsgNode {
 -_data
 }
 class SendNode {
--_msg_id
+-_msg_type
 }
 class RecvNode {
--_msg_id
+-_msg_type
 }
 SendNode --|> MsgNode
 RecvNode --|> MsgNode
@@ -263,7 +263,7 @@ FileTcpMgr --> CSession : "通过网络交互"
 
 ## 依赖关系分析
 - 客户端 TcpMgr/FileTcpMgr 依赖 global.h 中的 ReqId、ErrorCodes、MsgType、TransferType、TransferState 等。
-- 服务端 CSession 依赖 const.h 中的 MSG_IDS、ErrorCodes、MAX_LENGTH、HEAD_* 常量。
+- 服务端 CSession 依赖 const.h 中的 MSG_TYPES、ErrorCodes、MAX_LENGTH、HEAD_* 常量。
 - 服务端 MsgNode 依赖 const.h 中的 HEAD_* 常量用于构造帧头。
 - 协议定义 chat.proto 用于服务间 gRPC 通信，与 TCP 帧协议解耦。
 
@@ -271,7 +271,7 @@ FileTcpMgr --> CSession : "通过网络交互"
 graph LR
 Global["global.h<br/>ReqId/ErrorCodes/MsgType"] --> TcpMgr["TcpMgr"]
 Global --> FileTcpMgr["FileTcpMgr"]
-Const["const.h<br/>MSG_IDS/ErrorCodes/HEAD_*"] --> CSession["CSession"]
+Const["const.h<br/>MSG_TYPES/ErrorCodes/HEAD_*"] --> CSession["CSession"]
 Const --> MsgNode["MsgNode"]
 Proto["chat.proto<br/>gRPC接口"] -.-> CSession
 ```
@@ -304,8 +304,8 @@ Proto["chat.proto<br/>gRPC接口"] -.-> CSession
   - 长度不匹配：确认客户端写入 Length 与服务端读取一致。
   - 连接断开：检查网络错误类型与心跳超时。
 - 定位方法：
-  - 客户端打印帧 ID、Length 与体部内容。
-  - 服务端打印解析后的 ID、Length 与体部内容。
+  - 客户端打印帧类型、Length 与体部内容。
+  - 服务端打印解析后的类型、Length 与体部内容。
   - 查看错误码与日志输出。
 
 章节来源
@@ -322,7 +322,7 @@ LLFCChat 的 TCP 消息协议采用简洁高效的“固定头 + JSON 体”设�
 - 体部：JSON 对象，包含 fromuid、touid、thread_id、textmsgs 数组等
 
 解析流程：
-- 客户端：构造 JSON -> 写入 ID 与 Length -> 发送
+- 客户端：构造 JSON -> 写入 Type 与 Length -> 发送
 - 服务端：读取头部 -> 校验 -> 读取体部 -> 解析 JSON -> 路由处理 -> 返回响应帧
 
 章节来源
@@ -334,7 +334,7 @@ LLFCChat 的 TCP 消息协议采用简洁高效的“固定头 + JSON 体”设�
 - 体部：JSON 对象，包含 thread_id、sender_id、recv_id、name、msg_type、status、total_size 等
 
 解析流程：
-- 客户端：构造 JSON -> 写入 ID 与 Length -> 发送
+- 客户端：构造 JSON -> 写入 Type 与 Length -> 发送
 - 服务端：读取头部 -> 校验 -> 读取体部 -> 解析 JSON -> 路由处理 -> 返回响应帧
 
 章节来源
@@ -346,7 +346,7 @@ LLFCChat 的 TCP 消息协议采用简洁高效的“固定头 + JSON 体”设�
 - 体部：JSON 对象，包含文件元信息与分片序列号等
 
 解析流程：
-- 客户端：构造 JSON -> 写入 ID 与 Length -> 发送
+- 客户端：构造 JSON -> 写入 Type 与 Length -> 发送
 - 服务端：读取头部 -> 校验 -> 读取体部 -> 解析 JSON -> 路由处理 -> 返回响应帧
 
 章节来源

@@ -128,7 +128,7 @@ auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, 
 `ChatSever`中登录逻辑里添加跨服踢人调用
 
 ``` cpp
-void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
+void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);

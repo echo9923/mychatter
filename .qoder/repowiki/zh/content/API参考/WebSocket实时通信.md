@@ -31,7 +31,7 @@
 - webrtc-demo/web/index.html：浏览器端示例页面，完成媒体采集、RTCPeerConnection创建、WebSocket信令交互与音视频渲染。
 - 开发文档/day44-webrtc信令服务器实现.md：对信令服务器设计、房间模型、信令流程与生产建议的系统性说明。
 - server/ChatServer/include/CSession.h 与 src/CSession.cpp：后端会话抽象，包含异步读写、发送队列、心跳更新与异常处理等能力。
-- server/ChatServer/include/const.h：消息ID、错误码、常量定义，体现心跳与业务消息的协议边界。
+- server/ChatServer/include/const.h：消息类型、错误码、常量定义，体现心跳与业务消息的协议边界。
 - proto/chat_service/chat.proto：聊天相关gRPC接口定义，用于服务间通知（如文本消息、图片通知、踢人等）。
 
 ```mermaid
@@ -77,7 +77,7 @@ Session --> Proto
   - 职责：TCP会话封装、异步读写、发送队列、心跳时间戳更新、异常会话处理。
   - 关键能力：AsyncReadHead/AsyncReadBody、UpdateHeartbeat、IsHeartbeatExpired、DealExceptionSession。
 - 协议与消息(const.h, chat.proto)
-  - 职责：定义心跳、聊天、图片、踢人等消息ID与gRPC通知接口，约束前后端与服务间契约。
+  - 职责：定义心跳、聊天、图片、踢人等消息类型与gRPC通知接口，约束前后端与服务间契约。
 
 章节来源
 - [server.js:1-138](file://webrtc-demo/server/server.js#L1-L138)
@@ -212,7 +212,7 @@ P-->>W : ontrack -> 渲染远端视频
 classDiagram
 class CSession {
 +Start()
-+Send(msg, msgid)
++Send(msg, msg_type)
 +Close()
 +AsyncReadHead(total_len)
 +AsyncReadBody(total_len)
@@ -235,7 +235,7 @@ class CSession {
 - [CSession.cpp:1-200](file://server/ChatServer/src/CSession.cpp#L1-L200)
 
 ### 协议与消息(const.h, chat.proto)
-- const.h：定义心跳请求/回复、聊天消息、图片消息、踢人等消息ID，以及错误码与常量。
+- const.h：定义心跳请求/回复、聊天消息、图片消息、踢人等消息类型，以及错误码与常量。
 - chat.proto：定义服务间gRPC通知接口，如文本聊天、图片通知、好友认证、踢人等，便于跨服务协作。
 
 章节来源

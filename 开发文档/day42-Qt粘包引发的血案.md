@@ -17,7 +17,7 @@
 
 ```
 ┌─────────────┬──────────────┬─────────────┐
-│  消息ID(2B) │ 消息长度(4B) │  消息体(N)  │
+│  消息类型(2B) │ 消息长度(4B) │  消息体(N)  │
 ├─────────────┼──────────────┼─────────────┤
 │   0x0001    │   0x000A     │  10字节数据 │
 └─────────────┴──────────────┴─────────────┘
@@ -39,7 +39,7 @@
 ```cpp
 FileTcpMgr::FileTcpMgr(QObject *parent) : QObject(parent),
     _host(""), _port(0), _b_recv_pending(false), 
-    _message_id(0), _message_len(0)
+    _message_type(0), _message_len(0)
 {
     QObject::connect(&_socket, &QTcpSocket::readyRead, this, [&]() {
         // 读取所有数据并追加到缓冲区
@@ -57,12 +57,12 @@ FileTcpMgr::FileTcpMgr(QObject *parent) : QObject(parent),
                 }
 
                 // ❌ 错误2：重复使用同一个stream对象
-                stream >> _message_id >> _message_len;
+                stream >> _message_type >> _message_len;
 
                 // ❌ 错误3：修改buffer后，stream的读取位置不会重置
                 _buffer = _buffer.mid(FILE_UPLOAD_HEAD_LEN);
 
-                qDebug() << "Message ID:" << _message_id 
+                qDebug() << "Message Type:" << _message_type 
                          << ", Length:" << _message_len;
             }
 
@@ -75,7 +75,7 @@ FileTcpMgr::FileTcpMgr(QObject *parent) : QObject(parent),
             _b_recv_pending = false;
             QByteArray messageBody = _buffer.mid(0, _message_len);
             _buffer = _buffer.mid(_message_len);
-            handleMsg(ReqId(_message_id), _message_len, messageBody);
+            handleMsg(ReqId(_message_type), _message_len, messageBody);
         }
     });
 }
@@ -88,11 +88,11 @@ FileTcpMgr::FileTcpMgr(QObject *parent) : QObject(parent),
 ```cpp
 // 第一次循环
 QDataStream stream(&_buffer, QIODevice::ReadOnly);  // stream绑定&_buffer
-stream >> _message_id >> _message_len;              // stream内部位置 pos = 6
+stream >> _message_type >> _message_len;              // stream内部位置 pos = 6
 _buffer = _buffer.mid(6);                           // buffer内容变了，但stream.pos还是6！
 
 // 第二次循环（❌ 错误发生）
-stream >> _message_id >> _message_len;              // 从位置6继续读，跳过了新消息的头部！
+stream >> _message_type >> _message_len;              // 从位置6继续读，跳过了新消息的头部！
 ```
 
 ------
@@ -104,7 +104,7 @@ stream >> _message_id >> _message_len;              // 从位置6继续读，跳
 ```
 接收到的TCP数据流（粘包情况）：
 ┌──────────────────────────────────────────────────────────┐
-│ [ID1][LEN1][BODY1......] [ID2][LEN2][BODY2...] [ID3]... │
+│ [类型1][LEN1][BODY1......] [类型2][LEN2][BODY2...] [类型3]... │
 └──────────────────────────────────────────────────────────┘
   ← 消息1 →                ← 消息2 →           ← 消息3
 ```
@@ -115,11 +115,11 @@ stream >> _message_id >> _message_len;              // 从位置6继续读，跳
 【初始状态】
 _buffer: [00 01][00 0A][42 4F 44 59 31....][00 02][00 05][42 4F 44 59 32]
           ↑ stream.pos = 0
-         ID=1  LEN=10    BODY1(10字节)      ID=2  LEN=5   BODY2(5字节)
+         类型=1  LEN=10    BODY1(10字节)      类型=2  LEN=5   BODY2(5字节)
 
 
 【第一次循环 - 读取头部】
-stream >> _message_id >> _message_len;  // 读取ID=1, LEN=10
+stream >> _message_type >> _message_len;  // 读取类型=1, LEN=10
 _buffer: [00 01][00 0A][42 4F 44 59 31....][00 02][00 05][42 4F 44 59 32]
                         ↑ stream.pos = 6
 
@@ -137,7 +137,7 @@ _buffer: [00 02][00 05][42 4F 44 59 32]
 
 
 【第二次循环 - ❌ 错误发生】
-stream >> _message_id >> _message_len;  
+stream >> _message_type >> _message_len;  
 // 尝试从位置6读取，但buffer只有8字节！
 // 或者读取到错误的数据位置
 
@@ -277,12 +277,12 @@ QObject::connect(&_socket, &QTcpSocket::readyRead, this, [&]() {
             // ✅ 关键修复：每次都创建新的stream
             QDataStream stream(_buffer);
             stream.setVersion(QDataStream::Qt_5_0);
-            stream >> _message_id >> _message_len;
+            stream >> _message_type >> _message_len;
 
             // ✅ 使用remove代替mid赋值（性能更好）
             _buffer.remove(0, FILE_UPLOAD_HEAD_LEN);
             
-            qDebug() << "Parsed header - ID:" << _message_id 
+            qDebug() << "Parsed header - Type:" << _message_type 
                      << ", Length:" << _message_len;
             
             // ✅ 添加长度校验，防止异常数据
@@ -312,7 +312,7 @@ QObject::connect(&_socket, &QTcpSocket::readyRead, this, [&]() {
                  << messageBody.size();
 
         // 处理消息
-        handleMsg(ReqId(_message_id), _message_len, messageBody);
+        handleMsg(ReqId(_message_type), _message_len, messageBody);
         
         // ✅ 继续循环处理剩余数据（处理粘包）
     }
@@ -333,7 +333,7 @@ QObject::connect(&_socket, &QTcpSocket::readyRead, this, [&]() {
 
             // ✅ 手动解析，避免QDataStream开销
             // 假设大端序(Big-Endian)
-            _message_id = (quint16(_buffer[0]) << 8) | quint8(_buffer[1]);
+            _message_type = (quint16(_buffer[0]) << 8) | quint8(_buffer[1]);
             _message_len = (quint32(_buffer[2]) << 24) | 
                           (quint32(_buffer[3]) << 16) |
                           (quint32(_buffer[4]) << 8)  | 
@@ -341,7 +341,7 @@ QObject::connect(&_socket, &QTcpSocket::readyRead, this, [&]() {
             
             _buffer.remove(0, 6);
             
-            qDebug() << "ID:" << _message_id << "Len:" << _message_len;
+            qDebug() << "Type:" << _message_type << "Len:" << _message_len;
         }
 
         if (_buffer.size() < _message_len) {
@@ -353,7 +353,7 @@ QObject::connect(&_socket, &QTcpSocket::readyRead, this, [&]() {
         QByteArray messageBody = _buffer.left(_message_len);
         _buffer.remove(0, _message_len);
         
-        handleMsg(ReqId(_message_id), _message_len, messageBody);
+        handleMsg(ReqId(_message_type), _message_len, messageBody);
     }
 });
 ```
@@ -394,7 +394,7 @@ class FileTcpMgr : public QObject {
         
         QDataStream stream(_buffer);
         stream.setVersion(QDataStream::Qt_5_0);
-        stream >> _message_id >> _message_len;
+        stream >> _message_type >> _message_len;
         _buffer.remove(0, 6);
         
         return true;
@@ -405,7 +405,7 @@ class FileTcpMgr : public QObject {
         
         QByteArray body = _buffer.left(_message_len);
         _buffer.remove(0, _message_len);
-        handleMsg(ReqId(_message_id), _message_len, body);
+        handleMsg(ReqId(_message_type), _message_len, body);
         
         return true;
     }
@@ -419,14 +419,14 @@ class FileTcpMgr : public QObject {
 ### 6.1 错误代码的执行流程
 
 ```
-接收数据: [ID1:6字节][BODY1:10字节][ID2:6字节][BODY2:5字节]
+接收数据: [类型1:6字节][BODY1:10字节][类型2:6字节][BODY2:5字节]
 
 stream创建，pos=0
 ├─ 第1次循环
-│  ├─ stream读取(pos 0→6): ID1 ✅
-│  ├─ buffer.mid(6): buffer变为[BODY1][ID2][BODY2]
+│  ├─ stream读取(pos 0→6): 类型1 ✅
+│  ├─ buffer.mid(6): buffer变为[BODY1][类型2][BODY2]
 │  ├─ stream.pos=6 ❌ 未重置
-│  ├─ buffer.mid(10): buffer变为[ID2][BODY2]
+│  ├─ buffer.mid(10): buffer变为[类型2][BODY2]
 │  └─ stream.pos=6 ❌ 仍未重置
 │
 └─ 第2次循环
@@ -437,18 +437,18 @@ stream创建，pos=0
 ### 6.2 正确代码的执行流程
 
 ```
-接收数据: [ID1:6字节][BODY1:10字节][ID2:6字节][BODY2:5字节]
+接收数据: [类型1:6字节][BODY1:10字节][类型2:6字节][BODY2:5字节]
 
 ├─ 第1次循环
 │  ├─ stream创建，pos=0 ✅
-│  ├─ stream读取: ID1 ✅
+│  ├─ stream读取: 类型1 ✅
 │  ├─ stream销毁
-│  ├─ buffer.remove(6): buffer=[BODY1][ID2][BODY2]
-│  └─ buffer.remove(10): buffer=[ID2][BODY2]
+│  ├─ buffer.remove(6): buffer=[BODY1][类型2][BODY2]
+│  └─ buffer.remove(10): buffer=[类型2][BODY2]
 │
 └─ 第2次循环
    ├─ stream创建，pos=0 ✅ 重新开始
-   ├─ stream读取: ID2 ✅
+   ├─ stream读取: 类型2 ✅
    └─ 解析正确！
 ```
 

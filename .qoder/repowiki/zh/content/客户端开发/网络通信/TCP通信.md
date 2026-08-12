@@ -106,7 +106,7 @@ FileTcpMgr --> ResourceServer
 ## 架构总览
 TcpMgr采用"单例 + 事件驱动 + 信号槽 + 可靠投递"的架构：
 - 使用QTcpSocket进行非阻塞I/O
-- readyRead中累积数据并解析，按消息ID路由到对应处理器
+- readyRead中累积数据并解析，按消息类型路由到对应处理器
 - 通过QQueue实现发送队列，bytesWritten回调推进发送进度
 - **新增：指数退避重试机制，确保消息最终送达**
 - **新增：持久化待处理请求，应用重启后恢复**
@@ -157,7 +157,7 @@ end
 - **职责**
   - 维护一个QTcpSocket实例，建立/关闭连接
   - 接收数据时维护缓冲区，处理粘包/半包
-  - 根据消息ID分发到不同处理器（登录、搜索、好友申请、聊天消息、心跳、加载会话/消息等）
+  - 根据消息类型分发到不同处理器（登录、搜索、好友申请、聊天消息、心跳、加载会话/消息等）
   - 通过信号向UI层推送结果
   - **新增：可靠消息投递，确保消息最终送达**
   - **新增：持久化待处理请求，支持应用重启恢复**
@@ -172,7 +172,7 @@ end
   - **_retry_initial_ms/_retry_max_ms: 重试退避配置**
 - **重要方法**
   - slot_tcp_connect: 发起连接
-  - slot_send_data: 组装消息头（ID+长度），写入队列或立即发送
+  - slot_send_data: 组装消息头（type+长度），写入队列或立即发送
   - handleMsg: 查找处理器并调用
   - CloseConnection: 关闭连接
   - **SendReliableChat: 可靠发送接口**
@@ -190,7 +190,7 @@ class TcpMgr {
 -uint16_t _port
 -QByteArray _buffer
 -bool _b_recv_pending
--quint16 _message_id
+-quint16 _message_type
 -quint16 _message_len
 -QMap~ReqId,function~ _handlers
 -QQueue~QByteArray~ _send_queue
@@ -269,7 +269,7 @@ UpdateDelay --> CheckPending
 
 ### 发送流程与粘包处理
 - **发送流程**
-  - 组装头部：消息ID（2字节）+ 长度（2字节），大端序
+  - 组装头部：消息类型（2字节）+ 长度（2字节），大端序
   - 追加消息体
   - 若正在发送则入队；否则直接write并标记_pending
   - bytesWritten回调更新已发送字节数，继续发送剩余部分或下一包
@@ -409,7 +409,7 @@ class FileTcpMgr {
 - [filetcpmgr.cpp:151-189](file://client/llfcchat/src/filetcpmgr.cpp#L151-L189)
 
 ### 协议格式与序列化/反序列化
-- 协议头部：消息ID（2字节，BigEndian）+ 消息长度（2字节，BigEndian）
+- 协议头部：消息类型（2字节，BigEndian）+ 消息长度（2字节，BigEndian）
 - 消息体：JSON字符串（UTF-8）
 - 发送：QDataStream设置BigEndian，写入ID和长度，再append数据体
 - 接收：QDataStream解析头部，校验长度后截取消息体，再fromJson反序列化

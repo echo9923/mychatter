@@ -6,10 +6,10 @@
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
 
-//将请求消息id映射为对应的回复消息id；无对应回复（通知类）或未知id返回0
-static short ReqToRspId(short msg_id)
+//将请求消息类型映射为对应的回复消息类型；无对应回复（通知类）或未知类型返回0
+static short ReqToRspId(short msg_type)
 {
-	switch (msg_id) {
+	switch (msg_type) {
 	case ID_UPLOAD_HEAD_ICON_REQ:           return ID_UPLOAD_HEAD_ICON_RSP;
 	case ID_DOWN_LOAD_FILE_REQ:             return ID_DOWN_LOAD_FILE_RSP;
 	case ID_IMG_CHAT_UPLOAD_REQ:            return ID_IMG_CHAT_UPLOAD_RSP;
@@ -69,7 +69,7 @@ void LogicWorker::PostTask(std::shared_ptr<LogicNode> task)
 
 void LogicWorker::RegisterCallBacks()
 {
-	_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
 			auto md5 = root["md5"].get<std::string>();
@@ -154,7 +154,7 @@ void LogicWorker::RegisterCallBacks()
 
 	};
 
-	_fun_callbacks[ID_DOWN_LOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_DOWN_LOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
 			auto seq = root["seq"].get<int>();
@@ -192,7 +192,7 @@ void LogicWorker::RegisterCallBacks()
 
 	};
 
-	_fun_callbacks[ID_IMG_CHAT_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_IMG_CHAT_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
 			auto md5 = root["md5"].get<std::string>();
@@ -284,7 +284,7 @@ void LogicWorker::RegisterCallBacks()
 	};	
 
 
-	_fun_callbacks[ID_FILE_INFO_SYNC_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_FILE_INFO_SYNC_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
 			auto md5 = root["md5"].get<std::string>();
@@ -375,7 +375,7 @@ void LogicWorker::RegisterCallBacks()
 
 
 
-	_fun_callbacks[ID_IMG_CHAT_CONTINUE_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_IMG_CHAT_CONTINUE_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
 			auto md5 = root["md5"].get<std::string>();
@@ -464,7 +464,7 @@ void LogicWorker::RegisterCallBacks()
 			);
 	};
 
-	_fun_callbacks[ID_IMG_CHAT_DOWN_INFO_SYNC_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_IMG_CHAT_DOWN_INFO_SYNC_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
 			auto message_id = root["message_id"].get<int>();
@@ -508,7 +508,7 @@ void LogicWorker::RegisterCallBacks()
 			session->Send(return_str, ID_IMG_CHAT_DOWN_INFO_SYNC_RSP);
 	};
 
-	_fun_callbacks[ID_IMG_CHAT_DOWN_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_req_id,
+	_fun_callbacks[ID_IMG_CHAT_DOWN_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 
 			auto root = json::parse(msg_data, nullptr, false);
@@ -549,7 +549,7 @@ void LogicWorker::RegisterCallBacks()
 			FileSystem::GetInstance()->PostDownloadTaskToQue(down_load_task,index);
 	};
 
-	_fun_callbacks[ID_RESOURCE_LOGIN_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_RESOURCE_LOGIN_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
 
@@ -593,24 +593,24 @@ void LogicWorker::RegisterCallBacks()
 void LogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 {
 	auto session = task->_session;
-	short msg_id = task->_recvnode->_msg_id;
+	short msg_type = task->_recvnode->_msg_type;
 	std::string msg_data(task->_recvnode->_data, task->_recvnode->_cur_len);
 
-	cout << "recv_msg id  is " << msg_id << endl;
+	cout << "recv_msg type is " << msg_type << endl;
 
 	//登录鉴权握手是唯一允许在未认证状态下处理的消息
-	if (msg_id == ID_RESOURCE_LOGIN_REQ) {
-		auto call_back_iter = _fun_callbacks.find(msg_id);
+	if (msg_type == ID_RESOURCE_LOGIN_REQ) {
+		auto call_back_iter = _fun_callbacks.find(msg_type);
 		if (call_back_iter == _fun_callbacks.end()) {
 			return;
 		}
-		call_back_iter->second(session, msg_id, msg_data);
+		call_back_iter->second(session, msg_type, msg_data);
 		return;
 	}
 
 	//鉴权门控：除登录外所有消息都要求会话已认证，否则返回TokenInvalid并关闭连接
 	if (!session->IsAuthed()) {
-		short rsp_id = ReqToRspId(msg_id);
+		short rsp_id = ReqToRspId(msg_type);
 		if (rsp_id != 0) {
 			json rtvalue;
 			rtvalue["error"] = ErrorCodes::TokenInvalid;
@@ -620,9 +620,9 @@ void LogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 		return;
 	}
 
-	auto call_back_iter = _fun_callbacks.find(msg_id);
+	auto call_back_iter = _fun_callbacks.find(msg_type);
 	if (call_back_iter == _fun_callbacks.end()) {
 		return;
 	}
-	call_back_iter->second(session, msg_id, msg_data);
+	call_back_iter->second(session, msg_type, msg_data);
 }

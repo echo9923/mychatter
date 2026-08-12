@@ -5,7 +5,7 @@
 服务器接受客户端发送过来的好友认证请求
 
 ``` cpp
-void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	
 	Json::Reader reader;
 	Json::Value root;
@@ -533,7 +533,7 @@ void ContactUserList::slot_auth_rsp(std::shared_ptr<AuthRsp> auth_rsp)
 因为添加好友后，如果客户端重新登录，服务器LoginHandler需要加载好友列表，所以服务器要返回好友列表
 
 ``` cpp
-void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
+void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);
@@ -829,7 +829,7 @@ void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
 服务器响应客户端发送过来文本消息，在initHandlers中添加处理文本消息的逻辑
 
 ``` cpp
-void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);

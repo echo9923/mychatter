@@ -1,7 +1,7 @@
 // im_tcp_client.h — headless IM TCP client (plan Verification.2).
 //
 // One TcpClient = one logged-in connection to a ChatServer. A background
-// reader thread drains [id][len][body] frames into a mutex-guarded queue; the
+// reader thread drains [type][len][body] frames into a mutex-guarded queue; the
 // test thread sends 1017/1049/1051 frames with Send() and consumes inbound
 // frames (1018/1019/1050/1052/...) with Wait(). This mirrors the production Qt
 // TcpMgr receive model and lets senders pump requests while 1018s stream back,
@@ -37,16 +37,16 @@ public:
 	bool Connect(const std::string& host, unsigned short port, int timeout_ms);
 
 	// Send a complete frame. Thread-safe (serialized by a write mutex).
-	bool Send(short id, const std::string& body);
+	bool Send(short type, const std::string& body);
 
-	// Block until a frame with id==want_id arrives (want_id<=0 means any frame),
+	// Block until a frame with type==want_type arrives (want_type<=0 means any frame),
 	// or until timeout_ms elapses / the connection closes. On success fills *out
 	// and removes the frame from the internal queue; non-matching frames remain.
-	bool Wait(short want_id, int timeout_ms, Frame* out);
+	bool Wait(short want_type, int timeout_ms, Frame* out);
 
-	// Remove and return up to max_count frames with id==want_id currently
+	// Remove and return up to max_count frames with type==want_type currently
 	// buffered, without blocking beyond a short grace. Returns count collected.
-	int Drain(short want_id, int max_count, int timeout_ms, std::vector<Frame>* out);
+	int Drain(short want_type, int max_count, int timeout_ms, std::vector<Frame>* out);
 
 	bool IsClosed() const { return closed_.load(); }
 
@@ -75,8 +75,8 @@ private:
 // ResClient — a logged-in connection to the ResourceServer.
 //
 // ResourceServer uses a different wire format than ChatServer:
-//   [2-byte id][4-byte big-endian int32 length][body]   (6-byte header)
-// vs Chat's [2-byte id][2-byte length]. Otherwise the API mirrors TcpClient:
+//   [2-byte type][4-byte big-endian int32 length][body]   (6-byte header)
+// vs Chat's [2-byte type][2-byte length]. Otherwise the API mirrors TcpClient:
 // a background reader thread drains frames into a mutex-guarded queue.
 // ---------------------------------------------------------------------------
 class ResClient {
@@ -88,9 +88,9 @@ public:
 	ResClient& operator=(const ResClient&) = delete;
 
 	bool Connect(const std::string& host, unsigned short port, int timeout_ms);
-	bool Send(short id, const std::string& body);
-	bool Wait(short want_id, int timeout_ms, Frame* out);
-	int  Drain(short want_id, int max_count, int timeout_ms, std::vector<Frame>* out);
+	bool Send(short type, const std::string& body);
+	bool Wait(short want_type, int timeout_ms, Frame* out);
+	int  Drain(short want_type, int max_count, int timeout_ms, std::vector<Frame>* out);
 	bool IsClosed() const { return closed_.load(); }
 	void Close();
 

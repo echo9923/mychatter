@@ -364,7 +364,7 @@ void CServer::ClearSession(std::string session_id) {
 ```
 聊天服务完善用户登录，当用户登录后, 设置其uid对应的serverip。以及更新其所在服务器的连接数。
 ``` cpp
-void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
+void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);

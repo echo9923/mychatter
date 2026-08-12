@@ -46,7 +46,7 @@ public:
 /**
  * @brief 接收消息节点
  * 
- * 存储从客户端接收到的一条完整消息，包含消息ID和数据体。
+ * 存储从客户端接收到的一条完整消息，包含消息类型和数据体。
  * IO线程解析完消息后创建RecvNode，封装到LogicNode中投递给业务线程处理。
  */
 class RecvNode :public MsgNode {
@@ -55,23 +55,23 @@ public:
 	/**
 	 * @brief 构造接收节点
 	 * @param max_len 消息体最大长度
-	 * @param msg_id 消息类型ID（用于业务分发）
+	 * @param msg_type 消息类型（用于业务分发）
 	 */
-	RecvNode(short max_len, short msg_id);
+	RecvNode(short max_len, short msg_type);
 
 	/**
-	 * @brief 获取消息类型ID（供 IO 线程做路由分片绑定，计划1.3）
-	 * @return 消息类型ID
+	 * @brief 获取消息类型（供 IO 线程做路由分片绑定，计划1.3）
+	 * @return 消息类型
 	 */
-	short GetMsgId() const { return _msg_id; }
+	short GetMsgType() const { return _msg_type; }
 private:
-	short _msg_id;  ///< 消息类型ID，用于确定业务处理逻辑
+	short _msg_type;  ///< 消息类型，用于确定业务处理逻辑
 };
 
 /**
  * @brief 发送消息节点
  * 
- * 存储待发送给客户端的一条完整消息，包含消息头（ID+长度）和数据体。
+ * 存储待发送给客户端的一条完整消息，包含消息头（类型+长度）和数据体。
  * 发送时将其放入会话的发送队列，由异步写入操作逐步发送。
  */
 class SendNode:public MsgNode {
@@ -81,10 +81,10 @@ public:
 	 * @brief 构造发送节点，将消息内容拷贝到内部缓冲区
 	 * @param msg 消息数据指针
 	 * @param max_len 消息数据长度
-	 * @param msg_id 消息类型ID
+	 * @param msg_type 消息类型
 	 */
-	SendNode(const char* msg,short max_len, short msg_id);
+	SendNode(const char* msg,short max_len, short msg_type);
 private:
-	short _msg_id;  ///< 消息类型ID，写入消息头部发送给客户端
+	short _msg_type;  ///< 消息类型，写入消息头部发送给客户端
 };
 

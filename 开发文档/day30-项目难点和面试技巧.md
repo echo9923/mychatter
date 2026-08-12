@@ -42,7 +42,7 @@
 
 #### 1 如何利用asio实现的tcp服务
 
- 利用asio 的多线程模式，根据cpu核数封装iocontext连接池，每个连接池跑在独立线程，采用异步`async_read`和`assync_write`方式读写，通过消息回调完成数据收发。整个项目采用的网络模式是Proactor模式，每个连接通过Session类管理，通过智能指针管理Session,b保证回调之前Session可用，底层绑定用户id和session关联，回调函数可根据session反向查找用户进行消息推送。客户端和服务器通信采用json, 通过tlv方式(消息头(`消息id+消息长度`)+消息内容)封装消息包防止粘包。通过心跳机制检测连接可用性。
+ 利用asio 的多线程模式，根据cpu核数封装iocontext连接池，每个连接池跑在独立线程，采用异步`async_read`和`assync_write`方式读写，通过消息回调完成数据收发。整个项目采用的网络模式是Proactor模式，每个连接通过Session类管理，通过智能指针管理Session,b保证回调之前Session可用，底层绑定用户id和session关联，回调函数可根据session反向查找用户进行消息推送。客户端和服务器通信采用json, 通过tlv方式(消息头(`消息类型+消息长度`)+消息内容)封装消息包防止粘包。通过心跳机制检测连接可用性。
 
 
 

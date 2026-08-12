@@ -194,9 +194,9 @@ void TcpClient::processData()
         QDataStream stream(head_byte);
         //设置为大端模式
         stream.setByteOrder(QDataStream::BigEndian);
-        //读取ID
-        quint16 msg_id;
-        stream >> msg_id;
+        //读取类型
+        quint16 msg_type;
+        stream >> msg_type;
         //读取长度
         quint32 body_length;
         stream >> body_length;
@@ -221,7 +221,7 @@ void TcpClient::processData()
             //qDebug() << "receive data is " << body;
             // 获取 JSON 对象
             QJsonObject jsonObject = jsonDoc.object();
-            emit sig_logic_process(msg_id, jsonObject);
+            emit sig_logic_process(msg_type, jsonObject);
         }else{
             //消息未完全接受，所以中断
             break;
@@ -240,7 +240,7 @@ void TcpClient::processData()
 //头部总长度
 #define HEAD_TOTAL_LEN 6
 //头部id长度
-#define HEAD_ID_LEN 2
+#define HEAD_TYPE_LEN 2
 //头部数据长度
 #define HEAD_DATA_LEN 4
 // 接受队列最大个数
@@ -294,7 +294,7 @@ void CSession::AsyncReadBody(int total_len)
 
 ``` cpp
 void LogicSystem::RegisterCallBacks() {
-	_fun_callbacks[ID_TEST_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_TEST_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -312,7 +312,7 @@ void LogicSystem::RegisterCallBacks() {
 			rtvalue["data"] = data;
 	};
 
-	_fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -412,7 +412,7 @@ void LogicSystem::RegisterCallBacks() {
 将`LogicSystem`中添加多个`LogicWorker`用来处理逻辑
 
 ``` cpp
-typedef  function<void(shared_ptr<CSession>, const short &msg_id, const string &msg_data)> FunCallBack;
+typedef  function<void(shared_ptr<CSession>, const short &msg_type, const string &msg_data)> FunCallBack;
 class LogicSystem:public Singleton<LogicSystem>
 {
 	friend class Singleton<LogicSystem>;
@@ -506,7 +506,7 @@ LogicWorker::LogicWorker():_b_stop(false)
 ``` cpp
 void LogicWorker::RegisterCallBacks()
 {
-	_fun_callbacks[ID_TEST_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_TEST_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -524,7 +524,7 @@ void LogicWorker::RegisterCallBacks()
 			rtvalue["data"] = data;
 	};
 
-	_fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -568,12 +568,12 @@ void LogicWorker::RegisterCallBacks()
 ``` cpp
 void LogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 {
-	cout << "recv_msg id  is " << task->_recvnode->_msg_id << endl;
-	auto call_back_iter = _fun_callbacks.find(task->_recvnode->_msg_id);
+	cout << "recv_msg type  is " << task->_recvnode->_msg_type << endl;
+	auto call_back_iter = _fun_callbacks.find(task->_recvnode->_msg_type);
 	if (call_back_iter == _fun_callbacks.end()) {
 		return;
 	}
-	call_back_iter->second(task->_session, task->_recvnode->_msg_id,
+	call_back_iter->second(task->_session, task->_recvnode->_msg_type,
 		std::string(task->_recvnode->_data, task->_recvnode->_cur_len));
 }
 ```

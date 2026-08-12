@@ -448,7 +448,7 @@ void CSession::UpdateHeartbeat()
 服务器增加心跳处理请求
 
 ``` cpp
-void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);

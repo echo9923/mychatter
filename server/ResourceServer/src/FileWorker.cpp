@@ -368,7 +368,7 @@ void FileWorker::PostTask(std::shared_ptr<FileTask> task)
 
 void FileWorker::task_callback(std::shared_ptr<FileTask> task)
 {
-	auto iter = _handlers.find(task->_msg_id);
+	auto iter = _handlers.find(task->_msg_type);
 	if (iter == _handlers.end()) {
 		return;
 	}

@@ -17,15 +17,15 @@ using json = nlohmann::json;
 #include "data.h"
 
 class CServer;
-/// 消息处理回调函数类型：接受会话指针、消息ID、消息数据
-typedef  function<void(shared_ptr<CSession>, const short &msg_id, const string &msg_data)> FunCallBack;
+/// 消息处理回调函数类型：接受会话指针、消息类型、消息数据
+typedef  function<void(shared_ptr<CSession>, const short &msg_type, const string &msg_data)> FunCallBack;
 
 /**
  * @brief 业务逻辑处理系统（单例）
  * 
  * 负责处理所有客户端消息的业务逻辑。采用生产者-消费者模式：
  * - IO线程读取完消息后，通过 PostMsgToQue() 投递到消息队列
- * - 内部工作线程从队列取出消息，根据消息ID分发到对应的Handler处理
+ * - 内部工作线程从队列取出消息，根据消息类型分发到对应的Handler处理
  * 
  * 支持的消息处理包括：登录、搜索用户、加好友、认证好友、
  * 文本聊天、图片聊天、心跳、加载会话列表、创建私聊、加载历史消息等。
@@ -98,38 +98,38 @@ private:
 	 */
 	void DispatchClientMessage(std::shared_ptr<LogicNode> msg);
 
-	/// 注册所有消息ID到对应Handler的回调映射
+	/// 注册所有消息类型到对应Handler的回调映射
 	void RegisterCallBacks();
 
 	/**
 	 * @brief 处理用户登录请求（验证Token、分配会话、踢人逻辑等）
 	 */
-	void LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data);
+	void LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data);
 
 	/**
 	 * @brief 处理用户搜索请求（按uid或用户名搜索）
 	 */
-	void SearchInfo(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void SearchInfo(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 处理添加好友申请（写入数据库、通知目标用户）
 	 */
-	void AddFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void AddFriendApply(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 处理好友认证请求（同意/拒绝，更新数据库，通知申请者）
 	 */
-	void AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 处理文本聊天消息（存储、转发给接收者，支持跨服转发）
 	 */
-	void DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 处理客户端心跳请求，更新会话心跳时间并回复
 	 */
-	void HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 判断字符串是否为纯数字（用于区分uid搜索和用户名搜索）
@@ -180,7 +180,7 @@ private:
 	/**
 	 * @brief 处理加载用户聊天会话列表请求（分页）
 	 */
-	void GetUserThreadsHandler(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void GetUserThreadsHandler(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 从数据库分页查询用户的聊天会话列表
@@ -202,17 +202,17 @@ private:
 	/**
 	 * @brief 处理创建私聊会话请求
 	 */
-	void CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 处理加载历史聊天消息请求（分页）
 	 */
-	void LoadChatMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void LoadChatMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 处理图片聊天消息（存储记录、通知ResourceServer上传、转发给接收者）
 	 */
-	void DealChatImgMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void DealChatImgMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 应用层投递 ACK 处理器（计划4.3/5.2）
@@ -221,7 +221,7 @@ private:
 	 * GetMessagesByIds 验证所有 id 都属于本 receiver 且存在；MarkMessagesDelivered
 	 * 成功后才回 Success 并逐个 ZREM offline_msg:<uid>（Redis 失败不影响 success）。
 	 */
-	void DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 离线消息拉取处理器（计划5.3）
@@ -230,7 +230,7 @@ private:
 	 * 做并集（MySQL 为真值，缺失项回填 Redis），按 count limit 与 PullMaxBytes 双上界
 	 * 序列化统一 envelope，设置 next_message_id/has_more。
 	 */
-	void PullOfflineMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data);
+	void PullOfflineMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 将一条 ChatMessage 序列化为统一 envelope（计划5.3）

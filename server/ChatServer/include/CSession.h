@@ -93,9 +93,9 @@ public:
 	/**
 	 * @brief 向客户端发送消息（字符串版本）
 	 * @param msg 消息内容字符串（通常为JSON）
-	 * @param msgid 消息类型ID
+	 * @param msg_type 消息类型
 	 */
-	void Send(std::string msg, short msgid);
+	void Send(std::string msg, short msg_type);
 
 	/// 关闭会话，断开TCP连接
 	void Close();
@@ -106,9 +106,9 @@ public:
 	 * 在同一把 _send_lock 内置关闭标志并入队终帧：之后的 Send 一律被拒绝，
 	 * HandleWrite 在发送队列排空后才真正 Close，保证错误响应完整写出。
 	 * @param msg 消息内容字符串（通常为JSON错误响应）
-	 * @param msgid 消息类型ID
+	 * @param msg_type 消息类型
 	 */
-	void SendAndClose(std::string msg, short msgid);
+	void SendAndClose(std::string msg, short msg_type);
 
 	/**
 	 * @brief 获取自身的shared_ptr（用于异步回调中延长生命周期）
@@ -123,7 +123,7 @@ public:
 	void AsyncReadBody(int length);
 
 	/**
-	 * @brief 异步读取消息头部（解析消息ID和数据长度）
+	 * @brief 异步读取消息头部（解析消息类型和数据长度）
 	 * @param total_len 头部总长度
 	 */
 	void AsyncReadHead(int total_len);
@@ -197,7 +197,7 @@ private:
 	std::shared_ptr<RecvNode> _recv_msg_node;
 	/// 头部解析标志，true表示当前正在解析消息头部
 	bool _b_head_parse;
-	/// 当前接收到的消息头部节点（包含消息ID和数据长度）
+	/// 当前接收到的消息头部节点（包含消息类型和数据长度）
 	std::shared_ptr<MsgNode> _recv_head_node;
 	/// 该会话对应的用户ID（登录成功后设置，原子变量保证 worker/IO 线程安全读取）
 	std::atomic<int> _user_uid{0};
@@ -228,6 +228,6 @@ public:
 private:
 	/// 消息来源的客户端会话指针
 	shared_ptr<CSession> _session;
-	/// 接收到的消息数据节点（包含消息ID和数据体）
+	/// 接收到的消息数据节点（包含消息类型和数据体）
 	shared_ptr<RecvNode> _recvnode;
 };

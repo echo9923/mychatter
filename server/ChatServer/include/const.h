@@ -35,10 +35,10 @@ enum ErrorCodes {
 
 /// 单次接收/发送缓冲区的最大字节数 (2KB)
 #define MAX_LENGTH  1024*2
-/// 消息头部总长度（字节），包含消息ID和数据长度
+/// 消息头部总长度（字节），包含消息类型和数据长度
 #define HEAD_TOTAL_LEN 4
-/// 消息头部中消息ID占用的字节数
-#define HEAD_ID_LEN 2
+/// 消息头部中消息类型占用的字节数
+#define HEAD_TYPE_LEN 2
 /// 消息头部中数据长度字段占用的字节数
 #define HEAD_DATA_LEN 2
 /// 接收队列最大容量，超过此值将拒绝接收新消息
@@ -48,12 +48,12 @@ enum ErrorCodes {
 
 
 /**
- * @brief TCP消息ID枚举
- * 
+ * @brief TCP消息类型枚举
+ *
  * 定义客户端与ChatServer之间所有TCP消息的类型编号。
- * 消息协议格式：[2字节消息ID][2字节数据长度][数据体]
+ * 消息协议格式：[2字节消息类型][2字节数据长度][数据体]
  */
-enum MSG_IDS {
+enum MSG_TYPES {
 	MSG_CHAT_LOGIN = 1005,          ///< 用户登录请求
 	MSG_CHAT_LOGIN_RSP = 1006,      ///< 用户登录响应
 	ID_SEARCH_USER_REQ = 1007,      ///< 搜索用户请求（按uid或用户名）

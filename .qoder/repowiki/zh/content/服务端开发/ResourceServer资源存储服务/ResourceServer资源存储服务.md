@@ -52,7 +52,7 @@ ResourceServer采用分层与职责分离的设计：
 - 逻辑路由层：LogicSystem/LogicWorker 解析请求、鉴权、路由到具体处理器
 - 文件处理层：FileSystem 聚合 FileWorker/DownloadWorker，按文件名哈希分发任务
 - 存储与缓存层：RedisMgr（连接池、键值操作、下载进度）、MysqlMgr（用户与消息状态）
-- 配置与常量：config.ini、const.h（错误码、消息ID、传输参数）
+- 配置与常量：config.ini、const.h（错误码、消息类型、传输参数）
 
 ```mermaid
 graph TB
@@ -106,7 +106,7 @@ LogicWorker --> ConfigMgr["ConfigMgr<br/>配置文件读取"]
 ## 架构总览
 ResourceServer的请求处理流程如下：
 - 客户端通过TCP发送消息，CSession接收并解析头部与数据
-- LogicWorker根据消息ID调用对应回调，进行鉴权与参数校验
+- LogicWorker根据消息类型调用对应回调，进行鉴权与参数校验
 - 逻辑层将任务投递给FileSystem，按文件名哈希选择FileWorker或DownloadWorker
 - FileWorker解码Base64、写入本地文件、更新Redis/MySQL，并通过回调返回结果
 - DownloadWorker按序列号从Redis获取进度，定位偏移量读取分块，编码后返回
@@ -246,7 +246,7 @@ class ChatImgInfo {
 - [FileInfo.h:1-26](file://server/ResourceServer/include/FileInfo.h#L1-L26)
 
 ### 逻辑路由与鉴权 LogicWorker
-- 消息路由：注册各MSG_IDS对应的回调函数，解析JSON参数
+- 消息路由：注册各MSG_TYPES对应的回调函数，解析JSON参数
 - 鉴权机制：对下载与头像上传在seq=1时校验token（Redis中USERTOKENPREFIX）
 - 任务分发：按文件名哈希选择FileWorker或DownloadWorker索引，保证同文件顺序处理
 - 状态同步：上传完成后更新MySQL状态，必要时通过gRPC通知ChatServer
@@ -280,7 +280,7 @@ Logic-->>Client : "ID_IMG_CHAT_CONTINUE_UPLOAD_RSP"
 
 ### 网络会话 CSession
 - 功能：封装Boost.Asio TCP套接字，提供异步读/写、消息队列、会话ID与用户ID管理
-- 协议：自定义头部（长度、ID、数据长度）+ JSON数据体
+- 协议：自定义头部（长度、消息类型、数据长度）+ JSON数据体
 
 **章节来源**
 - [CSession.h:1-64](file://server/ResourceServer/include/CSession.h#L1-L64)
@@ -312,7 +312,7 @@ D --> E["与其他服务保持一致"]
 
 ### 配置与常量
 - config.ini：服务端口、MySQL/Redis连接、输出路径、静态资源路径、ChatServer gRPC地址
-- const.h：错误码枚举、消息ID定义、最大分块大小、工作者数量、Redis前缀等
+- const.h：错误码枚举、消息类型定义、最大分块大小、工作者数量、Redis前缀等
 
 **章节来源**
 - [config.ini:1-27](file://server/ResourceServer/config/config.ini#L1-L27)
@@ -386,7 +386,7 @@ ResourceServer通过清晰的层次划分与异步Worker机制，实现了高效
 
 ## 附录
 - 文件传输协议要点：
-  - 头部：长度、消息ID、数据长度
+  - 头部：长度、消息类型、数据长度
   - 数据体：JSON格式，包含seq、name、total_size、trans_size、last、data等字段
 - 进度回调：
   - 上传/下载完成后通过回调返回JSON结果，包含error、seq、name、total_size、current_size、is_last等

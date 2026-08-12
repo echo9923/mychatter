@@ -21,7 +21,7 @@ service StatusService {
 
 我们完善登陆逻辑，先去StatusServer验证token是否合理，如果合理再从内存中寻找用户信息，如果没找到则从数据库加载一份。
 ``` cpp
-void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
+void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);

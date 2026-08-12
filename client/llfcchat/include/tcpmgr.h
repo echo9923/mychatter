@@ -92,7 +92,7 @@ private:
     std::shared_ptr<ServerInfo> _server_info;  //登录流程保存，Chat 认证后传给 FileTcpMgr
     QByteArray _buffer;
     bool _b_recv_pending;
-    quint16 _message_id;
+    quint16 _message_type;
     quint16 _message_len;
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handlers;
     //发送队列

@@ -51,7 +51,7 @@
 - 服务端（Boost.Asio + gRPC）
   - 会话层：CSession 封装单个 TCP 连接的读写、粘包拆包、心跳更新与异常清理。
   - 消息节点：MsgNode/RecvNode/SendNode 用于头部与体组装、网络字节序转换。
-  - 常量与消息ID：const.h 中统一定义 MSG_IDS、ErrorCodes 等。
+  - 常量与消息类型：const.h 中统一定义 MSG_TYPES、ErrorCodes 等。
   - 业务逻辑：LogicSystem 负责消息分发、ACK处理和离线消息拉取。
 
 ```mermaid
@@ -66,7 +66,7 @@ subgraph "服务端"
 CS["CSession<br/>异步IO/粘包/心跳"]
 LS["LogicSystem<br/>消息分发/ACK处理/离线拉取"]
 MN["MsgNode<br/>头/体封装"]
-CT["常量/消息ID<br/>const.h"]
+CT["常量/消息类型<br/>const.h"]
 DB["MySQL/Redis<br/>持久化存储"]
 end
 UI --> TM
@@ -170,12 +170,12 @@ TM-->>UI : "统一分发处理消息"
   - 连接成功：触发 connected 信号，向上层返回连接结果。
   - 断开/错误：统一通过 disconnected/error 事件上报，上层可触发重连或提示。
 - 发送流程
-  - slot_send_data 将 ReqId 与 JSON 数据拼装成"2字节ID + 2字节长度 + 体"的帧。
+  - slot_send_data 将 ReqId 与 JSON 数据拼装成"2字节类型 + 2字节长度 + 体"的帧。
   - 使用 _send_queue 与 _pending 保证顺序串行写入，避免半包/乱序。
   - bytesWritten 回调推进 _bytes_sent，完成则出队下一帧继续写。
 - 接收与粘包拆包
   - readyRead 将所有可读数据追加到 _buffer。
-  - 循环解析：先确保有足够字节解析头部（ID+Len），再校验体长度是否齐全，不足则等待。
+  - 循环解析：先确保有足够字节解析头部（Type+Len），再校验体长度是否齐全，不足则等待。
   - 解析完成后调用 handleMsg 按 ReqId 分发给对应处理器。
 - **新增：待处理消息重放系统（两阶段队列握手）**
   - TextReplayDTO/ImageReplayDTO：跨线程DTO结构，仅包含值类型字段，禁止裸指针。
@@ -202,7 +202,7 @@ TM-->>UI : "统一分发处理消息"
 
 ```mermaid
 flowchart TD
-Start(["进入slot_send_data"]) --> Pack["组装帧: ID(2B)+Len(2B)+Body"]
+Start(["进入slot_send_data"]) --> Pack["组装帧: Type(2B)+Len(2B)+Body"]
 Pack --> Pending{"是否正在发送(_pending)?"}
 Pending --> |是| Enqueue["_send_queue入队"] --> End
 Pending --> |否| Write["_socket.write()"]
@@ -267,11 +267,11 @@ end
 
 ### 服务端 CSession 分析
 - 异步IO与粘包拆包
-  - AsyncReadHead：读取固定长度的头部（2字节ID + 2字节长度），进行网络字节序转换与合法性校验。
+  - AsyncReadHead：读取固定长度的头部（2字节类型 + 2字节长度），进行网络字节序转换与合法性校验。
   - AsyncReadBody：根据头部长度读取完整体，拷贝到 RecvNode，更新心跳时间，投递到 LogicSystem 处理。
   - asyncReadFull/asyncReadLen：递归式读取直到达到目标长度，保证完整帧。
 - 发送队列与并发写
-  - Send(char*/string, msgid) 将帧压入 _send_que，若队列为空则立即异步写出；否则由 HandleWrite 在回调中依次出队写出。
+  - Send(char*/string, msg_type) 将帧压入 _send_que，若队列为空则立即异步写出；否则由 HandleWrite 在回调中依次出队写出。
   - 使用 _send_lock 保护队列操作，避免竞态。
 - 心跳机制
   - 每次收到数据（头/体）时更新 _last_heartbeat。
@@ -285,7 +285,7 @@ classDiagram
 class CSession {
 +GetSocket() tcp : : socket&
 +Start() void
-+Send(msg, msgid) void
++Send(msg, msg_type) void
 +Close() void
 +AsyncReadHead(total_len) void
 +AsyncReadBody(total_len) void
@@ -314,10 +314,10 @@ class MsgNode {
 -_data : char*
 }
 class RecvNode {
--_msg_id : short
+-_msg_type : short
 }
 class SendNode {
--_msg_id : short
+-_msg_type : short
 }
 CSession --> LogicSystem : "投递消息"
 CSession --> MsgNode : "使用"
@@ -357,7 +357,7 @@ CSession --> SendNode : "发送缓存"
   - 固定字段：message_id,unique_id,thread_id,fromuid,touid,msg_type,content,content_size(十进制字符串),chat_time,status。
   - content_size用std::to_string避免Qt JSON number对64位文件大小丢精度。
 - 消息路由
-  - RegisterCallBacks注册各MSG_IDS的处理函数，CSession将RecvNode投递到队列，由业务线程处理并回写。
+  - RegisterCallBacks注册各MSG_TYPES的处理函数，CSession将RecvNode投递到队列，由业务线程处理并回写。
 
 **章节来源**
 - [LogicSystem.cpp:1154-1236](file://server/ChatServer/src/LogicSystem.cpp#L1154-L1236)
@@ -387,14 +387,14 @@ CSession --> SendNode : "发送缓存"
 
 ### 消息帧格式与粘包拆包
 - 帧结构
-  - 头部：2字节消息ID（网络字节序）+ 2字节消息体长度（网络字节序）。
+  - 头部：2字节消息类型（网络字节序）+ 2字节消息体长度（网络字节序）。
   - 体：JSON 字符串（UTF-8）。
 - 客户端
-  - 使用 QDataStream 设置 BigEndian 写入 ID 与 Len，随后拼接 JSON 体。
+  - 使用 QDataStream 设置 BigEndian 写入 Type 与 Len，随后拼接 JSON 体。
   - 接收时循环检查缓冲区是否满足头/体长度，不足则等待。
 - 服务端
   - 使用 boost::asio 的 async_read_some 递归读取至 HEAD_TOTAL_LEN，再按长度读取体。
-  - 发送时将 ID/Len 转为网络字节序，拼接体后一次性写出。
+  - 发送时将 Type/Len 转为网络字节序，拼接体后一次性写出。
 
 **章节来源**
 - [tcpmgr.cpp:1044-1079](file://client/llfcchat/src/tcpmgr.cpp#L1044-L1079)
@@ -424,7 +424,7 @@ CSession --> SendNode : "发送缓存"
   - _handlers 以 ReqId 为键，存储 lambda 处理器；handleMsg 查找并执行。
   - 典型处理器：登录、搜索、好友申请/认证、文本/图片聊天、离线通知、心跳等。
 - 服务端
-  - LogicSystem 注册各 MSG_IDS 的处理函数，CSession 将 RecvNode 投递到队列，由业务线程处理并回写。
+  - LogicSystem 注册各 MSG_TYPES 的处理函数，CSession 将 RecvNode 投递到队列，由业务线程处理并回写。
 
 **章节来源**
 - [tcpmgr.cpp:182-987](file://client/llfcchat/src/tcpmgr.cpp#L182-L987)
@@ -449,7 +449,7 @@ CSession --> SendNode : "发送缓存"
 - 服务端
   - CSession 依赖 Boost.Asio、gRPC、Redis 管理器、MySQL 管理器。
   - LogicSystem 依赖 MysqlDao、RedisMgr、分布式锁。
-  - 常量与消息ID集中定义于 const.h，数据模型在 data.h。
+  - 常量与消息类型集中定义于 const.h，数据模型在 data.h。
 
 ```mermaid
 graph LR
@@ -518,14 +518,14 @@ LS --> LOCK["分布式锁"]
     - 确认GUI线程重建逻辑是否正常执行。
   - **新增：ACK确认问题**
     - 检查_pending_ack状态是否正确清理。
-    - 验证1049/1050消息ID是否正确注册。
+    - 验证1049/1050消息类型是否正确注册。
     - 确认数据库MarkMessagesDelivered执行成功。
   - **新增：离线拉取问题**
     - 检查Redis ZSET键是否存在：offline_msg:<uid>。
     - 验证after_message_id参数是否正确递增。
     - 确认PullMaxBytes配置是否合理。
 - 定位方法
-  - 打印帧内容（ID/Len/Body）与发送/接收计数。
+  - 打印帧内容（Type/Len/Body）与发送/接收计数。
   - 观察 _pending/_bytes_sent 与 _send_queue 长度变化。
   - 服务端日志关注 read length not match、handle write failed 等。
   - **新增：待处理消息重放日志**
@@ -551,9 +551,9 @@ LLFCChat 的 TCP 通信子系统以简洁可靠的帧格式与稳定的异步 IO
 
 ## 附录：消息格式与状态码
 - 帧格式
-  - 头部：2字节消息ID（网络字节序）+ 2字节消息体长度（网络字节序）。
+  - 头部：2字节消息类型（网络字节序）+ 2字节消息体长度（网络字节序）。
   - 体：JSON 字符串，包含业务字段与 error 状态码。
-- 常用消息ID（部分）
+- 常用消息类型（部分）
   - 登录：MSG_CHAT_LOGIN / MSG_CHAT_LOGIN_RSP
   - 搜索：ID_SEARCH_USER_REQ / ID_SEARCH_USER_RSP
   - 好友：ID_ADD_FRIEND_REQ/RSP、ID_NOTIFY_ADD_FRIEND_REQ
