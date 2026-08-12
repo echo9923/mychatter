@@ -934,7 +934,7 @@ void ChatPage::UpdateFileProgress(std::shared_ptr<MsgInfo> msg_info) {
 `LogicWorker`注册消息处理
 
 ``` cpp
-_fun_callbacks[ID_IMG_CHAT_CONTINUE_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+_fun_callbacks[ID_IMG_CHAT_CONTINUE_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;

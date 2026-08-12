@@ -399,7 +399,7 @@ void LogicSystem::RegisterCallBacks() {
 
 ``` cpp
 void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session, 
-	const short& msg_id, const string& msg_data) {
+	const short& msg_type, const string& msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);
@@ -558,7 +558,7 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 ``` cpp
 void LogicWorker::RegisterCallBacks()
 {
-	_fun_callbacks[ID_IMG_CHAT_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_IMG_CHAT_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -715,7 +715,7 @@ FileWorker::FileWorker() :_b_stop(false)
 ``` cpp
 void FileWorker::task_callback(std::shared_ptr<FileTask> task)
 {
-	auto iter = _handlers.find(task->_msg_id);
+	auto iter = _handlers.find(task->_msg_type);
 	if (iter == _handlers.end()) {
 		return;
 	}
@@ -724,7 +724,7 @@ void FileWorker::task_callback(std::shared_ptr<FileTask> task)
 }
 ```
 
-从`_handlers`中根据消息id检索，取出回调函数，传入`task`参数调用
+从`_handlers`中根据消息类型检索，取出回调函数，传入`task`参数调用
 
 `_handlers`的注册逻辑
 
@@ -1387,7 +1387,7 @@ void FileTcpMgr::BatchSend(std::shared_ptr<MsgInfo> msg_info) {
 ## 服务器响应同步信息
 
 ``` cpp
-_fun_callbacks[ID_FILE_INFO_SYNC_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+_fun_callbacks[ID_FILE_INFO_SYNC_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;

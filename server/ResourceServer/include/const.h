@@ -41,8 +41,8 @@ enum MsgStatus {
 #define MAX_LENGTH  1024*50
 //头部总长度
 #define HEAD_TOTAL_LEN 6
-//头部id长度
-#define HEAD_ID_LEN 2
+//头部消息类型长度
+#define HEAD_TYPE_LEN 2
 //头部数据长度
 #define HEAD_DATA_LEN 4
 #define MAX_RECVQUE  2000000
@@ -57,7 +57,7 @@ enum MsgStatus {
 #define DOWN_LOAD_WORKER_COUNT	4
 
 
-enum MSG_IDS {
+enum MSG_TYPES {
 	ID_UPLOAD_HEAD_ICON_REQ = 1031,      //上传头像请求
 	ID_UPLOAD_HEAD_ICON_RSP = 1032,      //上传头像回复
 	ID_DOWN_LOAD_FILE_REQ = 1033,        //下载文件请求

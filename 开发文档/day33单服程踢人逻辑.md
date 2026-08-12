@@ -191,8 +191,8 @@ public:
 	void SetUserId(int uid);
 	int GetUserId();
 	void Start();
-	void Send(char* msg,  short max_length, short msgid);
-	void Send(std::string msg, short msgid);
+	void Send(char* msg,  short max_length, short msg_type);
+	void Send(std::string msg, short msg_type);
 	void Close();
 	std::shared_ptr<CSession> SharedSelf();
 	void AsyncReadBody(int length);
@@ -239,7 +239,7 @@ private:
 5. 登录成功后，要将`uid`和对应的`ip`信息写入`redis`,方便以后跨服查找。另外`uid`对应的`session`信息也要写入`redis`， 同时将`uid`和`session`关联，这样可以通过`uid`快速找到`session`
 
 ``` cpp
-void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
+void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);

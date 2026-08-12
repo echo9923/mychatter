@@ -49,7 +49,7 @@ private:
     uint16_t _port;
     QByteArray _buffer;
     bool _b_recv_pending;
-    quint16 _message_id;
+    quint16 _message_type;
     quint32 _message_len;
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handlers;
     //发送队列

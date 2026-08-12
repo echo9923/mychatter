@@ -482,7 +482,7 @@ def fetch_threads(me, last_id, page_size):
 
 ``` cpp
 void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session, 
-	const short& msg_id, const string& msg_data)
+	const short& msg_type, const string& msg_data)
 {
 	//从数据库加chat_threads记录
 	Json::Reader reader;
@@ -1232,7 +1232,7 @@ bool MysqlMgr::CreatePrivateChat(int user1_id, int user2_id, int& thread_id)
 **LogicSystem**添加创建聊天的回调函数，并且注册
 
 ``` cpp
-void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data)
+void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data)
 {
 	Json::Reader reader;
 	Json::Value root;
@@ -1661,7 +1661,7 @@ message AuthFriendRsp{
 服务器收到A向B添加好友的请求，会更新数据库申请记录，同时转发给B
 
 ``` cpp
-void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data)
+void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data)
 {
 	Json::Reader reader;
 	Json::Value root;
@@ -1785,7 +1785,7 @@ Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendR
 服务器收到后会执行
 
 ``` cpp
-void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	
 	Json::Reader reader;
 	Json::Value root;
@@ -2660,7 +2660,7 @@ _fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = std::bind(&LogicSystem::LoadChatMsg, this
 
 ``` cpp
 void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session, 
-	const short& msg_id, const string& msg_data) {
+	const short& msg_type, const string& msg_data) {
 
 	Json::Reader reader;
 	Json::Value root;
@@ -3283,7 +3283,7 @@ void ChatDialog::slot_text_chat_msg(std::vector<std::shared_ptr<TextChatData>> m
 如果是同一个服务器，则直接通过`Session`通知对方
 
 ``` cpp
-void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);

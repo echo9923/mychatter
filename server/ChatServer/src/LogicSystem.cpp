@@ -125,13 +125,13 @@ void LogicSystem::Stop() {
 }
 
 void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
-	short msg_id = msg->_recvnode->_msg_id;
+	short msg_type = msg->_recvnode->_msg_type;
 	std::string msg_data(msg->_recvnode->_data, msg->_recvnode->_cur_len);
 	auto session = msg->_session;
 
-	cout << "recv_msg id  is " << msg_id << endl;
+	cout << "recv_msg type is " << msg_type << endl;
 
-	if (msg_id == MSG_CHAT_LOGIN) {
+	if (msg_type == MSG_CHAT_LOGIN) {
 		//登录一次性：已认证后再收登录包一律拒绝并关闭，避免 LoginHandler 踢掉本连接的自毁路径
 		if (session->GetUserId() != 0) {
 			json err;
@@ -149,7 +149,7 @@ void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
 		if (user_uid == 0 || user_uid != routing_uid) {
 			json err;
 			err["error"] = ErrorCodes::UidInvalid;
-			short rsp_id = ReqToRspId(msg_id);
+			short rsp_id = ReqToRspId(msg_type);
 			if (rsp_id != 0) {
 				session->Send(err.dump(4), rsp_id);
 			}
@@ -157,12 +157,12 @@ void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
 		}
 	}
 
-	auto call_back_iter = _fun_callbacks.find(msg_id);
+	auto call_back_iter = _fun_callbacks.find(msg_type);
 	if (call_back_iter == _fun_callbacks.end()) {
-		std::cout << "msg id [" << msg_id << "] handler not found" << std::endl;
+		std::cout << "msg type [" << msg_type << "] handler not found" << std::endl;
 		return;
 	}
-	call_back_iter->second(session, msg_id, msg_data);
+	call_back_iter->second(session, msg_type, msg_data);
 }
 
 void LogicSystem::RegisterCallBacks() {
@@ -204,7 +204,7 @@ void LogicSystem::RegisterCallBacks() {
 
 }
 
-void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
+void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {
 	auto root = json::parse(msg_data, nullptr, false);
 
 	json  rtvalue;
@@ -343,7 +343,7 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 	return;
 }
 
-void LogicSystem::SearchInfo(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data)
+void LogicSystem::SearchInfo(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	auto uid_str = root["uid"].get<std::string>();
@@ -366,7 +366,7 @@ void LogicSystem::SearchInfo(std::shared_ptr<CSession> session, const short& msg
 	return;
 }
 
-void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data)
+void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	auto uid = root["uid"].get<int>();
@@ -445,7 +445,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short&
 
 }
 
-void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	
 	auto root = json::parse(msg_data, nullptr, false);
 
@@ -562,7 +562,7 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session, const short
 	ChatGrpcClient::GetInstance()->NotifyAuthFriend(to_ip_value, auth_req);
 }
 
-void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	auto root = json::parse(msg_data, nullptr, false);
 
 	auto uid = root["fromuid"].get<int>();
@@ -701,7 +701,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	}
 }
 
-void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	auto root = json::parse(msg_data, nullptr, false);
 	auto uid = root["fromuid"].get<int>();
 	std::cout << "receive heart beat msg, uid is " << uid << std::endl;
@@ -899,7 +899,7 @@ bool LogicSystem::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInf
 }
 
 void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session, 
-	const short& msg_id, const string& msg_data)
+	const short& msg_type, const string& msg_data)
 {
 	//从数据库加chat_threads记录
 	auto root = json::parse(msg_data, nullptr, false);
@@ -951,7 +951,7 @@ bool LogicSystem::GetUserThreads(int64_t userId,
 		threads, loadMore, nextLastId);
 }
 
-void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data)
+void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	auto uid = root["uid"].get<int>();
@@ -978,7 +978,7 @@ void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const sho
 }
 
 void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session, 
-	const short& msg_id, const string& msg_data) {
+	const short& msg_type, const string& msg_data) {
 
 	auto root = json::parse(msg_data, nullptr, false);
 	auto thread_id = root["thread_id"].get<int>();
@@ -1020,7 +1020,7 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 }
 
 void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
-	const short& msg_id, const string& msg_data) {
+	const short& msg_type, const string& msg_data) {
 	auto root = json::parse(msg_data, nullptr, false);
 
 	auto uid = root["fromuid"].get<int>();
@@ -1111,7 +1111,7 @@ json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) 
 	return env;
 }
 
-void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	//1049 {"uid":<receiver>,"message_ids":[...]} -> 1050 {"error":0,"message_ids":[...]}
 	//严格校验：JSON 对象、uid 正整数且 == session->GetUserId()、message_ids 非空数组且每项正 int
 	auto root = json::parse(msg_data, nullptr, false);
@@ -1195,7 +1195,7 @@ void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short
 	}
 }
 
-void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	//1051 {"uid":<receiver>,"after_message_id":<id>,"limit":<n>} -> 1052 {"error":0,"messages":[...],"next_message_id":<id>,"has_more":<bool>}
 	//配置：非法一律回退默认（计划4.2/5.3）
 	int pull_batch = ReadDeliveryInt("OfflinePullBatch", 100);

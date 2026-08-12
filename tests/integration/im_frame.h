@@ -1,6 +1,6 @@
 // im_frame.h — wire format helpers for the IM TCP/JSON protocol.
 //
-// Protocol (plan Verification.2): [2-byte big-endian id][2-byte big-endian len]
+// Protocol (plan Verification.2): [2-byte big-endian type][2-byte big-endian len]
 // [UTF-8 JSON body]. Header-only; depends only on nlohmann_json.
 #pragma once
 
@@ -12,33 +12,33 @@
 
 namespace imt {
 
-inline constexpr int HEAD_TOTAL_LEN = 4;  // 2 (id) + 2 (len)
-inline constexpr int HEAD_ID_LEN    = 2;
+inline constexpr int HEAD_TOTAL_LEN = 4;  // 2 (type) + 2 (len)
+inline constexpr int HEAD_TYPE_LEN  = 2;
 inline constexpr int HEAD_DATA_LEN  = 2;
 
 // ResourceServer wire format uses a 4-byte big-endian length (vs Chat's 2):
-//   [2-byte id][4-byte int32 length][body]  → 6-byte header.
+//   [2-byte type][4-byte int32 length][body]  → 6-byte header.
 inline constexpr int RES_HEAD_TOTAL_LEN = 6;
-inline constexpr int RES_HEAD_ID_LEN    = 2;
+inline constexpr int RES_HEAD_TYPE_LEN  = 2;
 inline constexpr int RES_HEAD_DATA_LEN  = 4;
 
 using json = nlohmann::json;
 
-// Build a complete frame: [id][len][body]. Writes into `out`.
-inline void EncodeFrame(short id, const std::string& body, std::string& out) {
+// Build a complete frame: [type][len][body]. Writes into `out`.
+inline void EncodeFrame(short type, const std::string& body, std::string& out) {
 	const std::size_t n = body.size();
 	out.resize(HEAD_TOTAL_LEN + n);
-	const unsigned short id_be = static_cast<unsigned short>(id);
+	const unsigned short type_be = static_cast<unsigned short>(type);
 	const unsigned short len_be = static_cast<unsigned short>(n);
-	out[0] = static_cast<char>((id_be >> 8) & 0xFF);
-	out[1] = static_cast<char>(id_be & 0xFF);
+	out[0] = static_cast<char>((type_be >> 8) & 0xFF);
+	out[1] = static_cast<char>(type_be & 0xFF);
 	out[2] = static_cast<char>((len_be >> 8) & 0xFF);
 	out[3] = static_cast<char>(len_be & 0xFF);
 	if (n) std::memcpy(&out[HEAD_TOTAL_LEN], body.data(), n);
 }
 
 struct Frame {
-	short       id = 0;
+	short       type = 0;
 	std::string body;
 };
 
@@ -57,14 +57,14 @@ inline std::uint32_t ReadBE32(const char* p) {
 	        static_cast<unsigned char>(p[3]);
 }
 
-// Build a Resource frame: [id][4-byte len][body]. Writes into `out`.
-inline void EncodeResFrame(short id, const std::string& body, std::string& out) {
+// Build a Resource frame: [type][4-byte len][body]. Writes into `out`.
+inline void EncodeResFrame(short type, const std::string& body, std::string& out) {
 	const std::size_t n = body.size();
 	out.resize(RES_HEAD_TOTAL_LEN + n);
-	const unsigned short id_be = static_cast<unsigned short>(id);
+	const unsigned short type_be = static_cast<unsigned short>(type);
 	const std::uint32_t len_be = static_cast<std::uint32_t>(n);
-	out[0] = static_cast<char>((id_be >> 8) & 0xFF);
-	out[1] = static_cast<char>(id_be & 0xFF);
+	out[0] = static_cast<char>((type_be >> 8) & 0xFF);
+	out[1] = static_cast<char>(type_be & 0xFF);
 	out[2] = static_cast<char>((len_be >> 24) & 0xFF);
 	out[3] = static_cast<char>((len_be >> 16) & 0xFF);
 	out[4] = static_cast<char>((len_be >>  8) & 0xFF);

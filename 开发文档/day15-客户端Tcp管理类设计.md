@@ -21,7 +21,7 @@ private:
     uint16_t _port;
     QByteArray _buffer;
     bool _b_recv_pending;
-    quint16 _message_id;
+    quint16 _message_type;
     quint16 _message_len;
 public slots:
     void slot_tcp_connect(ServerInfo);
@@ -36,7 +36,7 @@ signals:
 
 接下来我们在构造函数中连接网络请求的各种信号
 ``` cpp
-TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_message_len(0)
+TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_message_len(0)
 {
     QObject::connect(&_socket, &QTcpSocket::connected, [&]() {
            qDebug() << "Connected to server!";
@@ -55,19 +55,19 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
            forever {
                 //先解析头部
                if(!_b_recv_pending){
-                   // 检查缓冲区中的数据是否足够解析出一个消息头（消息ID + 消息长度）
+                   // 检查缓冲区中的数据是否足够解析出一个消息头（消息类型 + 消息长度）
                    if (_buffer.size() < static_cast<int>(sizeof(quint16) * 2)) {
                        return; // 数据不够，等待更多数据
                    }
 
-                   // 预读取消息ID和消息长度，但不从缓冲区中移除
-                   stream >> _message_id >> _message_len;
+                   // 预读取消息类型和消息长度，但不从缓冲区中移除
+                   stream >> _message_type >> _message_len;
 
                    //将buffer 中的前四个字节移除
                    _buffer = _buffer.mid(sizeof(quint16) * 2);
 
                    // 输出读取的数据
-                   qDebug() << "Message ID:" << _message_id << ", Length:" << _message_len;
+                   qDebug() << "Message Type:" << _message_type << ", Length:" << _message_len;
 
                }
 

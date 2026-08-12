@@ -12,7 +12,7 @@
 #include <filetcpmgr.h>
 #include <QStandardPaths>
 
-TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_message_len(0),_bytes_sent(0),_pending(false),
+TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_message_len(0),_bytes_sent(0),_pending(false),
     _manual_close(false),_reconnecting(false),_disconnect_notified(false),
     _retry_timer(nullptr),_delivery_uid(0),_retry_initial_ms(2000),_retry_max_ms(30000),
     _ack_retry_initial_ms(2000),_offline_pull_timer(nullptr),_offline_pull_interval_ms(10000),_offline_pull_batch(100)
@@ -40,7 +40,7 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
            forever {
                 //先解析头部
                if(!_b_recv_pending){
-                   // 检查缓冲区中的数据是否足够解析出一个消息头（消息ID + 消息长度）
+                   // 检查缓冲区中的数据是否足够解析出一个消息头（消息类型 + 消息长度）
                    if (_buffer.size() < static_cast<int>(sizeof(quint16) * 2)) {
                        return; // 数据不够，等待更多数据
                    }
@@ -48,9 +48,9 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
                    // ✅ 每次都重新创建stream
                    QDataStream stream(_buffer);
                    stream.setVersion(QDataStream::Qt_5_0);
-                   stream >> _message_id >> _message_len;
+                   stream >> _message_type >> _message_len;
                    _buffer.remove(0, sizeof(quint16) * 2);  // 使用remove代替mid赋值
-                   qDebug() << "Message ID:" << _message_id << ", Length:" << _message_len;
+                   qDebug() << "Message Type:" << _message_type << ", Length:" << _message_len;
 
                }
 
@@ -66,7 +66,7 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_messa
                qDebug() << "receive body msg is " << messageBody ;
 
                _buffer = _buffer.mid(_message_len);
-               handleMsg(ReqId(_message_id),_message_len, messageBody);
+               handleMsg(ReqId(_message_type),_message_len, messageBody);
            }
 
        });
@@ -1203,7 +1203,7 @@ void TcpMgr::slot_reconnect_chat(QString host, quint16 port)
 
     _buffer.clear();
     _b_recv_pending = false;
-    _message_id = 0;
+    _message_type = 0;
     _message_len = 0;
     _send_queue.clear();
     _current_block.clear();

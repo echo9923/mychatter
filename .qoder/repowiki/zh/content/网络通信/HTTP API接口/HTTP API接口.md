@@ -302,7 +302,7 @@ end
 classDiagram
 class FileTask {
 +session
-+msg_id
++msg_type
 +uid
 +seq
 +path

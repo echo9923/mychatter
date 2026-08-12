@@ -59,14 +59,14 @@ void TcpClient::ReaderLoop() {
 	char header[HEAD_TOTAL_LEN];
 	while (!stopping_.load()) {
 		if (!ReadExact(header, HEAD_TOTAL_LEN)) break;
-		const short id  = ReadBE16(header);
-		const short len = ReadBE16(header + HEAD_ID_LEN);
+		const short type = ReadBE16(header);
+		const short len = ReadBE16(header + HEAD_TYPE_LEN);
 		if (len < 0) break;  // malformed; protocol uses unsigned short
 		std::string body(static_cast<std::size_t>(len), '\0');
 		if (len && !ReadExact(&body[0], static_cast<std::size_t>(len))) break;
 
 		Frame f;
-		f.id = id;
+		f.type = id;
 		f.body = std::move(body);
 		{
 			std::lock_guard<std::mutex> lk(queue_mtx_);
@@ -78,34 +78,34 @@ void TcpClient::ReaderLoop() {
 	queue_cv_.notify_all();
 }
 
-bool TcpClient::Send(short id, const std::string& body) {
+bool TcpClient::Send(short type, const std::string& body) {
 	if (closed_.load()) return false;
 	std::string frame;
-	EncodeFrame(id, body, frame);
+	EncodeFrame(type, body, frame);
 	std::lock_guard<std::mutex> lk(write_mtx_);
 	boost::system::error_code ec;
 	std::size_t sent = boost::asio::write(socket_, boost::asio::buffer(frame), ec);
 	return !ec && sent == frame.size();
 }
 
-bool TcpClient::Wait(short want_id, int timeout_ms, Frame* out) {
+bool TcpClient::Wait(short want_type, int timeout_ms, Frame* out) {
 	std::unique_lock<std::mutex> lk(queue_mtx_);
 	const auto pred = [&] {
 		if (closed_.load()) return true;
-		if (want_id <= 0) return !queue_.empty();
-		for (const auto& f : queue_) if (f.id == want_id) return true;
+		if (want_type <= 0) return !queue_.empty();
+		for (const auto& f : queue_) if (f.type == want_type) return true;
 		return false;
 	};
 	if (!pred())
 		queue_cv_.wait_for(lk, std::chrono::milliseconds(timeout_ms), pred);
 	if (queue_.empty()) return false;
 
-	// Pick the first matching frame (or the very first frame for want_id<=0).
+	// Pick the first matching frame (or the very first frame for want_type<=0).
 	std::size_t idx = 0;
-	if (want_id > 0) {
+	if (want_type > 0) {
 		bool found = false;
 		for (std::size_t i = 0; i < queue_.size(); ++i) {
-			if (queue_[i].id == want_id) { idx = i; found = true; break; }
+			if (queue_[i].type == want_type) { idx = i; found = true; break; }
 		}
 		if (!found) return false;
 	}
@@ -115,7 +115,7 @@ bool TcpClient::Wait(short want_id, int timeout_ms, Frame* out) {
 	return true;
 }
 
-int TcpClient::Drain(short want_id, int max_count, int timeout_ms, std::vector<Frame>* out) {
+int TcpClient::Drain(short want_type, int max_count, int timeout_ms, std::vector<Frame>* out) {
 	// Short grace: let any in-flight frames land.
 	if (timeout_ms > 0) {
 		std::unique_lock<std::mutex> lk(queue_mtx_);
@@ -125,7 +125,7 @@ int TcpClient::Drain(short want_id, int max_count, int timeout_ms, std::vector<F
 	int collected = 0;
 	std::lock_guard<std::mutex> lk(queue_mtx_);
 	for (auto it = queue_.begin(); it != queue_.end() && collected < max_count;) {
-		if (it->id == want_id) {
+		if (it->type == want_type) {
 			if (out) out->push_back(*it);
 			it = queue_.erase(it);
 			++collected;
@@ -202,14 +202,14 @@ void ResClient::ReaderLoop() {
 	char header[RES_HEAD_TOTAL_LEN];
 	while (!stopping_.load()) {
 		if (!ReadExact(header, RES_HEAD_TOTAL_LEN)) break;
-		const short id  = ReadBE16(header);
-		const std::uint32_t len = ReadBE32(header + RES_HEAD_ID_LEN);
+		const short type = ReadBE16(header);
+		const std::uint32_t len = ReadBE32(header + RES_HEAD_TYPE_LEN);
 		if (len > 64 * 1024 * 1024) break;  // sanity guard against absurd lengths
 		std::string body(static_cast<std::size_t>(len), '\0');
 		if (len && !ReadExact(&body[0], static_cast<std::size_t>(len))) break;
 
 		Frame f;
-		f.id = id;
+		f.type = id;
 		f.body = std::move(body);
 		{
 			std::lock_guard<std::mutex> lk(queue_mtx_);
@@ -221,22 +221,22 @@ void ResClient::ReaderLoop() {
 	queue_cv_.notify_all();
 }
 
-bool ResClient::Send(short id, const std::string& body) {
+bool ResClient::Send(short type, const std::string& body) {
 	if (closed_.load()) return false;
 	std::string frame;
-	EncodeResFrame(id, body, frame);
+	EncodeResFrame(type, body, frame);
 	std::lock_guard<std::mutex> lk(write_mtx_);
 	boost::system::error_code ec;
 	std::size_t sent = boost::asio::write(socket_, boost::asio::buffer(frame), ec);
 	return !ec && sent == frame.size();
 }
 
-bool ResClient::Wait(short want_id, int timeout_ms, Frame* out) {
+bool ResClient::Wait(short want_type, int timeout_ms, Frame* out) {
 	std::unique_lock<std::mutex> lk(queue_mtx_);
 	const auto pred = [&] {
 		if (closed_.load()) return true;
-		if (want_id <= 0) return !queue_.empty();
-		for (const auto& f : queue_) if (f.id == want_id) return true;
+		if (want_type <= 0) return !queue_.empty();
+		for (const auto& f : queue_) if (f.type == want_type) return true;
 		return false;
 	};
 	if (!pred())
@@ -244,10 +244,10 @@ bool ResClient::Wait(short want_id, int timeout_ms, Frame* out) {
 	if (queue_.empty()) return false;
 
 	std::size_t idx = 0;
-	if (want_id > 0) {
+	if (want_type > 0) {
 		bool found = false;
 		for (std::size_t i = 0; i < queue_.size(); ++i) {
-			if (queue_[i].id == want_id) { idx = i; found = true; break; }
+			if (queue_[i].type == want_type) { idx = i; found = true; break; }
 		}
 		if (!found) return false;
 	}
@@ -257,7 +257,7 @@ bool ResClient::Wait(short want_id, int timeout_ms, Frame* out) {
 	return true;
 }
 
-int ResClient::Drain(short want_id, int max_count, int timeout_ms, std::vector<Frame>* out) {
+int ResClient::Drain(short want_type, int max_count, int timeout_ms, std::vector<Frame>* out) {
 	if (timeout_ms > 0) {
 		std::unique_lock<std::mutex> lk(queue_mtx_);
 		queue_cv_.wait_for(lk, std::chrono::milliseconds(timeout_ms),
@@ -266,7 +266,7 @@ int ResClient::Drain(short want_id, int max_count, int timeout_ms, std::vector<F
 	int collected = 0;
 	std::lock_guard<std::mutex> lk(queue_mtx_);
 	for (auto it = queue_.begin(); it != queue_.end() && collected < max_count;) {
-		if (it->id == want_id) {
+		if (it->type == want_type) {
 			if (out) out->push_back(*it);
 			it = queue_.erase(it);
 			++collected;

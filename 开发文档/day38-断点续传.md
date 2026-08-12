@@ -250,7 +250,7 @@ void TcpMgr::registerMetaType() {
 在构造函数中调用
 
 ``` cpp
-TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_id(0),_message_len(0)
+TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_message_len(0)
 {
     registerMetaType();
     //...
@@ -828,7 +828,7 @@ void MainWindow::slot_pause_continue()
 单线程服务器改造不大，只需要增加同步文件进度信息的处理逻辑，以及优化之前的上传处理逻辑即可
 
 ``` cpp
-  _fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+  _fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -910,7 +910,7 @@ void MainWindow::slot_pause_continue()
 	};
 
 
-	_fun_callbacks[ID_SYNC_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_SYNC_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 
 			Json::Reader reader;
@@ -950,7 +950,7 @@ void MainWindow::slot_pause_continue()
 ``` cpp
 void LogicWorker::RegisterCallBacks()
 {
-	_fun_callbacks[ID_TEST_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_TEST_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -968,7 +968,7 @@ void LogicWorker::RegisterCallBacks()
 			rtvalue["data"] = data;
 	};
 
-	_fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_UPLOAD_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -1033,7 +1033,7 @@ void LogicWorker::RegisterCallBacks()
 
 
 
-	_fun_callbacks[ID_SYNC_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_SYNC_FILE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 
 			Json::Reader reader;
@@ -1158,7 +1158,7 @@ private:
     uint16_t _port;
     QByteArray _buffer;
     bool _b_recv_pending;
-    quint16 _message_id;
+    quint16 _message_type;
     quint32 _message_len;
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handlers;
     //发送队列
@@ -1183,7 +1183,7 @@ public slots:
 
 ``` cpp
 FileTcpMgr::FileTcpMgr(QObject *parent) : QObject(parent),
-_host(""), _port(0), _b_recv_pending(false), _message_id(0), _message_len(0), _bytes_sent(0), _pending(false)
+_host(""), _port(0), _b_recv_pending(false), _message_type(0), _message_len(0), _bytes_sent(0), _pending(false)
 {
     registerMetaType();
     QObject::connect(&_socket, &QTcpSocket::connected, this, [&]() {
@@ -1203,19 +1203,19 @@ _host(""), _port(0), _b_recv_pending(false), _message_id(0), _message_len(0), _b
         forever {
              //先解析头部
             if(!_b_recv_pending){
-                // 检查缓冲区中的数据是否足够解析出一个消息头（消息ID + 消息长度）
+                // 检查缓冲区中的数据是否足够解析出一个消息头（消息类型 + 消息长度）
                 if (_buffer.size() < FILE_UPLOAD_HEAD_LEN) {
                     return; // 数据不够，等待更多数据
                 }
 
-                // 预读取消息ID和消息长度，但不从缓冲区中移除
-                stream >> _message_id >> _message_len;
+                // 预读取消息类型和消息长度，但不从缓冲区中移除
+                stream >> _message_type >> _message_len;
 
                 //将buffer 中的前六个字节移除
                 _buffer = _buffer.mid(FILE_UPLOAD_HEAD_LEN);
 
                 // 输出读取的数据
-                qDebug() << "Message ID:" << _message_id << ", Length:" << _message_len;
+                qDebug() << "Message Type:" << _message_type << ", Length:" << _message_len;
 
             }
 
@@ -1231,7 +1231,7 @@ _host(""), _port(0), _b_recv_pending(false), _message_id(0), _message_len(0), _b
             qDebug() << "receive body msg is " << messageBody ;
 
             _buffer = _buffer.mid(_message_len);
-            handleMsg(ReqId(_message_id),_message_len, messageBody);
+            handleMsg(ReqId(_message_type),_message_len, messageBody);
         }
 
     });
@@ -1539,7 +1539,7 @@ int main(int argc, char *argv[])
 服务器新增文件上报逻辑处理， 在`LogicWorker::RegisterCallBacks`中添加
 
 ``` cpp
-_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -1719,7 +1719,7 @@ bool RedisMgr::SetExp(const std::string& key, const std::string& value, int expi
 每次收到上传信息后，更新上传进度到redis中
 
 ``` cpp
-_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;
@@ -1924,7 +1924,7 @@ struct FileTask {
 改进后的处理
 
 ``` cpp
-	_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_id,
+	_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			Json::Reader reader;
 			Json::Value root;

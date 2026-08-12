@@ -31,13 +31,13 @@ public:
 
 class RecvNode :public MsgNode {
 public:
-	RecvNode(int max_len, short msg_id);
-	short _msg_id;
+	RecvNode(int max_len, short msg_type);
+	short _msg_type;
 };
 
 class SendNode:public MsgNode {
 public:
-	SendNode(const char* msg,int max_len, short msg_id);
-	short _msg_id;
+	SendNode(const char* msg,int max_len, short msg_type);
+	short _msg_type;
 };
 

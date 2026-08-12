@@ -498,7 +498,7 @@ void ChatPage::AppendOtherMsg(std::shared_ptr<ChatDataBase> msg) {
 LogicWorker中增加请求的处理
 
 ``` cpp
-_fun_callbacks[ID_IMG_CHAT_DOWN_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_req_id,
+_fun_callbacks[ID_IMG_CHAT_DOWN_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 
 			Json::Reader reader;

@@ -217,7 +217,7 @@ void LogicSystem::RegisterCallBacks() {
 ```
 SearchInfo根据用户uid查询具体信息
 ``` cpp
-void LogicSystem::SearchInfo(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::SearchInfo(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);
@@ -345,7 +345,7 @@ void LogicSystem::RegisterCallBacks() {
 ```
 接下来实现AddFriendApply
 ``` cpp
-void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short& msg_id, const string& msg_data) {
+void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);

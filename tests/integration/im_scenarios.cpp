@@ -359,7 +359,7 @@ static void OrderConsumer(OrderSide& s, std::atomic<int>& gseq, int deadline_ms)
 			if (s.client->IsClosed()) { s.ok = false; return; }
 			continue;
 		}
-		if (f.id != ID_TEXT_CHAT_MSG_RSP) continue;  // drain 1019 etc.
+		if (f.type != ID_TEXT_CHAT_MSG_RSP) continue;  // drain 1019 etc.
 		auto j = ParseJson(f.body);
 		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { s.ok = false; return; }
 		//单条化：1018 成功响应为顶层拍平 envelope

@@ -88,12 +88,12 @@ end
 
 ## 核心组件
 - CSession：封装单个TCP连接的读写、粘包处理、发送队列、心跳计时、异常清理。**新增** SendAndClose原子性操作和优雅关闭机制。
-- LogicSystem：单例消息总线，按消息ID分派到具体处理器；包含登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载等。**新增** PostToUser uid分片路由机制。
+- LogicSystem：单例消息总线，按消息类型分派到具体处理器；包含登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载等。**新增** PostToUser uid分片路由机制。
 - UserMgr：维护uid到session的映射，提供获取、设置、移除操作。
 - DistLock：基于Redis的分布式锁，支持超时与原子释放，采用SET NX EX原子命令。
 - **更新** RedisMgr：Redis管理器，已更新SetEx方法使用SET ... EX语法替代SETEX命令，改进错误处理和日志输出。
 - 数据模型：UserInfo、ApplyInfo、ChatThreadInfo、ChatMessage、PageResult、ChatMsgType。
-- 常量与协议：ErrorCodes、MSG_IDS、Redis键前缀、gRPC消息类型。
+- 常量与协议：ErrorCodes、MSG_TYPES、Redis键前缀、gRPC消息类型。
 
 章节来源
 - [CSession.h:1-86](file://server/ChatServer/include/CSession.h#L1-L86)
@@ -123,7 +123,7 @@ Session->>Session : 读头部(HEAD_TOTAL_LEN)
 Session->>Session : 读正文(长度由头部决定)
 Session->>Logic : PostMsgToQue(LogicNode)
 Logic->>Logic : 工作线程消费队列
-Logic->>Logic : 按msg_id路由到处理器
+Logic->>Logic : 按msg_type路由到处理器
 alt 登录流程
 Logic->>Redis : SET token value EX ttl
 Logic->>DB : 拉取用户基础信息
@@ -159,7 +159,7 @@ Session->>Session : 发送最终帧并关闭连接
 
 ### CSession：连接生命周期与I/O
 - 连接建立：构造函数生成唯一session_id，初始化接收缓冲与心跳时间戳；Start()启动头部读取。
-- 粘包处理：AsyncReadHead读取固定长度的头部，解析msg_id与msg_len后，进入AsyncReadBody读取完整正文。
+- 粘包处理：AsyncReadHead读取固定长度的头部，解析msg_type与msg_len后，进入AsyncReadBody读取完整正文。
 - 发送队列：Send将消息入队，使用互斥保护；若队列为空则立即发起异步写，HandleWrite完成后继续出队下一个。
 - **新增** SendAndClose原子性操作：确保最终帧发送成功后立即关闭连接，避免资源泄漏。
 - 心跳检测：每次成功读取更新_last_heartbeat；IsHeartbeatExpired判断是否超过阈值（默认20秒）。
@@ -207,10 +207,10 @@ class MsgNode {
 +_data : char*
 }
 class SendNode {
--_msg_id : short
+-_msg_type : short
 }
 class RecvNode {
--_msg_id : short
+-_msg_type : short
 }
 CSession --> MsgNode : "使用"
 CSession --> SendNode : "发送队列"
@@ -227,7 +227,7 @@ CSession --> RecvNode : "接收缓冲"
 - [MsgNode.h:1-48](file://server/ChatServer/include/MsgNode.h#L1-L48)
 
 ### LogicSystem：业务逻辑与消息路由
-- 消息队列与工作线程：PostMsgToQue将LogicNode入队，条件变量唤醒DealMsg；DealMsg循环取出并按msg_id查找回调函数执行。
+- 消息队列与工作线程：PostMsgToQue将LogicNode入队，条件变量唤醒DealMsg；DealMsg循环取出并按msg_type查找回调函数执行。
 - 回调注册：RegisterCallBacks绑定各业务处理器（登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载等）。
 - 登录流程：校验Token、拉取用户基础信息、分布式锁保护登录互斥、跨服踢人、绑定session与uid、返回好友与申请列表。
 - 文本聊天：批量插入数据库，查询接收方所在服务器，同服直接推送，跨服通过gRPC通知。
@@ -241,7 +241,7 @@ flowchart TD
 Start(["进入处理器"]) --> Parse["解析JSON参数"]
 Parse --> Validate{"参数合法?"}
 Validate --> |否| Err["填充错误码并返回"]
-Validate --> |是| Route{"按msg_id路由"}
+Validate --> |是| Route{"按msg_type路由"}
 Route --> Login["登录处理器"]
 Route --> Text["文本聊天处理器"]
 Route --> Img["图片聊天处理器"]
@@ -472,7 +472,7 @@ ChatServer以CSession为核心承载TCP会话，LogicSystem作为消息总线驱
 
 ## 附录：消息协议与错误码
 - 错误码：Success、Error_Json、RPCFailed、VarifyExpired、VarifyCodeErr、UserExist、PasswdErr、EmailNotMatch、PasswdUpFailed、PasswdInvalid、TokenInvalid、UidInvalid、CREATE_CHAT_FAILED、LOAD_CHAT_FAILED。
-- 消息ID：登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载、文件同步等。
+- 消息类型：登录、搜索、好友申请/认证、文本/图片聊天、心跳、线程加载、文件同步等。
 - gRPC接口：NotifyAddFriend、NotifyAuthFriend、NotifyTextChatMsg、NotifyKickUser、NotifyChatImgMsg及对应请求/响应结构。
 - **更新** Redis命令：SetEx方法已更新为SET ... EX语法，支持更广泛的Redis版本兼容性。
 - **新增** PostToUser接口：支持基于uid的消息路由和分片传输。

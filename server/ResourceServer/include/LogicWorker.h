@@ -15,8 +15,8 @@ public:
 	shared_ptr<RecvNode> _recvnode;
 };
 
-typedef  function<void(shared_ptr<CSession>, 
-	const short& msg_id, const string& msg_data)> FunCallBack;
+typedef  function<void(shared_ptr<CSession>,
+	const short& msg_type, const string& msg_data)> FunCallBack;
 
 class LogicWorker
 {

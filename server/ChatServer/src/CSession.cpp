@@ -63,7 +63,7 @@ void CSession::Start(){
 	AsyncReadHead(HEAD_TOTAL_LEN);
 }
 
-void CSession::Send(std::string msg, short msgid) {
+void CSession::Send(std::string msg, short msg_type) {
 	std::lock_guard<std::mutex> lock(_send_lock);
 	if (_close_after_send) {
 		//已安排写完即关的终帧，后续发送一律拒绝
@@ -71,7 +71,7 @@ void CSession::Send(std::string msg, short msgid) {
 	}
 	//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出，拒绝并入队（计划5.3）
 	if (static_cast<int>(msg.length()) > kMaxSendPayload) {
-		std::cout << "session: " << _session_id << " drop oversize payload, msgid=" << msgid
+		std::cout << "session: " << _session_id << " drop oversize payload, msgtype=" << msg_type
 			<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
 		return;
 	}
@@ -81,7 +81,7 @@ void CSession::Send(std::string msg, short msgid) {
 		return;
 	}
 
-	_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msgid));
+	_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
 	if (send_que_size > 0) {
 		return;
 	}
@@ -90,7 +90,7 @@ void CSession::Send(std::string msg, short msgid) {
 		std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
 }
 
-void CSession::SendAndClose(std::string msg, short msgid) {
+void CSession::SendAndClose(std::string msg, short msg_type) {
 	std::lock_guard<std::mutex> lock(_send_lock);
 	if (_close_after_send) {
 		//已经安排过终帧，忽略重复调用
@@ -98,13 +98,13 @@ void CSession::SendAndClose(std::string msg, short msgid) {
 	}
 	//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出；终帧虽小但仍统一检查（计划5.3）
 	if (static_cast<int>(msg.length()) > kMaxSendPayload) {
-		std::cout << "session: " << _session_id << " drop oversize terminal payload, msgid=" << msgid
+		std::cout << "session: " << _session_id << " drop oversize terminal payload, msgtype=" << msg_type
 			<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
 		return;
 	}
 	//先置标志再入队：同一把锁内拒绝后续一切 Send，保证该帧是最后一帧
 	_close_after_send = true;
-	_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msgid));
+	_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
 	if (_send_que.size() > 1) {
 		//已有写在飞，HandleWrite 会依次写完并在排空后关闭
 		return;
@@ -157,10 +157,10 @@ void CSession::AsyncReadBody(int total_len)
 			//更新session心跳时间
 			UpdateHeartbeat();
 
-			const short msg_id = _recv_msg_node->GetMsgId();
+			const short msg_type = _recv_msg_node->GetMsgType();
 			std::size_t routing_key = 0;
 
-			if (msg_id == MSG_CHAT_LOGIN) {
+			if (msg_type == MSG_CHAT_LOGIN) {
 				//登录包：仅解析正整数 uid 以固定路由分片，不在 IO 线程处理登录业务
 				int login_uid = 0;
 				try {
@@ -197,7 +197,7 @@ void CSession::AsyncReadBody(int total_len)
 				make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
 			if (!posted) {
 				//服务端停机/队列拒绝：该消息绝不入队、绝不持久化
-				short rsp_id = ReqToRspId(msg_id);
+				short rsp_id = ReqToRspId(msg_type);
 				if (rsp_id != 0) {
 					json busy;
 					busy["error"] = ErrorCodes::SERVER_BUSY;
@@ -248,32 +248,32 @@ void CSession::AsyncReadHead(int total_len)
 			_recv_head_node->Clear();
 			memcpy(_recv_head_node->_data, _data, bytes_transfered);
 
-			//获取头部MSGID数据
-			short msg_id = 0;
-			memcpy(&msg_id, _recv_head_node->_data, HEAD_ID_LEN);
+			//获取头部消息类型数据
+			short msg_type = 0;
+			memcpy(&msg_type, _recv_head_node->_data, HEAD_TYPE_LEN);
 			//网络字节序转化为本地字节序
-			msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
-			std::cout << "msg_id is " << msg_id << endl;
-			//id非法
-			if (msg_id > MAX_LENGTH) {
-				std::cout << "invalid msg_id is " << msg_id << endl;
+			msg_type = boost::asio::detail::socket_ops::network_to_host_short(msg_type);
+			std::cout << "msg_type is " << msg_type << endl;
+			//类型非法
+			if (msg_type > MAX_LENGTH) {
+				std::cout << "invalid msg_type is " << msg_type << endl;
 				_server->ClearSession(_session_id);
 				return;
 			}
 			short msg_len = 0;
-			memcpy(&msg_len, _recv_head_node->_data + HEAD_ID_LEN, HEAD_DATA_LEN);
+			memcpy(&msg_len, _recv_head_node->_data + HEAD_TYPE_LEN, HEAD_DATA_LEN);
 			//网络字节序转化为本地字节序
 			msg_len = boost::asio::detail::socket_ops::network_to_host_short(msg_len);
 			std::cout << "msg_len is " << msg_len << endl;
 
-			//id非法
+			//长度非法
 			if (msg_len > MAX_LENGTH) {
 				std::cout << "invalid data length is " << msg_len << endl;
 				_server->ClearSession(_session_id);
 				return;
 			}
 
-			_recv_msg_node = make_shared<RecvNode>(msg_len, msg_id);
+			_recv_msg_node = make_shared<RecvNode>(msg_len, msg_type);
 			AsyncReadBody(msg_len);
 		}
 		catch (std::exception& e) {

@@ -39,7 +39,7 @@ source_files:
 - 登录认证失败后立即关闭连接，防止后续消息被误处理（CSession.cpp 登录前校验 uid/routing_uid）。
 
 关键文件：
-- server/ChatServer/include/const.h — 服务端统一 ErrorCodes、MSG_IDS、ReqToRspId 映射
+- server/ChatServer/include/const.h — 服务端统一 ErrorCodes、MSG_TYPES、ReqToRspId 映射
 - client/llfcchat/include/global.h — 客户端镜像 ErrorCodes、ReqId、MsgStatus
 - server/common/include/Defer.h — RAII 延迟执行器
 - server/ChatServer/src/CSession.cpp — Asio 异步 IO 异常捕获、连接生命周期管理

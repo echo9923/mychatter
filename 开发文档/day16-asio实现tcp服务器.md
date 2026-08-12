@@ -197,20 +197,20 @@ void CSession::AsyncReadHead(int total_len)
 			_recv_head_node->Clear();
 			memcpy(_recv_head_node->_data, _data, bytes_transfered);
 
-			//获取头部MSGID数据
-			short msg_id = 0;
-			memcpy(&msg_id, _recv_head_node->_data, HEAD_ID_LEN);
+			//获取头部消息类型数据
+			short msg_type = 0;
+			memcpy(&msg_type, _recv_head_node->_data, HEAD_TYPE_LEN);
 			//网络字节序转化为本地字节序
-			msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
-			std::cout << "msg_id is " << msg_id << endl;
-			//id非法
-			if (msg_id > MAX_LENGTH) {
-				std::cout << "invalid msg_id is " << msg_id << endl;
+			msg_type = boost::asio::detail::socket_ops::network_to_host_short(msg_type);
+			std::cout << "msg_type is " << msg_type << endl;
+			//类型非法
+			if (msg_type > MAX_LENGTH) {
+				std::cout << "invalid msg_type is " << msg_type << endl;
 				_server->ClearSession(_uuid);
 				return;
 			}
 			short msg_len = 0;
-			memcpy(&msg_len, _recv_head_node->_data + HEAD_ID_LEN, HEAD_DATA_LEN);
+			memcpy(&msg_len, _recv_head_node->_data + HEAD_TYPE_LEN, HEAD_DATA_LEN);
 			//网络字节序转化为本地字节序
 			msg_len = boost::asio::detail::socket_ops::network_to_host_short(msg_len);
 			std::cout << "msg_len is " << msg_len << endl;
@@ -222,7 +222,7 @@ void CSession::AsyncReadHead(int total_len)
 				return;
 			}
 
-			_recv_msg_node = make_shared<RecvNode>(msg_len, msg_id);
+			_recv_msg_node = make_shared<RecvNode>(msg_len, msg_type);
 			AsyncReadBody(msg_len);
 		}
 		catch (std::exception& e) {
@@ -314,7 +314,7 @@ void LogicSystem::RegisterCallBacks() {
 		placeholders::_1, placeholders::_2, placeholders::_3);
 }
 
-void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id, const string &msg_data) {
+void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {
 	Json::Reader reader;
 	Json::Value root;
 	reader.parse(msg_data, root);
@@ -322,7 +322,7 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_id
 		<< root["token"].asString() << endl;
 
 	std::string return_str = root.toStyledString();
-	session->Send(return_str, msg_id);
+	session->Send(return_str, msg_type);
 }
 ```
 并在构造函数中注册这些处理流程
