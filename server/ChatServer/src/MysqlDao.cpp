@@ -990,62 +990,6 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 	return SaveMessageResult::Conflict;
 }
 
-SaveMessageResult MysqlDao::AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas,
-	std::vector<std::string>& conflict_unique_ids) {
-	conflict_unique_ids.clear();
-	if (chat_datas.empty()) {
-		return SaveMessageResult::Stored;
-	}
-
-	auto con = pool_->getConnection();
-	if (!con) {
-		return SaveMessageResult::Failed;
-	}
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-	});
-	auto& conn = con->_con;
-
-	try {
-		// 批量在同一事务内处理；任一 conflict/SQL 错误回滚本批新行
-		conn->setAutoCommit(false);
-
-		bool any_conflict = false;
-		bool all_duplicate = true;
-		for (auto& msg : chat_datas) {
-			std::string conflict_uid;
-			auto r = UpsertChatMessage(conn.get(), msg, conflict_uid);
-			if (r == SaveMessageResult::Failed) {
-				conn->rollback();
-				return SaveMessageResult::Failed;
-			}
-			if (r == SaveMessageResult::Conflict) {
-				any_conflict = true;
-				conflict_unique_ids.push_back(msg->unique_id);
-				continue;
-			}
-			if (r == SaveMessageResult::Stored) {
-				all_duplicate = false;
-			}
-			// Duplicate: 保持 all_duplicate=true
-		}
-
-		if (any_conflict) {
-			// 存在内容冲突，回滚本批全部新行，交由上层返回 MESSAGE_CONFLICT
-			conn->rollback();
-			return SaveMessageResult::Conflict;
-		}
-
-		conn->commit();
-		return all_duplicate ? SaveMessageResult::Duplicate : SaveMessageResult::Stored;
-	}
-	catch (sql::SQLException& e) {
-		std::cerr << "SQLException: " << e.what() << std::endl;
-		conn->rollback();
-		return SaveMessageResult::Failed;
-	}
-}
-
 SaveMessageResult MysqlDao::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
 	auto con = pool_->getConnection();
 	if (!con) {

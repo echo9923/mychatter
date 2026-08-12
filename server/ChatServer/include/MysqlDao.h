@@ -172,21 +172,6 @@ public:
 	std::shared_ptr<PageResult> LoadChatMsg(int threadId, int lastId, int pageSize);
 
 	/**
-	 * @brief 批量插入聊天消息到数据库（幂等）
-	 *
-	 * 在同一事务内逐条 UPSERT：对 (sender_id, unique_id) 命中唯一键时按 canonical
-	 * message_id 读回并核对 thread_id/recv_id/content/msg_type/content_size，完全一致
-	 * 视为 Duplicate（返回同一 id），不一致视为 Conflict（不覆盖）。
-	 *
-	 * @param chat_datas 消息列表；成功/重复时会回写 canonical message_id
-	 * @param conflict_unique_ids [out] 发生内容冲突的 unique_id 列表（供上层组装冲突响应）
-	 * @return 本批整体结果：任一 Conflict/SQL错误回滚本批新行并返回 Conflict/Failed；
-	 *         全部 Stored/Duplicate 则提交，返回 Stored 或（全部为重复时）Duplicate
-	 */
-	SaveMessageResult AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas,
-		std::vector<std::string>& conflict_unique_ids);
-
-	/**
 	 * @brief 插入单条聊天消息到数据库（幂等）
 	 * @param chat_data 消息智能指针；成功/重复时会回写 canonical message_id
 	 * @return 持久化结果

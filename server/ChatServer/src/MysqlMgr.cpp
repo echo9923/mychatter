@@ -75,11 +75,6 @@ std::shared_ptr<PageResult> MysqlMgr::LoadChatMsg(int threadId, int lastId, int 
 	return _dao.LoadChatMsg(threadId, lastId, pageSize);
 }
 
-SaveMessageResult MysqlMgr::AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas,
-	std::vector<std::string>& conflict_unique_ids) {
-	return _dao.AddChatMsg(chat_datas, conflict_unique_ids);
-}
-
 SaveMessageResult MysqlMgr::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
 	return _dao.AddChatMsg(chat_data);
 }

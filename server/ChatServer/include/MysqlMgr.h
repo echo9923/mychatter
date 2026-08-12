@@ -50,10 +50,7 @@ public:
 	bool CreatePrivateChat(int user1_id, int user2_id, int &thread_id);
 	/// 分页加载历史聊天消息
 	std::shared_ptr<PageResult> LoadChatMsg(int threadId, int lastId, int pageSize);
-	/// 批量插入聊天消息（幂等），返回持久化结果并填充冲突 unique_id 列表
-	SaveMessageResult AddChatMsg(std::vector<std::shared_ptr<ChatMessage>>& chat_datas,
-		std::vector<std::string>& conflict_unique_ids);
-	/// 插入单条聊天消息（幂等），返回持久化结果
+	/// 插入单条聊天消息（幂等），返回持久化结果；成功/重复时回写 canonical message_id
 	SaveMessageResult AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
 	/// 拉取接收者的待投递消息（delivery_status=0，排除未上传完成的图片），多取一条供 has_more
 	std::vector<std::shared_ptr<ChatMessage>> GetPendingMessages(int recv_uid,

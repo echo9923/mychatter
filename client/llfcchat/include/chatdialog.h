@@ -68,7 +68,7 @@ public slots:
     void slot_jump_chat_item(std::shared_ptr<SearchInfo> si);
     void slot_jump_chat_item_from_infopage(std::shared_ptr<UserInfo> ui);
     void slot_item_clicked(QListWidgetItem *item);
-    void slot_text_chat_msg(std::vector<std::shared_ptr<TextChatData>> msglists);
+    void slot_text_chat_msg(std::shared_ptr<TextChatData> msg);
     void slot_img_chat_msg(std::shared_ptr<ImgChatData> imgchat);
     //§6.2 纠错：TCP 线程解析 pending DTO → GUI 线程重建未响应 bubble（文本）与 MsgInfo+QPixmap（图片）
     void slot_replay_pending(std::vector<TextReplayDTO> texts, std::vector<ImageReplayDTO> images);
@@ -80,7 +80,7 @@ public slots:
     void slot_load_chat_msg(int thread_id, int msg_id, bool load_more, 
         std::vector<std::shared_ptr<ChatDataBase>> msglists);
 
-    void slot_add_chat_msg(int thread_id, std::vector<std::shared_ptr<TextChatData>> msglists);
+    void slot_add_chat_msg(int thread_id, std::shared_ptr<TextChatData> msg);
     void slot_add_img_msg(int thread_id, std::shared_ptr<ImgChatData> img_msg);
     void slot_reset_icon(QString path);
     void slot_update_upload_progress(std::shared_ptr<MsgInfo> msg_info);
