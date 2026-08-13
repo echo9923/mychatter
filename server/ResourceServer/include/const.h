@@ -88,8 +88,6 @@ enum MSG_TYPES {
 /// Redis中存储用户登录令牌的键前缀，完整键为 "utoken_" + uid（由StatusServer在分配ChatServer时写入，TTL 86400s）
 #define USERTOKENPREFIX "utoken_"
 #define LOCK_COUNT "lockcount"
-/// Redis中离线消息待投递有序集合的键前缀，完整键为 "offline_msg:" + recv_uid，ZSET member/score 均为十进制 message_id
-#define OFFLINE_MSG_PREFIX "offline_msg:"
 
 //分布式锁的持有时间
 #define LOCK_TIME_OUT 10

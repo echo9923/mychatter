@@ -1,8 +1,8 @@
 // im_integration_tests.cpp — entry point (plan Verification.2 / Verification.4).
 //
 // Usage:
-//   im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup>
-//   im_integration_tests            # runs all four in sequence
+//   im_integration_tests --scenario <name>   # names: see kScenarios below
+//   im_integration_tests                     # runs all scenarios in sequence
 //
 // No test framework. Each scenario prints [PASS]/[FAIL] lines and returns a
 // boolean; main() exits non-zero if the scenario (or any scenario, when running
@@ -41,6 +41,8 @@ ScenarioEntry kScenarios[] = {
 	{ "status-discovery", imt::ScenarioStatusDiscovery },
 	{ "chat-failover", imt::ScenarioChatFailover },
 	{ "simple-auth",   imt::ScenarioSimpleAuth   },
+	{ "sync-bootstrap", imt::ScenarioSyncBootstrap },
+	{ "big-ids",       imt::ScenarioBigIds       },
 };
 
 } // namespace
@@ -53,7 +55,7 @@ int main(int argc, char** argv) {
 		const std::string a = argv[i];
 		if (a == "--scenario" && i + 1 < argc) { scenario = argv[++i]; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|image-offline|status-discovery|chat-failover|simple-auth>\n");
+			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|image-offline|status-discovery|chat-failover|simple-auth|sync-bootstrap|big-ids>\n");
 			return 0;
 		}
 	}

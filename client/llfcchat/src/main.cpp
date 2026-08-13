@@ -4,6 +4,7 @@
 #include "global.h"
 #include "tcpmgr.h"
 #include "filetcpmgr.h"
+#include "localchatstore.h"
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
@@ -33,11 +34,16 @@ int main(int argc, char *argv[])
     QString gate_port = settings.value("GateServer/port").toString();
     gate_url_prefix = "http://"+gate_host+":"+gate_port;
 
+    //启动本地库线程（需在 TcpThread 之前，OutboxDispatcher/ChatSyncManager 依赖 store 信号）
+    LocalChatThread local_chat_thread;
     //启动tcp线程
     TcpThread tcpthread;
     //启动资源网络线程
     FileTcpThread file_tcp_thread;
     MainWindow w;
     w.show();
-    return a.exec();
+    int ret = a.exec();
+    //退出前关闭本地库连接（worker 线程内执行）
+    LocalChatStore::GetInstance()->closeDb();
+    return ret;
 }

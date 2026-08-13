@@ -81,8 +81,8 @@ enum ReqId{
     ID_IMG_CHAT_DOWN_RSP          =  1048,    //聊天图片下载回复
     ID_CHAT_DELIVERY_ACK_REQ      =  1049,    //聊天消息投递ACK请求
     ID_CHAT_DELIVERY_ACK_RSP      =  1050,    //聊天消息投递ACK回复
-    ID_PULL_OFFLINE_MSG_REQ       =  1051,    //拉取离线消息请求
-    ID_PULL_OFFLINE_MSG_RSP       =  1052,    //拉取离线消息回复
+    ID_SYNC_MESSAGE_REQ           =  1051,    //增量同步消息请求
+    ID_SYNC_MESSAGE_RSP           =  1052,    //增量同步消息回复
     ID_RESOURCE_LOGIN_REQ         =  1053,    //资源服务器登录请求
     ID_RESOURCE_LOGIN_RSP         =  1054,    //资源服务器登录回复
     ID_REASSIGN_CHAT              =  1055     //复用当前 token 获取新的 ChatServer

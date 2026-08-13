@@ -48,8 +48,8 @@ std::vector<ChatMessageRow> Mysql::QueryByUniqueId(int sender_id, const std::str
 		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
 		while (res->next()) {
 			ChatMessageRow r;
-			r.message_id = res->getInt("message_id");
-			r.thread_id  = res->getInt("thread_id");
+			r.message_id = res->getInt64("message_id");
+			r.thread_id  = res->getInt64("thread_id");
 			r.sender_id  = res->getInt("sender_id");
 			r.recv_id    = res->getInt("recv_id");
 			r.unique_id  = res->getString("unique_id");
@@ -114,7 +114,7 @@ long long Mysql::CountByUniqueIdLikeAndDelivery(const std::string& pattern,
 	}
 }
 
-std::vector<ChatMessageRow> Mysql::QueryByMessageId(int message_id) {
+std::vector<ChatMessageRow> Mysql::QueryByMessageId(std::int64_t message_id) {
 	std::vector<ChatMessageRow> out;
 	if (!con_) return out;
 	try {
@@ -122,12 +122,12 @@ std::vector<ChatMessageRow> Mysql::QueryByMessageId(int message_id) {
 			"SELECT message_id, thread_id, sender_id, recv_id, unique_id, content, "
 			"created_at AS chat_time, status, msg_type, content_size, delivery_status "
 			"FROM chat_message WHERE message_id = ?"));
-		pstmt->setInt(1, message_id);
+		pstmt->setInt64(1, message_id);
 		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
 		while (res->next()) {
 			ChatMessageRow r;
-			r.message_id = res->getInt("message_id");
-			r.thread_id  = res->getInt("thread_id");
+			r.message_id = res->getInt64("message_id");
+			r.thread_id  = res->getInt64("thread_id");
 			r.sender_id  = res->getInt("sender_id");
 			r.recv_id    = res->getInt("recv_id");
 			r.unique_id  = res->getString("unique_id");
@@ -160,8 +160,8 @@ std::vector<ChatMessageRow> Mysql::QueryByRecvIdAndDelivery(int recv_id,
 		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
 		while (res->next()) {
 			ChatMessageRow r;
-			r.message_id = res->getInt("message_id");
-			r.thread_id  = res->getInt("thread_id");
+			r.message_id = res->getInt64("message_id");
+			r.thread_id  = res->getInt64("thread_id");
 			r.sender_id  = res->getInt("sender_id");
 			r.recv_id    = res->getInt("recv_id");
 			r.unique_id  = res->getString("unique_id");
@@ -189,6 +189,107 @@ long long Mysql::DeleteByUniqueIdLike(const std::string& pattern) {
 	} catch (sql::SQLException& e) {
 		std::printf("[mysql] DeleteByUniqueIdLike failed: %s (code=%d)\n", e.what(), e.getErrorCode());
 		return -1;
+	}
+}
+
+// ---- user_message_sync 断言辅助（增量同步） ---------------------------------
+
+std::vector<SyncRow> Mysql::QuerySyncRows(std::int64_t uid, std::uint64_t after_seq,
+                                          int limit) {
+	std::vector<SyncRow> out;
+	if (!con_) return out;
+	try {
+		std::string sql =
+			"SELECT sync_seq, message_id FROM user_message_sync "
+			"WHERE uid = ? AND sync_seq > ? ORDER BY sync_seq ASC";
+		if (limit > 0) sql += " LIMIT " + std::to_string(limit);
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(sql));
+		pstmt->setInt64(1, uid);
+		pstmt->setUInt64(2, after_seq);
+		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+		while (res->next()) {
+			SyncRow r;
+			r.sync_seq   = static_cast<std::uint64_t>(res->getInt64("sync_seq"));
+			r.message_id = static_cast<std::uint64_t>(res->getInt64("message_id"));
+			out.push_back(r);
+		}
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] QuerySyncRows failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+	}
+	return out;
+}
+
+std::uint64_t Mysql::MaxSyncSeq(std::int64_t uid) {
+	if (!con_) return 0;
+	try {
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
+			"SELECT COALESCE(MAX(sync_seq), 0) AS m FROM user_message_sync WHERE uid = ?"));
+		pstmt->setInt64(1, uid);
+		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+		if (res->next()) return static_cast<std::uint64_t>(res->getInt64("m"));
+		return 0;
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] MaxSyncSeq failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		return 0;
+	}
+}
+
+long long Mysql::CountSyncRowsByUniqueIdLike(const std::string& pattern) {
+	if (!con_) return -1;
+	try {
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
+			"SELECT COUNT(*) AS c FROM user_message_sync s "
+			"JOIN chat_message m ON m.message_id = s.message_id "
+			"WHERE m.unique_id LIKE ?"));
+		pstmt->setString(1, pattern);
+		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+		if (res->next()) return res->getInt64("c");
+		return 0;
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] CountSyncRowsByUniqueIdLike failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		return -1;
+	}
+}
+
+long long Mysql::DeleteSyncRowsByUniqueIdLike(const std::string& pattern) {
+	if (!con_) return -1;
+	try {
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
+			"DELETE s FROM user_message_sync s "
+			"JOIN chat_message m ON m.message_id = s.message_id "
+			"WHERE m.unique_id LIKE ?"));
+		pstmt->setString(1, pattern);
+		return static_cast<long long>(pstmt->executeUpdate());
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] DeleteSyncRowsByUniqueIdLike failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		return -1;
+	}
+}
+
+long long Mysql::GetChatMessageAutoIncrement() {
+	if (!con_) return -1;
+	try {
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
+			"SELECT AUTO_INCREMENT FROM information_schema.TABLES "
+			"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_message'"));
+		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+		if (res->next()) return res->getInt64("AUTO_INCREMENT");
+		return -1;
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] GetChatMessageAutoIncrement failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		return -1;
+	}
+}
+
+bool Mysql::SetChatMessageAutoIncrement(std::int64_t value) {
+	if (!con_) return false;
+	try {
+		std::unique_ptr<sql::Statement> stmt(con_->createStatement());
+		stmt->execute("ALTER TABLE chat_message AUTO_INCREMENT = " + std::to_string(value));
+		return true;
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] SetChatMessageAutoIncrement failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		return false;
 	}
 }
 

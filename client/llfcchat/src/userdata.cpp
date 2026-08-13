@@ -14,22 +14,22 @@ AddFriendApply::AddFriendApply(int from_uid, QString name, QString desc,
 
 }
 
-ChatDataBase::ChatDataBase(int msg_id, int thread_id, ChatFormType form_type, 
+ChatDataBase::ChatDataBase(qint64 msg_id, qint64 thread_id, ChatFormType form_type,
     ChatMsgType msg_type, QString content, int send_uid, int status, QString chat_time):_msg_id(msg_id),
-_thread_id(thread_id), _form_type(form_type), 
+_thread_id(thread_id), _form_type(form_type),
 _msg_type(msg_type), _content(content), _send_uid(send_uid), _status(status), _chat_time(chat_time){
 
 }
 
-ChatDataBase::ChatDataBase(QString unique_id, int thread_id, ChatFormType form_type,
+ChatDataBase::ChatDataBase(QString unique_id, qint64 thread_id, ChatFormType form_type,
     ChatMsgType msg_type, QString content, int send_uid, int status, QString chat_time):_unique_id(unique_id),
-    _thread_id(thread_id), _form_type(form_type), 
+    _thread_id(thread_id), _form_type(form_type),
     _msg_type(msg_type), _content(content), _send_uid(send_uid),_msg_id(0), _status(status), _chat_time(chat_time)
 {
 
 }
 
-ChatDataBase::ChatDataBase(int msg_id, QString unique_id, int thread_id, ChatFormType form_type, ChatMsgType msg_type,
+ChatDataBase::ChatDataBase(qint64 msg_id, QString unique_id, qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type,
     QString content, int send_uid, int status, QString chat_time):_msg_id(msg_id), _unique_id(unique_id),
     _thread_id(thread_id), _form_type(form_type),
     _msg_type(msg_type), _content(content), _send_uid(send_uid), _status(status), _chat_time(chat_time) {
@@ -76,7 +76,7 @@ void ChatThreadData::UpdateProgress(std::shared_ptr<MsgInfo> msg) {
     }
 }
 
-void ChatThreadData::SetLastMsgId(int msg_id)
+void ChatThreadData::SetLastMsgId(qint64 msg_id)
 {
     _last_msg_id = msg_id;
 }
@@ -90,24 +90,28 @@ QString ChatThreadData::GetGroupName()
     return _group_name;
 }
 
-int ChatThreadData::GetThreadId()
+qint64 ChatThreadData::GetThreadId()
 {
     return _thread_id;
 }
 
-QMap<int, std::shared_ptr<ChatDataBase>>& ChatThreadData::GetMsgMapRef()
+QMap<qint64, std::shared_ptr<ChatDataBase>>& ChatThreadData::GetMsgMapRef()
 {
     return _msg_map;
 }
 
 
-void ChatThreadData::AppendMsg(int msg_id, std::shared_ptr<ChatDataBase> base_msg) {
+void ChatThreadData::AppendMsg(qint64 msg_id, std::shared_ptr<ChatDataBase> base_msg) {
     _msg_map.insert(msg_id, base_msg);
     _last_msg = base_msg->GetMsgContent();
     _last_msg_id = msg_id;
 }
 
-bool ChatThreadData::ContainsMessage(int msg_id) {
+void ChatThreadData::ClearMsgs() {
+    _msg_map.clear();
+}
+
+bool ChatThreadData::ContainsMessage(qint64 msg_id) {
     return _msg_map.contains(msg_id);
 }
 
@@ -116,7 +120,7 @@ QString ChatThreadData::GetLastMsg()
     return _last_msg;
 }
 
-int ChatThreadData::GetLastMsgId()
+qint64 ChatThreadData::GetLastMsgId()
 {
     return _last_msg_id;
 }
@@ -142,7 +146,7 @@ void AuthRsp::SetChatDatas(std::vector<std::shared_ptr<TextChatData>> chat_datas
     _thread_id = _chat_datas[0]->GetThreadId();
 }
 
-std::shared_ptr<ChatDataBase> ChatThreadData::GetChatDataBase(int msg_id) {
+std::shared_ptr<ChatDataBase> ChatThreadData::GetChatDataBase(qint64 msg_id) {
     auto iter = _msg_map.find(msg_id);
     if (iter == _msg_map.end()) {
         return nullptr;

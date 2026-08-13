@@ -25,8 +25,8 @@
 ChatDialog::ChatDialog(QWidget* parent) :
 	QDialog(parent),
 	ui(new Ui::ChatDialog), _b_loading(false), _mode(ChatUIMode::ChatMode),
-	_state(ChatUIMode::ChatMode), _last_widget(nullptr), 
-	_cur_chat_thread_id(0), _loading_dlg(nullptr), _cur_load_chat(nullptr)
+	_state(ChatUIMode::ChatMode), _last_widget(nullptr),
+	_cur_chat_thread_id(0), _loading_dlg(nullptr)
 {
 	ui->setupUi(this);
 
@@ -148,10 +148,6 @@ ChatDialog::ChatDialog(QWidget* parent) :
 	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat_msg,
 		this, &ChatDialog::slot_text_chat_msg);
 
-	//§6.2 纠错：TCP 线程解析 pending DTO → GUI 线程重建 bubble/MsgInfo/QPixmap（queued）
-	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_replay_pending,
-		this, &ChatDialog::slot_replay_pending);
-
 	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_img_chat_msg,
 		this, &ChatDialog::slot_img_chat_msg);
 
@@ -167,10 +163,6 @@ ChatDialog::ChatDialog(QWidget* parent) :
 
 	_timer->start(10000);
 
-	//连接tcp返回的加载聊天回复
-	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_load_chat_thread,
-		this, &ChatDialog::slot_load_chat_thread);
-
 	//连接tcp返回的创建私聊的回复
 	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_create_private_chat,
 		this, &ChatDialog::slot_create_private_chat);
@@ -178,10 +170,24 @@ ChatDialog::ChatDialog(QWidget* parent) :
 	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_load_chat_msg,
 		this, &ChatDialog::slot_load_chat_msg);
 
-	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_chat_msg_rsp, this, &ChatDialog::slot_add_chat_msg);
-
-	//连接tcp返回的图片聊天信息回复
-	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_chat_img_rsp, this, &ChatDialog::slot_add_img_msg);
+	//—— 本地库结果信号（提交成功后才更新 UI）——
+	auto local_store = LocalChatStore::GetInstance();
+	connect(local_store.get(), &LocalChatStore::sig_conversations_loaded,
+		this, &ChatDialog::slot_conversations_loaded);
+	connect(local_store.get(), &LocalChatStore::sig_recent_messages_loaded,
+		this, &ChatDialog::slot_recent_messages_loaded);
+	connect(local_store.get(), &LocalChatStore::sig_history_page_inserted,
+		this, &ChatDialog::slot_history_page_inserted);
+	connect(local_store.get(), &LocalChatStore::sig_incoming_inserted,
+		this, &ChatDialog::slot_incoming_inserted);
+	connect(local_store.get(), &LocalChatStore::sig_sync_page_applied,
+		this, &ChatDialog::slot_sync_page_applied);
+	connect(local_store.get(), &LocalChatStore::sig_send_confirmed,
+		this, &ChatDialog::slot_send_confirmed);
+	connect(local_store.get(), &LocalChatStore::sig_send_failed_marked,
+		this, &ChatDialog::slot_send_failed_marked);
+	connect(local_store.get(), &LocalChatStore::sig_image_stage_updated,
+		this, &ChatDialog::slot_image_stage_updated);
 	//重置label icon
 	connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_reset_label_icon, this, &ChatDialog::slot_reset_icon);
 	//接收tcp返回的上传进度信息
@@ -204,44 +210,8 @@ ChatDialog::~ChatDialog()
 
 void ChatDialog::loadChatList()
 {
-	showLoadingDlg(true);
-	//发送请求逻辑
-	QJsonObject jsonObj;
-	auto uid = UserMgr::GetInstance()->GetUid();
-	jsonObj["uid"] = uid;
-	int last_chat_thread_id = UserMgr::GetInstance()->GetLastChatThreadId();
-	jsonObj["thread_id"] = last_chat_thread_id;
-
-
-	QJsonDocument doc(jsonObj);
-	QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-
-	//发送tcp请求给chat server
-	emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOAD_CHAT_THREAD_REQ, jsonData);
-}
-
-
-void ChatDialog::loadChatMsg() {
-
-	//发送聊天记录请求
-	_cur_load_chat = UserMgr::GetInstance()->GetCurLoadData();
-	if (_cur_load_chat == nullptr) {
-		return;
-	}
-
-	showLoadingDlg(true);
-
-	//发送请求给服务器
-		//发送请求逻辑
-	QJsonObject jsonObj;
-	jsonObj["thread_id"] = _cur_load_chat->GetThreadId();
-	jsonObj["message_id"] = _cur_load_chat->GetLastMsgId();
-
-	QJsonDocument doc(jsonObj);
-	QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-
-	//发送tcp请求给chat server
-	emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOAD_CHAT_MSG_REQ, jsonData);
+	//秒开：从本地 SQLite 加载会话列表，后台由 ChatSyncManager 增量刷新（首启走 bootstrap）
+	LocalChatStore::GetInstance()->loadConversations();
 }
 
 void ChatDialog::slot_item_clicked(QListWidgetItem* item)
@@ -276,111 +246,56 @@ void ChatDialog::slot_item_clicked(QListWidgetItem* item)
 		//跳转到聊天界面
 		ui->chat_page->SetChatData(chat_data);
 		_cur_chat_thread_id = chat_data->GetThreadId();
+		//会话打开：从 SQLite 加载最近 50 条渲染，本地不足才发 1029 拉历史
+		LocalChatStore::GetInstance()->loadRecentMessages(_cur_chat_thread_id, 50);
 		return;
 	}
 }
 
-//添加聊天消息, 将消息放到用户区和thread_id关联
-//§6.4 recipient 去重：ContainsMessage 已有 ID 不再加 bubble 但仍视为成功接收，
-//thread 不存在时复用 createPrivateChatItem 先建 ChatThreadData/列表项，禁止空指针。
+//收端文本消息：先 insertIncoming 落库，实际插入的消息由 sig_incoming_inserted 上屏；
+//落库失败什么都不做（不发 1049、不上屏）
 void ChatDialog::slot_text_chat_msg(std::shared_ptr<TextChatData> msg)
 {
-	//更新数据
-	auto thread_id = msg->GetThreadId();
-	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-
-	//thread 不存在时复用 createPrivateChatItem 构造逻辑先建 ChatThreadData/列表项
-	if (!thread_data) {
-		createPrivateChatItem(msg->GetSendUid(), thread_id);
-		thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
+	LocalMessageDTO dto;
+	dto.server_message_id = msg->GetMsgId();
+	dto.client_message_id = msg->GetUniqueId();
+	if (dto.client_message_id.isEmpty()) {
+		//服务端不带 unique_id 时以 message_id 合成幂等键
+		dto.client_message_id = "srv_" + QString::number(dto.server_message_id);
 	}
-	if (!thread_data) {
-		return; //safety
-	}
-
-	int msg_id = msg->GetMsgId();
-	//去重：已有 ID 不再加 bubble 但仍视为成功接收
-	if (!thread_data->ContainsMessage(msg_id)) {
-		thread_data->AddMsg(msg);
-		if (_cur_chat_thread_id == thread_id) {
-			ui->chat_page->AppendChatMsg(msg);
-		}
-	}
-	//插入成功或识别 duplicate 后通知 TCP 线程可 ACK（queued 回 TCP 线程）
-	emit TcpMgr::GetInstance()->sig_chat_msg_processed(msg_id);
+	dto.thread_id = msg->GetThreadId();
+	dto.sender_id = msg->GetSendUid();
+	dto.receiver_id = UserMgr::GetInstance()->GetUid();
+	dto.message_type = static_cast<int>(ChatMsgType::TEXT);
+	dto.content = msg->GetContent();
+	dto.content_size = "0";
+	dto.send_state = SEND_STATE_SENT;
+	dto.created_at = msg->GetChatTime();
+	QList<LocalMessageDTO> msgs;
+	msgs.append(dto);
+	LocalChatStore::GetInstance()->insertIncoming(msgs);
 }
 
-//§6.4 recipient 图片消息去重 + thread 创建 + ACK
+//收端图片消息：同文本，先落库后上屏
 void ChatDialog::slot_img_chat_msg(std::shared_ptr<ImgChatData> imgchat) {
-	//更新数据
-	auto thread_id = imgchat->GetThreadId();
-	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-
-	//thread 不存在时复用 createPrivateChatItem 构造逻辑先建 ChatThreadData/列表项
-	if (!thread_data) {
-		createPrivateChatItem(imgchat->GetSendUid(), thread_id);
-		thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
+	LocalMessageDTO dto;
+	dto.server_message_id = imgchat->GetMsgId();
+	dto.client_message_id = imgchat->GetUniqueId();
+	if (dto.client_message_id.isEmpty()) {
+		dto.client_message_id = "srv_" + QString::number(dto.server_message_id);
 	}
-	if (!thread_data) {
-		return; //safety
-	}
-
-	int msg_id = imgchat->GetMsgId();
-	//去重：已有 ID 不再加 bubble 但仍视为成功接收
-	if (!thread_data->ContainsMessage(msg_id)) {
-		thread_data->AddMsg(imgchat);
-		if (_cur_chat_thread_id == thread_id) {
-			ui->chat_page->AppendOtherMsg(imgchat);
-		}
-	}
-	//插入成功或识别 duplicate 后通知 TCP 线程可 ACK（queued 回 TCP 线程）
-	emit TcpMgr::GetInstance()->sig_chat_msg_processed(msg_id);
-}
-
-//§6.2 纠错：GUI 线程重建未响应 bubble（文本）与 MsgInfo+QPixmap（图片）。
-//QPixmap 只能在 GUI 线程创建；ChatThreadData::_msg_unrsp_map 只能在 GUI 线程修改（GUI 可并发访问）。
-//完成后 emit sig_replay_result 回执给 TCP 线程，附带文件缺失的 unique_id 列表。
-void ChatDialog::slot_replay_pending(std::vector<TextReplayDTO> texts, std::vector<ImageReplayDTO> images)
-{
-	QStringList failed_unique_ids;
-
-	//文本：为每个 pending 重建未响应气泡数据（AppendUnRspMsg），单条化后一个 DTO 一条消息
-	for (const auto& dto : texts) {
-		auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
-		if (!thread_data) {
-			//thread 尚未加载（重启后首次登录），1018 响应到达时由 MoveMsg/AddMsg 处理
-			continue;
-		}
-		auto txt_msg = std::make_shared<TextChatData>(dto.unique_id, dto.thread_id,
-			ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content, dto.fromuid, MsgStatus::UN_READ);
-		thread_data->AppendUnRspMsg(dto.unique_id, txt_msg);
-	}
-
-	//图片：QFile::exists 判定本地文件缺失→标 SEND_FAILED，否则重建 MsgInfo + AddTransFile
-	for (const auto& dto : images) {
-		if (!QFile::exists(dto.text_or_url)) {
-			qWarning() << "[Delivery] Image file missing on restore, dropping pending:" << dto.text_or_url;
-			//创建占位 MsgInfo 标 SEND_FAILED（null QPixmap 在 GUI 线程安全构造）
-			auto file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, dto.text_or_url,
-				QPixmap(), dto.name, 0, dto.md5);
-			auto img_msg = std::make_shared<ImgChatData>(file_info, dto.unique_id, dto.thread_id,
-				ChatFormType::PRIVATE, ChatMsgType::PIC, dto.fromuid, MsgStatus::SEND_FAILED);
-			//已在 GUI 线程，直接调用 slot_add_img_msg（MoveMsg→AddMsg 添加 SEND_FAILED bubble）
-			slot_add_img_msg(dto.thread_id, img_msg);
-			failed_unique_ids.append(dto.unique_id);
-			continue;
-		}
-		//重建 MsgInfo 并加入 UserMgr（否则 1036 handler 找不到 GetTransFileByName）
-		QPixmap pixmap(dto.text_or_url);
-			auto file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, dto.text_or_url,
-			pixmap, dto.name, dto.content_size, dto.md5);
-		file_info->_transfer_type = TransferType::Upload;
-		file_info->_transfer_state = TransferState::None;
-		UserMgr::GetInstance()->AddTransFile(dto.name, file_info);
-	}
-
-	//回执：告诉 TCP 线程哪些项失败了（需删除 pending）
-	emit TcpMgr::GetInstance()->sig_replay_result(failed_unique_ids);
+	dto.thread_id = imgchat->GetThreadId();
+	dto.sender_id = imgchat->GetSendUid();
+	dto.receiver_id = UserMgr::GetInstance()->GetUid();
+	dto.message_type = static_cast<int>(ChatMsgType::PIC);
+	//图片 content 为文件唯一名
+	dto.content = imgchat->_msg_info->_unique_name;
+	dto.content_size = QString::number(imgchat->_msg_info->_total_size);
+	dto.send_state = SEND_STATE_SENT;
+	dto.created_at = imgchat->GetChatTime();
+	QList<LocalMessageDTO> msgs;
+	msgs.append(dto);
+	LocalChatStore::GetInstance()->insertIncoming(msgs);
 }
 
 bool ChatDialog::eventFilter(QObject* watched, QEvent* event)
@@ -410,65 +325,7 @@ void ChatDialog::handleGlobalMousePress(QMouseEvent* event)
 	}
 }
 
-void ChatDialog::slot_load_chat_thread(bool load_more, int last_thread_id,
-	std::vector<std::shared_ptr<ChatThreadInfo>> chat_threads)
-{
-	for (auto& cti : chat_threads) {
-		//先处理单聊，群聊跳过，以后添加
-		if (cti->_type == "group") {
-			continue;
-		}
-
-		auto uid = UserMgr::GetInstance()->GetUid();
-		auto other_uid = 0;
-		if (uid == cti->_user1_id) {
-			other_uid = cti->_user2_id;
-		}
-		else {
-			other_uid = cti->_user1_id;
-		}
-
-		auto chat_thread_data = std::make_shared<ChatThreadData>(other_uid, cti->_thread_id, 0);
-		UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, other_uid);
-
-		auto* chat_user_wid = new ChatUserWid();
-		chat_user_wid->SetChatData(chat_thread_data);
-		QListWidgetItem* item = new QListWidgetItem;
-		//qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
-		item->setSizeHint(chat_user_wid->sizeHint());
-		ui->chat_user_list->addItem(item);
-		ui->chat_user_list->setItemWidget(item, chat_user_wid);
-		_chat_thread_items.insert(cti->_thread_id, item);
-	}
-
-	UserMgr::GetInstance()->SetLastChatThreadId(last_thread_id);
-
-	if (load_more) {
-		//发送请求逻辑
-		QJsonObject jsonObj;
-		auto uid = UserMgr::GetInstance()->GetUid();
-		jsonObj["uid"] = uid;
-		jsonObj["thread_id"] = last_thread_id;
-
-
-		QJsonDocument doc(jsonObj);
-		QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-
-		//发送tcp请求给chat server
-		emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOAD_CHAT_THREAD_REQ, jsonData);
-		return;
-	}
-
-	showLoadingDlg(false);
-	//§6.2：GUI thread models 已建好，触发持久 pending replay（rebuild+重发，TCP 线程执行）
-	TcpMgr::GetInstance()->StartPendingReplay();
-	//§6.6：启动离线 pull 循环（每 OfflinePullIntervalMs 从 after_message_id=0 拉）
-	TcpMgr::GetInstance()->StartOfflinePull();
-	//继续加载聊天数据
-	loadChatMsg();
-}
-
-void ChatDialog::slot_create_private_chat(int uid, int other_id, int thread_id)
+void ChatDialog::slot_create_private_chat(int uid, int other_id, qint64 thread_id)
 {
 	createPrivateChatItem(other_id, thread_id);
 
@@ -480,8 +337,8 @@ void ChatDialog::slot_create_private_chat(int uid, int other_id, int thread_id)
 	return;
 }
 
-//§6.4 抽取自 slot_create_private_chat：创建 ChatThreadData + 列表项（供 recipient 消息 thread 不存在时复用）
-QListWidgetItem* ChatDialog::createPrivateChatItem(int other_id, int thread_id)
+//抽取自 slot_create_private_chat：创建 ChatThreadData + 列表项（供新会话首条消息到达时复用）
+QListWidgetItem* ChatDialog::createPrivateChatItem(int other_id, qint64 thread_id)
 {
 	auto* chat_user_wid = new ChatUserWid();
 	auto chat_thread_data = std::make_shared<ChatThreadData>(other_id, thread_id, 0);
@@ -496,88 +353,366 @@ QListWidgetItem* ChatDialog::createPrivateChatItem(int other_id, int thread_id)
 	return item;
 }
 
-void ChatDialog::slot_load_chat_msg(int thread_id, int msg_id, bool load_more, 
+//1030 历史消息页到达：转换为本地 DTO 交给本地库事务写入，
+//完成后由 sig_history_page_inserted 触发重载会话窗口（自动衔接形成翻页链）
+void ChatDialog::slot_load_chat_msg(qint64 thread_id, qint64 msg_id, bool load_more,
 	std::vector<std::shared_ptr<ChatDataBase>> msglists)
 {
-	_cur_load_chat->SetLastMsgId(msg_id);
-	//加载聊天信息
+	Q_UNUSED(msg_id);
+	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
+	auto self_info = UserMgr::GetInstance()->GetUserInfo();
+	if (self_info == nullptr) {
+		return;
+	}
+
+	QList<LocalMessageDTO> dtos;
 	for (auto& chat_msg : msglists) {
-		_cur_load_chat->AppendMsg(chat_msg->GetMsgId(), chat_msg);
+		LocalMessageDTO dto;
+		dto.thread_id = thread_id;
+		dto.server_message_id = chat_msg->GetMsgId();
+		//服务端对历史消息下发的 unique_id 为 0，统一合成确定值避免唯一索引冲突
+		dto.client_message_id = QString("srv_%1").arg(chat_msg->GetMsgId());
+		dto.sender_id = chat_msg->GetSendUid();
+		//历史消息需要推断对端：自己发的则接收者为会话对方
+		if (thread_data != nullptr && chat_msg->GetSendUid() == self_info->_uid) {
+			dto.receiver_id = thread_data->GetOtherId();
+		}
+		else {
+			dto.receiver_id = self_info->_uid;
+		}
+		dto.message_type = static_cast<int>(chat_msg->GetMsgType());
+		if (chat_msg->GetMsgType() == ChatMsgType::PIC) {
+			//图片 content 为文件唯一名（下载已由 1030 解析处占位并触发）
+			auto img_data = std::dynamic_pointer_cast<ImgChatData>(chat_msg);
+			if (img_data != nullptr && img_data->_msg_info) {
+				dto.content = img_data->_msg_info->_unique_name;
+				dto.content_size = QString::number(img_data->_msg_info->_total_size);
+			}
+			else {
+				dto.content = chat_msg->GetMsgContent();
+				dto.content_size = "0";
+			}
+		}
+		else {
+			dto.content = chat_msg->GetMsgContent();
+			dto.content_size = "0";
+		}
+		dto.send_state = SEND_STATE_SENT;
+		dto.created_at = chat_msg->GetChatTime();
+		dtos.append(dto);
 	}
 
-	//还有未加载完的消息，就继续加载
-	if (load_more) {
-		//发送请求给服务器
-			//发送请求逻辑
-		QJsonObject jsonObj;
-		jsonObj["thread_id"] = _cur_load_chat->GetThreadId();
-		jsonObj["message_id"] = _cur_load_chat->GetLastMsgId();
-
-		QJsonDocument doc(jsonObj);
-		QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-
-		//发送tcp请求给chat server
-		emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOAD_CHAT_MSG_REQ, jsonData);
-		return;
-	}
-
-	//获取下一个chat_thread
-	_cur_load_chat = UserMgr::GetInstance()->GetNextLoadData();
-	//都加载完了
-	if(!_cur_load_chat){
-		//更新聊天界面信息
-		SetSelectChatItem();
-		SetSelectChatPage();
-		showLoadingDlg(false);
-		return;
-	}
-
-	//继续加载下一个聊天
-	//发送请求给服务器
-	//发送请求逻辑
-	QJsonObject jsonObj;
-	jsonObj["thread_id"] = _cur_load_chat->GetThreadId();
-	jsonObj["message_id"] = _cur_load_chat->GetLastMsgId();
-
-	QJsonDocument doc(jsonObj);
-	QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-
-	//发送tcp请求给chat server
-	emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOAD_CHAT_MSG_REQ, jsonData);
+	//load_more=true 表示服务器还有更早消息，本地历史尚未完整
+	LocalChatStore::GetInstance()->insertHistoryPage(thread_id, dtos, !load_more);
 }
 
 
-void ChatDialog::slot_add_chat_msg(int thread_id, std::shared_ptr<TextChatData> msg) {
-	auto chat_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-	if (chat_data == nullptr) {
+//—— 本地库结果信号实现（提交成功后才更新 UI）——
+
+//会话列表到达：启动秒开与 ChatSyncManager bootstrap/增量刷新都走这里重建列表
+void ChatDialog::slot_conversations_loaded(bool ok, QList<LocalConversationDTO> convs)
+{
+	if (!ok) {
 		return;
 	}
 
-	//将消息放入数据中管理
-	chat_data->MoveMsg(msg);
+	for (const auto& conv : convs) {
+		//已存在的会话跳过（内存模型以首次加载为准，消息经窗口信号更新）
+		if (_chat_thread_items.contains(conv.thread_id)) {
+			continue;
+		}
 
-	if (_cur_chat_thread_id != thread_id) {
+		auto peer_uid = static_cast<int>(conv.peer_uid);
+		auto chat_thread_data = std::make_shared<ChatThreadData>(peer_uid,
+			conv.thread_id, conv.last_server_message_id);
+		UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, peer_uid);
+
+		auto* chat_user_wid = new ChatUserWid();
+		chat_user_wid->SetChatData(chat_thread_data);
+		QListWidgetItem* item = new QListWidgetItem;
+		item->setSizeHint(chat_user_wid->sizeHint());
+		ui->chat_user_list->addItem(item);
+		ui->chat_user_list->setItemWidget(item, chat_user_wid);
+		_chat_thread_items.insert(conv.thread_id, item);
+	}
+
+	if (!convs.isEmpty()) {
+		//首次填充后默认选中第一个会话
+		SetSelectChatItem();
+		SetSelectChatPage();
+	}
+}
+
+//最近消息到达：重建窗口消息模型并渲染；本地不足一屏且历史未完整时自动衔接 1029
+void ChatDialog::slot_recent_messages_loaded(bool ok, qint64 threadId,
+	QList<LocalMessageDTO> msgs, bool historyComplete, qint64 oldestLoadedMessageId)
+{
+	if (!ok) {
 		return;
 	}
-	//更新聊天界面信息
+
+	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(threadId);
+	if (thread_data == nullptr) {
+		return;
+	}
+
+	thread_data->ClearMsgs();
+	for (const auto& dto : msgs) {
+		auto chat_data = buildChatData(dto);
+		if (chat_data == nullptr) {
+			continue;
+		}
+		if (dto.server_message_id == 0) {
+			//未确认的发送中消息进未回复队列（与 ChatPage 发送上屏一致）
+			thread_data->AppendUnRspMsg(dto.client_message_id, chat_data);
+		}
+		else {
+			thread_data->AddMsg(chat_data);
+		}
+	}
+
+	//当前打开的会话才重渲染
+	if (_cur_chat_thread_id == threadId) {
+		ui->chat_page->SetChatData(thread_data);
+	}
+
+	//本地不足一屏且服务器还有更早历史：自动拉取补齐
+	if (msgs.size() < 50 && !historyComplete) {
+		requestOlderHistory(threadId, oldestLoadedMessageId);
+	}
+}
+
+//1029 历史页落库完成：重载最近消息（本地仍不足会自动衔接下一次 1029）
+void ChatDialog::slot_history_page_inserted(bool ok, qint64 threadId)
+{
+	if (!ok) {
+		return;
+	}
+	if (UserMgr::GetInstance()->GetChatThreadByThreadId(threadId) == nullptr) {
+		return;
+	}
+	LocalChatStore::GetInstance()->loadRecentMessages(threadId, 50);
+}
+
+//实时推送落库成功：只对实际插入的消息上屏
+void ChatDialog::slot_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs,
+	QList<qint64> insertedIds)
+{
+	if (!ok) {
+		return;
+	}
+	displayInsertedMessages(msgs, insertedIds);
+}
+
+//增量同步页落库成功：同上，去重后上屏
+void ChatDialog::slot_sync_page_applied(bool ok, qint64 newSyncSeq,
+	QList<LocalMessageDTO> msgs, QList<qint64> insertedIds)
+{
+	if (!ok) {
+		return;
+	}
+	Q_UNUSED(newSyncSeq);
+	displayInsertedMessages(msgs, insertedIds);
+}
+
+//1018 文本确认：未回复消息转为已送达（unrsp → base）
+void ChatDialog::slot_send_confirmed(bool ok, LocalMessageDTO dto)
+{
+	if (!ok) {
+		return;
+	}
+	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
+	if (thread_data == nullptr) {
+		return;
+	}
+	auto msg = std::make_shared<TextChatData>(dto.server_message_id, dto.client_message_id,
+		dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content,
+		static_cast<int>(dto.sender_id), MsgStatus::UN_READ, dto.created_at);
+	thread_data->MoveMsg(msg);
+
+	if (_cur_chat_thread_id != dto.thread_id) {
+		return;
+	}
 	ui->chat_page->UpdateChatStatus(msg);
 }
 
-
-void ChatDialog::slot_add_img_msg(int thread_id, std::shared_ptr<ImgChatData> img_msg) {
-	auto chat_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-	if (chat_data == nullptr) {
+//冲突/源文件丢失：标记发送失败（文本/图片共用）
+void ChatDialog::slot_send_failed_marked(bool ok, LocalMessageDTO dto)
+{
+	if (!ok) {
+		return;
+	}
+	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
+	if (thread_data == nullptr) {
 		return;
 	}
 
-	chat_data->MoveMsg(img_msg);
+	if (dto.message_type == static_cast<int>(ChatMsgType::PIC)) {
+		auto file_info = UserMgr::GetInstance()->GetTransFileByName(dto.content);
+		if (file_info == nullptr) {
+			return;
+		}
+		auto img_msg = std::make_shared<ImgChatData>(file_info, dto.client_message_id,
+			dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::PIC,
+			static_cast<int>(dto.sender_id), MsgStatus::SEND_FAILED, dto.created_at);
+		thread_data->MoveMsg(img_msg);
 
-	if (_cur_chat_thread_id != thread_id) {
+		if (_cur_chat_thread_id != dto.thread_id) {
+			return;
+		}
+		ui->chat_page->UpdateImgChatStatus(img_msg);
 		return;
 	}
 
-	//更新聊天界面信息
+	auto msg = std::make_shared<TextChatData>(dto.server_message_id, dto.client_message_id,
+		dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content,
+		static_cast<int>(dto.sender_id), MsgStatus::SEND_FAILED, dto.created_at);
+	thread_data->MoveMsg(msg);
+
+	if (_cur_chat_thread_id != dto.thread_id) {
+		return;
+	}
+	ui->chat_page->UpdateChatStatus(msg);
+}
+
+//1036 图片元数据确认：回填 server_message_id，气泡转为已送达（上传继续由 Dispatcher 驱动）
+void ChatDialog::slot_image_stage_updated(bool ok, LocalMessageDTO dto)
+{
+	if (!ok) {
+		return;
+	}
+	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
+	if (thread_data == nullptr) {
+		return;
+	}
+	auto file_info = UserMgr::GetInstance()->GetTransFileByName(dto.content);
+	if (file_info == nullptr) {
+		return;
+	}
+	file_info->_msg_id = dto.server_message_id;
+	auto img_msg = std::make_shared<ImgChatData>(file_info, dto.client_message_id,
+		dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::PIC,
+		static_cast<int>(dto.sender_id), MsgStatus::UN_READ, dto.created_at);
+	thread_data->MoveMsg(img_msg);
+
+	if (_cur_chat_thread_id != dto.thread_id) {
+		return;
+	}
 	ui->chat_page->UpdateImgChatStatus(img_msg);
+}
+
+//本地 DTO → 窗口消息对象。文本直接构造；图片复用/新建 MsgInfo，
+//接收端缺本地文件时用占位图并触发 1045 下载信息同步
+std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(const LocalMessageDTO& dto)
+{
+	auto self_info = UserMgr::GetInstance()->GetUserInfo();
+	if (self_info == nullptr) {
+		return nullptr;
+	}
+	const bool is_self = (dto.sender_id == self_info->_uid);
+	//状态映射：失败→SEND_FAILED；自己发的→UN_READ；收到的→READED
+	int status = MsgStatus::READED;
+	if (dto.send_state == SEND_STATE_FAILED) {
+		status = MsgStatus::SEND_FAILED;
+	}
+	else if (is_self) {
+		status = MsgStatus::UN_READ;
+	}
+
+	if (dto.message_type == static_cast<int>(ChatMsgType::PIC)) {
+		//优先复用传输管理中的 MsgInfo（上传/下载进度共享同一对象）
+		auto file_info = UserMgr::GetInstance()->GetTransFileByName(dto.content);
+		if (file_info == nullptr) {
+			qint64 total_size = dto.content_size.toLongLong();
+			if (is_self) {
+				//发送端：本地文件作预览
+				file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, dto.local_path,
+					QPixmap(dto.local_path), dto.content, total_size, "");
+				file_info->_transfer_type = TransferType::Upload;
+				file_info->_transfer_state = TransferState::Completed;
+			}
+			else {
+				//接收端：占位图，之后触发下载信息同步
+				QString storageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+				QString img_path_str = storageDir + "/user/" + QString::number(self_info->_uid)
+					+ "/chatimg/" + QString::number(dto.sender_id);
+				file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, img_path_str,
+					CreateLoadingPlaceholder(200, 200), dto.content, total_size, "");
+				file_info->_transfer_type = TransferType::Download;
+				file_info->_transfer_state = TransferState::Downloading;
+			}
+			file_info->_msg_id = dto.server_message_id;
+			file_info->_sender = static_cast<int>(dto.sender_id);
+			file_info->_receiver = static_cast<int>(dto.receiver_id);
+			file_info->_thread_id = dto.thread_id;
+			UserMgr::GetInstance()->AddTransFile(dto.content, file_info);
+
+			if (!is_self && dto.server_message_id > 0) {
+				//从服务器获取文件大小，然后请求下载（message_id 保持数字）
+				QJsonObject jsonObj_send;
+				jsonObj_send["message_id"] = dto.server_message_id;
+				QJsonDocument doc(jsonObj_send);
+				FileTcpMgr::GetInstance()->SendData(ID_IMG_CHAT_DOWN_INFO_SYNC_REQ, doc.toJson());
+			}
+		}
+
+		return std::make_shared<ImgChatData>(file_info, dto.client_message_id,
+			dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::PIC,
+			static_cast<int>(dto.sender_id), status, dto.created_at);
+	}
+
+	//文本消息
+	return std::make_shared<TextChatData>(dto.server_message_id, dto.client_message_id,
+		dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content,
+		static_cast<int>(dto.sender_id), status, dto.created_at);
+}
+
+//只对实际插入的消息上屏（insertedIds 去重保证推送与同步只展示一次）
+void ChatDialog::displayInsertedMessages(const QList<LocalMessageDTO>& msgs,
+	const QList<qint64>& insertedIds)
+{
+	for (const auto& dto : msgs) {
+		if (!insertedIds.contains(dto.server_message_id)) {
+			continue;
+		}
+
+		auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
+		if (thread_data == nullptr) {
+			//会话还不存在（新会话首条消息）：创建内存模型 + 列表项
+			auto self_uid = UserMgr::GetInstance()->GetUid();
+			auto peer_uid = (dto.sender_id == self_uid) ? dto.receiver_id : dto.sender_id;
+			createPrivateChatItem(static_cast<int>(peer_uid), dto.thread_id);
+			thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
+			if (thread_data == nullptr) {
+				continue;
+			}
+		}
+
+		auto chat_data = buildChatData(dto);
+		if (chat_data == nullptr) {
+			continue;
+		}
+		thread_data->AddMsg(chat_data);
+
+		//当前打开的会话实时上屏
+		if (_cur_chat_thread_id == dto.thread_id) {
+			ui->chat_page->AppendChatMsg(chat_data);
+		}
+	}
+}
+
+//本地不足时发 1029 拉更早历史；oldest_loaded<=0 表示拉该会话全部历史
+void ChatDialog::requestOlderHistory(qint64 thread_id, qint64 oldest_loaded)
+{
+	QJsonObject jsonObj;
+	jsonObj["thread_id"] = thread_id;
+	//协议约定仅 before_message_id 字符串化（服务端按十进制解析，0=全部）
+	jsonObj["before_message_id"] = oldest_loaded > 0
+		? QString::number(oldest_loaded) : QString("0");
+
+	QJsonDocument doc(jsonObj);
+	QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
+	emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_LOAD_CHAT_MSG_REQ, jsonData);
 }
 
 void ChatDialog::slot_reset_icon(QString path) {
@@ -639,7 +774,7 @@ void ChatDialog::loadMoreConUser()
 	}
 }
 
-void ChatDialog::SetSelectChatItem(int thread_id)
+void ChatDialog::SetSelectChatItem(qint64 thread_id)
 {
 	if (ui->chat_user_list->count() <= 0) {
 		return;
@@ -680,7 +815,7 @@ void ChatDialog::SetSelectChatItem(int thread_id)
 	_cur_chat_thread_id = thread_id;
 }
 
-void ChatDialog::SetSelectChatPage(int thread_id)
+void ChatDialog::SetSelectChatPage(qint64 thread_id)
 {
 	if (ui->chat_user_list->count() <= 0) {
 		return;
@@ -702,6 +837,8 @@ void ChatDialog::SetSelectChatPage(int thread_id)
 		//设置信息
 		auto chat_data = con_item->GetChatData();
 		ui->chat_page->SetChatData(chat_data);
+		//从 SQLite 加载最近消息渲染（秒开路径）
+		LocalChatStore::GetInstance()->loadRecentMessages(chat_data->GetThreadId(), 50);
 		return;
 	}
 
@@ -734,6 +871,8 @@ void ChatDialog::SetSelectChatPage(int thread_id)
 		//设置信息
 		auto chat_data = con_item->GetChatData();
 		ui->chat_page->SetChatData(chat_data);
+		//从 SQLite 加载最近消息渲染（秒开路径）
+		LocalChatStore::GetInstance()->loadRecentMessages(chat_data->GetThreadId(), 50);
 
 		return;
 	}

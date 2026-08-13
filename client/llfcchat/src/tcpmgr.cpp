@@ -2,20 +2,26 @@
 #include <QAbstractSocket>
 #include <QCoreApplication>
 #include "usermgr.h"
-#include <QTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
-#include <QSettings>
-#include <QMessageBox>
 #include <QJsonArray>
 #include <filetcpmgr.h>
 #include <QStandardPaths>
+#include "outboxdispatcher.h"
+#include "chatsyncmanager.h"
+
+//message_id/thread_id/sync_seq 兼容解析：十进制字符串优先，兼容数字
+static qint64 jsonInt64(const QJsonValue& v)
+{
+    if (v.isString()) {
+        return v.toString().toLongLong();
+    }
+    return static_cast<qint64>(v.toDouble());
+}
 
 TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_message_len(0),_bytes_sent(0),_pending(false),
-    _manual_close(false),_reconnecting(false),_disconnect_notified(false),
-    _retry_timer(nullptr),_delivery_uid(0),_retry_initial_ms(2000),_retry_max_ms(30000),
-    _ack_retry_initial_ms(2000),_offline_pull_timer(nullptr),_offline_pull_interval_ms(10000),_offline_pull_batch(100)
+    _manual_close(false),_reconnecting(false),_disconnect_notified(false)
 {
     registerMetaType();
     QObject::connect(&_socket, &QTcpSocket::connected, this, [&]() {
@@ -111,14 +117,6 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_mes
         // 处理连接断开
         QObject::connect(&_socket, &QTcpSocket::disconnected, this,[&]() {
             qDebug() << "Disconnected from server.";
-            //暂停重传定时器（pending 保留在内存，重连后恢复）
-            if (_retry_timer) {
-                _retry_timer->stop();
-            }
-            //§6.6 断线停止离线 pull
-            if (_offline_pull_timer) {
-                _offline_pull_timer->stop();
-            }
             if (_manual_close) {
                 return;
             }
@@ -167,28 +165,6 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_mes
         //关闭socket
         connect(this, &TcpMgr::sig_close, this, &TcpMgr::slot_tcp_close);
         connect(this, &TcpMgr::sig_reconnect_chat, this, &TcpMgr::slot_reconnect_chat);
-        //可靠重传信号连接（公有 API → TCP 线程 slot）
-        connect(this, &TcpMgr::sig_send_reliable_chat, this, &TcpMgr::slot_send_reliable_chat);
-        //§6.2：StartPendingReplay 公有 API → TCP 线程 slot（GUI thread models 建好后执行）
-        connect(this, &TcpMgr::sig_start_pending_replay, this, &TcpMgr::slot_start_pending_replay);
-        //§6.2 纠错：GUI 重建回执 → TCP 线程清理失效项 + 重发 + 定时器
-        connect(this, &TcpMgr::sig_replay_result, this, &TcpMgr::slot_replay_done);
-        //§6.5：ChatDialog 插入/duplicate 后 emit → queued 回 TCP 线程触发 1049
-        connect(this, &TcpMgr::sig_chat_msg_processed, this, &TcpMgr::slot_msg_processed);
-        //§6.6：StartOfflinePull 公有 API → TCP 线程 slot
-        connect(this, &TcpMgr::sig_start_offline_pull, this, &TcpMgr::slot_start_offline_pull);
-        //250ms 重传扫描定时器，parent 到 this，随 moveToThread 迁移到 TCP 线程
-        _retry_timer = new QTimer(this);
-        _retry_timer->setInterval(250);
-        connect(_retry_timer, &QTimer::timeout, this, &TcpMgr::slot_retry_timeout);
-        //§6.6 离线 pull 定时器，parent 到 this，随 moveToThread 迁移到 TCP 线程
-        _offline_pull_timer = new QTimer(this);
-        _offline_pull_timer->setInterval(_offline_pull_interval_ms);
-        connect(_offline_pull_timer, &QTimer::timeout, this, &TcpMgr::slot_offline_pull_timeout);
-        //读取 [Delivery] 配置
-        loadDeliveryConfig();
-        //3.2 一次性净化旧 QSettings 离线队列中的 token 字段（迁移到 auth_payload_version=2）
-        sanitizeLegacyDeliverySettings();
         //注册消息
         initHandlers();
 
@@ -220,12 +196,8 @@ void TcpMgr::registerMetaType() {
     qRegisterMetaType<ReqId>("ReqId");
     qRegisterMetaType<std::shared_ptr<ImgChatData>>("std::shared_ptr<ImgChatData>");
     qRegisterMetaType<std::vector<std::shared_ptr<ChatDataBase>>>("std::vector<std::shared_ptr<ChatDataBase>>");
-
-    //§6.2 纠错：跨线程 replay DTO 元类型注册
-    qRegisterMetaType<TextReplayDTO>("TextReplayDTO");
-    qRegisterMetaType<ImageReplayDTO>("ImageReplayDTO");
-    qRegisterMetaType<std::vector<TextReplayDTO>>("std::vector<TextReplayDTO>");
-    qRegisterMetaType<std::vector<ImageReplayDTO>>("std::vector<ImageReplayDTO>");
+    qRegisterMetaType<QList<qint64>>("QList<qint64>");
+    qRegisterMetaType<QJsonObject>("QJsonObject");
 }
 
 void TcpMgr::CloseConnection(){
@@ -236,28 +208,6 @@ void TcpMgr::ReconnectChat(const QString& host, quint16 port)
 {
     emit sig_reconnect_chat(host, port);
 }
-
-void TcpMgr::SendReliableChat(ReqId id, QByteArray payload, const QString& unique_id)
-{
-    //公有 API：只发 signal，实际 pending/发送在 TCP 线程的 slot 中执行
-    emit sig_send_reliable_chat(id, payload, unique_id);
-}
-
-void TcpMgr::StartPendingReplay()
-{
-    //§6.2：公有 API 只 emit queued signal，实际 rebuild+重发在 TCP 线程 slot 执行
-    //调用点：ChatDialog::slot_load_chat_thread 最后一页 load_more=false（GUI thread models 已建好）
-    emit sig_start_pending_replay();
-}
-
-void TcpMgr::StartOfflinePull()
-{
-    //§6.6：公有 API 只 emit queued signal，TCP 线程 slot 启动离线 pull 循环
-    //调用点：ChatDialog::slot_load_chat_thread 最后一页 load_more=false 后
-    emit sig_start_offline_pull();
-}
-
-
 
 TcpMgr::~TcpMgr(){
 
@@ -301,7 +251,7 @@ void TcpMgr::initHandlers()
             report_login_failure(err);
             return;
         }
-        
+
         auto uid = jsonObj["uid"].toInt();
         if (_reconnecting) {
             if (!_server_info || uid != _server_info->_uid) {
@@ -312,8 +262,8 @@ void TcpMgr::initHandlers()
             _reconnecting = false;
             _manual_close = false;
             _disconnect_notified = false;
-            StartPendingReplay();
-            StartOfflinePull();
+            //重连成功：恢复 outbox 派发与增量同步
+            emit sig_chat_login_ready();
             emit sig_reconnect_finished(true);
             return;
         }
@@ -324,7 +274,7 @@ void TcpMgr::initHandlers()
         auto sex = jsonObj["sex"].toInt();
         auto desc = jsonObj["desc"].toString();
         auto user_info = std::make_shared<UserInfo>(uid, name, nick, icon, sex,"",desc);
- 
+
         UserMgr::GetInstance()->SetUserInfo(user_info);
         //Chat 登录成功后用 Gate 下发的统一 token（_server_info 持有）作为 Resource 鉴权凭据
         UserMgr::GetInstance()->SetToken(_server_info->_token);
@@ -337,8 +287,8 @@ void TcpMgr::initHandlers()
             UserMgr::GetInstance()->AppendFriendList(jsonObj["friend_list"].toArray());
         }
 
-        //恢复持久 pending 请求（仅同 uid，不同账号绝不互载）
-        restorePendingRequests(uid);
+        //登录成功：启动 outbox 派发与增量同步
+        emit sig_chat_login_ready();
 
         //3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource（UI 切换延迟到 Resource 鉴权成功）
         emit sig_connect_resource(_server_info);
@@ -458,8 +408,8 @@ void TcpMgr::initHandlers()
         std::vector<std::shared_ptr<TextChatData>> chat_datas;
         for (const QJsonValue& data : jsonObj["chat_datas"].toArray()) {
             auto send_uid = data["sender"].toInt();
-            auto msg_id = data["msg_id"].toInt();
-            auto thread_id = data["thread_id"].toInt();
+            auto msg_id = jsonInt64(data["msg_id"]);
+            auto thread_id = jsonInt64(data["thread_id"]);
             auto msg_content = data["msg_content"].toString();
             QString chat_time = data["chat_time"].toString();
             auto status = data["status"].toInt();
@@ -537,12 +487,12 @@ void TcpMgr::initHandlers()
         auto icon = jsonObj["icon"].toString();
         auto sex = jsonObj["sex"].toInt();
         auto uid = jsonObj["uid"].toInt();
-        
+
         std::vector<std::shared_ptr<TextChatData>> chat_datas;
         for (const QJsonValue& data : jsonObj["chat_datas"].toArray()) {
             auto send_uid = data["sender"].toInt();
-            auto msg_id = data["msg_id"].toInt();
-            auto thread_id = data["thread_id"].toInt();
+            auto msg_id = jsonInt64(data["msg_id"]);
+            auto thread_id = jsonInt64(data["thread_id"]);
             auto msg_content = data["msg_content"].toString();
             auto status = data["status"].toInt();
             auto chat_data = std::make_shared<TextChatData>(msg_id, thread_id, ChatFormType::PRIVATE,
@@ -558,13 +508,12 @@ void TcpMgr::initHandlers()
       });
 
 
+    //1018 文本回包：只解析 JSON 并转发 OutboxDispatcher（可靠语义移交）
     _handlers.insert(ID_TEXT_CHAT_MSG_RSP, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
         qDebug() << "handle id is " << id << " data is " << data;
-        // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
-        // 检查转换是否成功
         if (jsonDoc.isNull()) {
             qDebug() << "Failed to create QJsonDocument.";
             return;
@@ -573,45 +522,24 @@ void TcpMgr::initHandlers()
         QJsonObject jsonObj = jsonDoc.object();
 
         if (!jsonObj.contains("error")) {
-            int err = ErrorCodes::ERR_JSON;
-            qDebug() << "Chat Msg Rsp Failed, err is Json Parse Err" << err;
+            qDebug() << "Chat Msg Rsp Failed, err is Json Parse Err";
             return;
         }
 
         int err = jsonObj["error"].toInt();
-        if (err == ErrorCodes::MESSAGE_CONFLICT) {
-            //永久冲突：停止该 unique_id 重传并标 SEND_FAILED（单条化后冲突响应带顶层 unique_id）
-            qDebug() << "Text Chat Conflict (1017), stopping retry";
-            handleTextConflict(jsonObj.value("unique_id").toString());
-            return;
-        }
         if (err != ErrorCodes::SUCCESS) {
-            //transient（1014/1016）或未知错误：不清 pending，定时器继续重传
-            qDebug() << "Chat Msg Rsp transient error, will retry: " << err;
+            //MESSAGE_CONFLICT/transient（1014/1016）原样转发，Dispatcher 判定
+            qDebug() << "Chat Msg Rsp error, forward to dispatcher: " << err;
+            emit sig_text_msg_rsp_forward(err, jsonObj.value("unique_id").toString(), 0, QString());
             return;
         }
 
         qDebug() << "Receive Text Chat Rsp Success " ;
-        //收到消息后转发给页面
-        auto thread_id = jsonObj["thread_id"].toInt();
-        auto sender = jsonObj["fromuid"].toInt();
-
-        //单条化：1018 成功响应为顶层拍平 envelope
-        auto msg_id = jsonObj["message_id"].toInt();
-        auto unique_id = jsonObj["unique_id"].toString();
-        auto msg_content = jsonObj["content"].toString();
+        //message_id 十进制字符串解析转 qint64
+        qint64 msg_id = jsonInt64(jsonObj["message_id"]);
+        QString unique_id = jsonObj["unique_id"].toString();
         QString chat_time = jsonObj["chat_time"].toString();
-        int status = jsonObj["status"].toInt();
-        auto chat_data = std::make_shared<TextChatData>(msg_id, unique_id, thread_id, ChatFormType::PRIVATE,
-            ChatMsgType::TEXT, msg_content, sender, status, chat_time);
-        //清理已确认的 unique_id
-        removePendingByUniqueId(unique_id);
-        //pending 变更后持久化
-        persistPendingRequests();
-
-        //发送信号通知界面
-        emit sig_chat_msg_rsp(thread_id, chat_data);
-
+        emit sig_text_msg_rsp_forward(err, unique_id, msg_id, chat_time);
       });
 
     _handlers.insert(ID_NOTIFY_TEXT_CHAT_MSG_REQ, [this](ReqId id, int len, QByteArray data) {
@@ -639,15 +567,15 @@ void TcpMgr::initHandlers()
 
         qDebug() << "Receive Text Chat Notify Success " ;
 
-        //§6.4 顶层拍平 envelope（单条化后与 1039 图片通知同构）
-        int msg_id = jsonObj["message_id"].toInt();
+        //顶层拍平 envelope（message_id/thread_id 十进制字符串）
+        qint64 msg_id = jsonInt64(jsonObj["message_id"]);
         QString unique_id = jsonObj["unique_id"].toString();
         QString msg_content = jsonObj["content"].toString();
         QString chat_time = jsonObj["chat_time"].toString();
         int status = jsonObj["status"].toInt();
         int msg_type = jsonObj["msg_type"].toInt(static_cast<int>(ChatMsgType::TEXT));
         qint64 content_size = jsonObj["content_size"].toString().toLongLong();
-        int el_thread = jsonObj["thread_id"].toInt();
+        qint64 el_thread = jsonInt64(jsonObj["thread_id"]);
         int el_from = jsonObj["fromuid"].toInt();
         int el_to = jsonObj.value("touid").toInt();
         dispatchIncomingMessage(msg_id, unique_id, el_thread, el_from, el_to,
@@ -669,7 +597,6 @@ void TcpMgr::initHandlers()
         QJsonObject jsonObj = jsonDoc.object();
 
         if (!jsonObj.contains("error")) {
-            int err = ErrorCodes::ERR_JSON;
             qDebug() << "Notify Chat Msg Failed, err is Json Parse Err" << err;
             return;
         }
@@ -703,7 +630,6 @@ void TcpMgr::initHandlers()
         QJsonObject jsonObj = jsonDoc.object();
 
         if (!jsonObj.contains("error")) {
-            int err = ErrorCodes::ERR_JSON;
             qDebug() << "Heart Beat Msg Failed, err is Json Parse Err" << err;
             return;
         }
@@ -751,15 +677,17 @@ void TcpMgr::initHandlers()
         std::vector<std::shared_ptr<ChatThreadInfo>> chat_threads;
         for (const QJsonValue& value : thread_array) {
             auto cti = std::make_shared<ChatThreadInfo>();
-            cti->_thread_id = value["thread_id"].toInt();
+            //thread_id/last_msg_id 十进制字符串解析转 qint64
+            cti->_thread_id = jsonInt64(value["thread_id"]);
             cti->_type = value["type"].toString();
             cti->_user1_id = value["user1_id"].toInt();
             cti->_user2_id = value["user2_id"].toInt();
+            cti->_last_msg_id = jsonInt64(value["last_msg_id"]);
             chat_threads.push_back(cti);
         }
 
         bool load_more = jsonObj["load_more"].toBool();
-        int next_last_id = jsonObj["next_last_id"].toInt();
+        qint64 next_last_id = jsonInt64(jsonObj["next_last_id"]);
         //发送信号通知界面
         emit sig_load_chat_thread(load_more, next_last_id, chat_threads);
     });
@@ -795,7 +723,8 @@ void TcpMgr::initHandlers()
 
         int uid = jsonObj["uid"].toInt();
         int other_id = jsonObj["other_id"].toInt();
-        int thread_id = jsonObj["thread_id"].toInt();
+        //thread_id 十进制字符串解析转 qint64
+        qint64 thread_id = jsonInt64(jsonObj["thread_id"]);
 
         //发送信号通知界面
         emit sig_create_private_chat(uid, other_id, thread_id);
@@ -831,27 +760,28 @@ void TcpMgr::initHandlers()
 
         qDebug() << "Receive load chat msg rsp Success";
 
-        int thread_id = jsonObj["thread_id"].toInt();
-        int last_msg_id = jsonObj["last_message_id"].toInt();
+        //thread_id/last_message_id/msg_id 十进制字符串解析转 qint64
+        qint64 thread_id = jsonInt64(jsonObj["thread_id"]);
+        qint64 last_msg_id = jsonInt64(jsonObj["last_message_id"]);
         bool load_more = jsonObj["load_more"].toBool();
 
         std::vector<std::shared_ptr<ChatDataBase>> chat_datas;
         for (const QJsonValue& data : jsonObj["chat_datas"].toArray()) {
             auto send_uid = data["sender"].toInt();
-            auto msg_id = data["msg_id"].toInt();
-            auto thread_id = data["thread_id"].toInt();
+            auto msg_id = jsonInt64(data["msg_id"]);
+            auto msg_thread_id = jsonInt64(data["thread_id"]);
             auto msg_content = data["msg_content"].toString();
             QString chat_time = data["chat_time"].toString();
             int status = data["status"].toInt();
             int msg_type = data["msg_type"].toInt();
             int recv_id = data["receiver"].toInt();
             if (msg_type == int(ChatMsgType::TEXT)) {
-                auto chat_data = std::make_shared<TextChatData>(msg_id, thread_id, ChatFormType::PRIVATE,
+                auto chat_data = std::make_shared<TextChatData>(msg_id, msg_thread_id, ChatFormType::PRIVATE,
                     ChatMsgType::TEXT, msg_content, send_uid, status, chat_time);
                     chat_datas.push_back(chat_data);
                     continue;
             }
-            
+
             if (msg_type == int(ChatMsgType::PIC)) {
                 auto uid = UserMgr::GetInstance()->GetUid();
                 QString storageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -859,9 +789,9 @@ void TcpMgr::initHandlers()
                 QString img_path = img_path_str + "/" + msg_content;
                 //文件不存在，则创建空白图片占位，同时组织数据准备发送
                 if (QFile::exists(img_path) == false) {
-                    
+
                     CreatePlaceholderImgMsgL(img_path_str, msg_content,
-                        msg_id, thread_id, send_uid, recv_id, status, chat_time,
+                        msg_id, msg_thread_id, send_uid, recv_id, status, chat_time,
                         chat_datas);
                     continue;
                 }
@@ -875,7 +805,7 @@ void TcpMgr::initHandlers()
                 //如果图片加载失败，也是创建占位符，然后组织发送
                 if (pixmap.isNull()) {
                     CreatePlaceholderImgMsgL(img_path_str, msg_content,
-                        msg_id, thread_id, send_uid, recv_id, status, chat_time,
+                        msg_id, msg_thread_id, send_uid, recv_id, status, chat_time,
                         chat_datas);
                         continue;
                 }
@@ -886,30 +816,29 @@ void TcpMgr::initHandlers()
                 file_info->_msg_id = msg_id;
                 file_info->_sender = send_uid;
                 file_info->_receiver = recv_id;
-                file_info->_thread_id = thread_id;
+                file_info->_thread_id = msg_thread_id;
                 //设置文件传输的类型
                 file_info->_transfer_type = TransferType::Download;
                 //设置文件传输状态
                 file_info->_transfer_state = TransferState::None;
                 //放入chat_datas列表
-                auto chat_data = std::make_shared<ImgChatData>(file_info,"", thread_id, ChatFormType::PRIVATE,
+                auto chat_data = std::make_shared<ImgChatData>(file_info,"", msg_thread_id, ChatFormType::PRIVATE,
                     ChatMsgType::PIC, send_uid, status, chat_time);
                 chat_datas.push_back(chat_data);
                 continue;
-            }          
+            }
         }
 
         //发送信号通知界面
         emit sig_load_chat_msg(thread_id, last_msg_id, load_more, chat_datas);
         });
 
+    //1036 图片元数据回包：只解析 JSON 并转发 OutboxDispatcher（上传启动移交）
     _handlers.insert(ID_IMG_CHAT_MSG_RSP, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
         qDebug() << "handle id is " << id << " data is " << data;
-        // 将QByteArray转换为QJsonDocument
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
 
-        // 检查转换是否成功
         if (jsonDoc.isNull()) {
             qDebug() << "Failed to create QJsonDocument.";
             return;
@@ -918,111 +847,33 @@ void TcpMgr::initHandlers()
         QJsonObject jsonObj = jsonDoc.object();
 
         if (!jsonObj.contains("error")) {
-            int err = ErrorCodes::ERR_JSON;
-            qDebug() << "parse img chat msg json parse failed " << err;
+            qDebug() << "parse img chat msg json parse failed";
             return;
         }
 
         int err = jsonObj["error"].toInt();
-        if (err == ErrorCodes::MESSAGE_CONFLICT) {
-            //永久冲突：停止该 unique_id 重传并标 SEND_FAILED（顶层 unique_id）
-            qDebug() << "Img Chat Conflict (1035), stopping retry";
-            handleImageConflict(jsonObj["unique_id"].toString());
-            return;
-        }
         if (err != ErrorCodes::SUCCESS) {
-            //transient（1014/1016）：不清 pending，定时器继续重传
-            qDebug() << "get img chat msg transient error, will retry: " << err;
+            //MESSAGE_CONFLICT/transient（1014/1016）原样转发，Dispatcher 判定
+            qDebug() << "img chat msg rsp error, forward to dispatcher: " << err;
+            emit sig_img_msg_meta_rsp_forward(err, jsonObj["unique_id"].toString(),
+                QString(), 0, 0, 0, 0);
             return;
         }
 
         qDebug() << "Receive img chat msg rsp Success";
 
-        //收到消息后转发给页面
-        auto thread_id = jsonObj["thread_id"].toInt();
-        auto unique_id = jsonObj["unique_id"].toString();
-        auto unique_name = jsonObj["unique_name"].toString();
-        
-        auto sender = jsonObj["fromuid"].toInt();
-        auto msg_id = jsonObj["message_id"].toInt();
-        QString chat_time = jsonObj["chat_time"].toString();
-        int status = jsonObj["status"].toInt();
-        auto text_or_url = jsonObj["text_or_url"].toString();
-        auto receiver = jsonObj["touid"].toInt();
-
-        auto file_info = UserMgr::GetInstance()->GetTransFileByName(unique_name);
-        //如果未找到文件对应的信息则返回
-        if (!file_info) {
-            return;
-        }
-        //设置消息id和会话id
-        file_info->_msg_id = msg_id;
-        file_info->_thread_id = thread_id;
-        //设置发送者和接收者
-        file_info->_sender = sender;
-        file_info->_receiver = receiver;
-        //设置文件传输的类型
-        file_info->_transfer_type = TransferType::Upload;
-        //设置文件传输状态
-        file_info->_transfer_state = TransferState::Uploading;
- 
-        auto chat_data = std::make_shared<ImgChatData>(file_info, unique_id, thread_id, ChatFormType::PRIVATE,
-            ChatMsgType::PIC, sender, status, chat_time);
-
-        //更新msg_id,因为最开始构造的chat_dat中ImgChatData的msg_id为空
-        chat_data->SetMsgId(msg_id);
-
-        //发送信号通知界面
-        emit sig_chat_img_rsp(thread_id, chat_data);
-
-        //清理已确认的 unique_id（服务端已持久化）
-        removePendingByUniqueId(unique_id);
-        persistPendingRequests();
-
-        //管理消息，添加序列号到正在发送集合
-        file_info->_flighting_seqs.insert(file_info->_seq);
-        
-        //发送消息
-        QFile file(file_info->_text_or_url);
-        if (!file.open(QIODevice::ReadOnly)) {
-            qWarning() << "Could not open file:" << file.errorString();
-            return;
-        }
-        
-        file.seek(file_info->_current_size);
-        auto buffer = file.read(MAX_FILE_LEN);
-        qDebug() << "buffer is " << buffer;
-        //将文件内容转换为base64编码
-        QString base64Data = buffer.toBase64();
-        QJsonObject file_obj;
-        file_obj["name"] = file_info->_unique_name;
-        file_obj["unique_id"] = unique_id;
-        file_obj["seq"] = file_info->_seq;
-        file_info->_current_size = buffer.size() + (file_info->_seq - 1) * MAX_FILE_LEN;
-        file_obj["trans_size"] = QString::number(file_info->_current_size);
-        file_obj["total_size"] = QString::number(file_info->_total_size);
-        file_obj["md5"] = file_info->_md5;
-        //3.2 token/uid/sender 由 Resource 从 session 派生，不再发送
-        file_obj["data"] = base64Data;
-        file_obj["message_id"] = msg_id;
-        file_obj["receiver"] = receiver;
-
-        if (buffer.size() + (file_info->_seq - 1) * MAX_FILE_LEN >= file_info->_total_size) {
-            file_obj["last"] = 1;
-        }
-        else {
-            file_obj["last"] = 0;
-        }
-
-		QJsonDocument doc_file(file_obj);
-		QByteArray fileData = doc_file.toJson(QJsonDocument::Compact);
-
-        //发送消息给ResourceServer
-        FileTcpMgr::GetInstance()->SendData(ReqId::ID_FILE_INFO_SYNC_REQ, fileData);
-
+        //message_id/thread_id 十进制字符串解析转 qint64
+        QString unique_id = jsonObj["unique_id"].toString();
+        QString unique_name = jsonObj["unique_name"].toString();
+        qint64 msg_id = jsonInt64(jsonObj["message_id"]);
+        qint64 thread_id = jsonInt64(jsonObj["thread_id"]);
+        int sender = jsonObj["fromuid"].toInt();
+        int receiver = jsonObj["touid"].toInt();
+        emit sig_img_msg_meta_rsp_forward(err, unique_id, unique_name,
+            msg_id, thread_id, sender, receiver);
         });
 
-    
+
      _handlers.insert(ID_NOTIFY_IMG_CHAT_MSG_REQ, [this](ReqId id, int len, QByteArray data) {
          Q_UNUSED(len);
          qDebug() << "handle id is " << id << " data is " << data;
@@ -1036,10 +887,10 @@ void TcpMgr::initHandlers()
          QJsonObject jsonObj = jsonDoc.object();
          qDebug() << "receive notify img chat msg req success" ;
 
-         //§6.4 统一 envelope
-         int message_id = jsonObj["message_id"].toInt();
+         //统一 envelope（message_id/thread_id 十进制字符串）
+         qint64 message_id = jsonInt64(jsonObj["message_id"]);
          QString unique_id = jsonObj["unique_id"].toString();
-         int thread_id = jsonObj["thread_id"].toInt();
+         qint64 thread_id = jsonInt64(jsonObj["thread_id"]);
          int fromuid = jsonObj["fromuid"].toInt();
          int touid = jsonObj["touid"].toInt();
          int msg_type = jsonObj["msg_type"].toInt(static_cast<int>(ChatMsgType::PIC));
@@ -1050,7 +901,7 @@ void TcpMgr::initHandlers()
              msg_type, content, content_size, QString(), MsgStatus::READED);
      });
 
-    //§6.5 ACK response：清理已确认 message_id，transient 错误保留继续重试
+    //1050 ACK 回包：解析 message_ids（十进制字符串数组）转发 OutboxDispatcher
     _handlers.insert(ID_CHAT_DELIVERY_ACK_RSP, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
@@ -1059,63 +910,27 @@ void TcpMgr::initHandlers()
         }
         QJsonObject jsonObj = jsonDoc.object();
         int err = jsonObj["error"].toInt();
-        if (err != ErrorCodes::SUCCESS) {
-            qDebug() << "[ACK] transient rsp error" << err << "keeping pending";
-            return;
-        }
+        QList<qint64> message_ids;
         for (const QJsonValue& v : jsonObj["message_ids"].toArray()) {
-            _pending_ack.remove(v.toInt());
+            message_ids.append(jsonInt64(v));
         }
-        persistAckPending();
-        qDebug() << "[ACK] confirmed, remaining pending_ack=" << _pending_ack.size();
+        emit sig_delivery_ack_rsp_forward(err, message_ids);
     });
 
-    //§6.6 离线 pull response：逐条走 dispatchIncomingMessage，has_more 连续取下一页
-    _handlers.insert(ID_PULL_OFFLINE_MSG_RSP, [this](ReqId id, int len, QByteArray data) {
+    //1052 增量同步回包：原始 JSON 对象转发 ChatSyncManager
+    _handlers.insert(ID_SYNC_MESSAGE_RSP, [this](ReqId id, int len, QByteArray data) {
         Q_UNUSED(len);
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
-        if (jsonDoc.isNull()) {
+        if (jsonDoc.isNull() || !jsonDoc.isObject()) {
             return;
         }
-        QJsonObject jsonObj = jsonDoc.object();
-        int err = jsonObj["error"].toInt();
-        if (err != ErrorCodes::SUCCESS) {
-            qDebug() << "[OfflinePull] error" << err << "will retry next interval";
-            return;
-        }
-        int next_message_id = jsonObj["next_message_id"].toInt();
-        bool has_more = jsonObj["has_more"].toBool();
-
-        for (const QJsonValue& elem : jsonObj["messages"].toArray()) {
-            int msg_id = elem["message_id"].toInt();
-            QString unique_id = elem["unique_id"].toString();
-            int el_thread = elem["thread_id"].toInt();
-            int el_from = elem["fromuid"].toInt();
-            int el_to = elem["touid"].toInt();
-            int msg_type = elem["msg_type"].toInt(static_cast<int>(ChatMsgType::TEXT));
-            QString content = elem["content"].toString();
-            qint64 content_size = elem["content_size"].toString().toLongLong();
-            QString chat_time = elem["chat_time"].toString();
-            int status = elem["status"].toInt();
-            dispatchIncomingMessage(msg_id, unique_id, el_thread, el_from, el_to,
-                msg_type, content, content_size, chat_time, status);
-        }
-
-        //has_more：立即拉下一页（同一连接 FIFO 顺序）；下一轮 timer 重新从 0 开始
-        if (has_more && _socket.state() == QAbstractSocket::ConnectedState && _delivery_uid != 0) {
-            QJsonObject next_obj;
-            next_obj["uid"] = _delivery_uid;
-            next_obj["after_message_id"] = next_message_id;
-            next_obj["limit"] = _offline_pull_batch;
-            QJsonDocument ndoc(next_obj);
-            slot_send_data(ID_PULL_OFFLINE_MSG_REQ, ndoc.toJson(QJsonDocument::Compact));
-        }
+        emit sig_sync_message_rsp(jsonDoc.object());
     });
-    
+
 }
 
-void TcpMgr::CreatePlaceholderImgMsgL(QString img_path_str, QString msg_content, 
-    int msg_id, int thread_id, int send_uid, int recv_id, int status, QString chat_time,
+void TcpMgr::CreatePlaceholderImgMsgL(QString img_path_str, QString msg_content,
+    qint64 msg_id, qint64 thread_id, int send_uid, int recv_id, int status, QString chat_time,
     std::vector<std::shared_ptr<ChatDataBase>> &chat_datas) {
     //如果加载失败，则使用占位符使图片变为空白，并且md5为空
     auto  file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, img_path_str,
@@ -1135,7 +950,7 @@ void TcpMgr::CreatePlaceholderImgMsgL(QString img_path_str, QString msg_content,
     chat_datas.push_back(chat_data);
     //加入下载列表，并且发送下载请求
     UserMgr::GetInstance()->AddTransFile(msg_content, file_info);
- 
+
     QJsonObject jsonObj_send;
     jsonObj_send["message_id"] = file_info->_msg_id;
     QJsonDocument doc(jsonObj_send);
@@ -1252,18 +1067,13 @@ void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
     _socket.write(_current_block);
 }
 
-//—— 可靠重传实现（均在 TCP 线程执行）——
-
-//§6.4 统一 envelope 分发：1019/1039/1052 共用。message_id 进入待 UI 确认集合。
-//文本走 sig_text_chat_msg，图片复用 1039 下载流程走 sig_img_chat_msg。
-void TcpMgr::dispatchIncomingMessage(int message_id, const QString& unique_id,
-    int thread_id, int fromuid, int touid, int msg_type,
+//统一 envelope 分发：1019/1039 共用。文本走 sig_text_chat_msg，图片走 sig_img_chat_msg+下载。
+//落库与 ACK 由接收方（ChatDialog/OutboxDispatcher）经 LocalChatStore 完成。
+void TcpMgr::dispatchIncomingMessage(qint64 message_id, const QString& unique_id,
+    qint64 thread_id, int fromuid, int touid, int msg_type,
     const QString& content, qint64 content_size,
     const QString& chat_time, int status)
 {
-    //§6.5：message_id 进入待 UI 完成集合（UI 插入/去重后才 ACK）
-    _pending_ui_ack.insert(message_id);
-
     if (msg_type == static_cast<int>(ChatMsgType::PIC)) {
         //图片消息：复用 1039 下载流程
         auto uid = UserMgr::GetInstance()->GetUid();
@@ -1318,595 +1128,13 @@ void TcpMgr::dispatchIncomingMessage(int message_id, const QString& unique_id,
     }
 }
 
-void TcpMgr::loadDeliveryConfig()
-{
-    //沿用 main.cpp 读取方式：applicationDirPath/config.ini
-    QString app_path = QCoreApplication::applicationDirPath();
-    QString config_path = QDir::toNativeSeparators(app_path + QDir::separator() + "config.ini");
-    QSettings settings(config_path, QSettings::IniFormat);
-
-    bool ok = false;
-    qint64 v = settings.value("Delivery/RequestRetryInitialMs", 2000).toLongLong(&ok);
-    if (ok && v > 0) {
-        _retry_initial_ms = v;
-    }
-    v = settings.value("Delivery/RequestRetryMaxMs", 30000).toLongLong(&ok);
-    if (ok && v > 0) {
-        _retry_max_ms = v;
-    }
-    v = settings.value("Delivery/AckRetryInitialMs", 2000).toLongLong(&ok);
-    if (ok && v > 0) {
-        _ack_retry_initial_ms = v;
-    }
-    v = settings.value("Delivery/OfflinePullIntervalMs", 10000).toLongLong(&ok);
-    if (ok && v > 0) {
-        _offline_pull_interval_ms = static_cast<int>(v);
-        if (_offline_pull_timer) {
-            _offline_pull_timer->setInterval(_offline_pull_interval_ms);
-        }
-    }
-    v = settings.value("Delivery/OfflinePullBatch", 100).toLongLong(&ok);
-    if (ok && v > 0) {
-        _offline_pull_batch = static_cast<int>(v);
-    }
-    qDebug() << "[Delivery] RequestRetryInitialMs=" << _retry_initial_ms
-             << " RequestRetryMaxMs=" << _retry_max_ms
-             << " AckRetryInitialMs=" << _ack_retry_initial_ms
-             << " OfflinePullIntervalMs=" << _offline_pull_interval_ms
-             << " OfflinePullBatch=" << _offline_pull_batch;
-}
-
-//3.2 一次性净化旧 QSettings 离线队列：删除每条 payload 中的 token 键，无法解析的 record 删除并提示。
-//单条化（v3）：旧格式 record（payload 含 text_array，或 record 含 unique_ids 数组）直接丢弃——
-//新服务端不再识别 text_array，重发必然失败。迁移完成后写入 auth_payload_version=3，后续启动跳过。
-void TcpMgr::sanitizeLegacyDeliverySettings()
-{
-    QSettings delivery_settings(QSettings::IniFormat, QSettings::UserScope,
-                                "llfc", "llfcchat-delivery");
-
-    //已迁移到 v3，跳过
-    if (delivery_settings.value("auth_payload_version").toInt() == 3) {
-        return;
-    }
-
-    bool dirty = false;       //是否有 token 被删除
-    bool dropped_any = false; //是否有无法解析的 record 被删除
-
-    for (const QString& group : delivery_settings.childGroups()) {
-        if (!group.startsWith("uid_")) {
-            continue;
-        }
-        delivery_settings.beginGroup(group);
-        QString req_str = delivery_settings.value("requests").toString();
-        if (req_str.isEmpty()) {
-            delivery_settings.endGroup();
-            continue;
-        }
-        QJsonDocument doc = QJsonDocument::fromJson(req_str.toUtf8());
-        if (!doc.isArray()) {
-            delivery_settings.endGroup();
-            continue;
-        }
-        QJsonArray arr = doc.array();
-        QJsonArray cleaned;
-        bool group_dirty = false;
-        for (int i = 0; i < arr.size(); ++i) {
-            QJsonObject obj = arr.at(i).toObject();
-            //v3：旧格式 record（unique_ids 数组）直接丢弃
-            if (obj.contains("unique_ids")) {
-                qWarning() << "[Delivery] dropped legacy batch-format pending record in" << group;
-                dropped_any = true;
-                dirty = true;
-                group_dirty = true;
-                continue;
-            }
-            QString payload_str = obj["payload"].toString();
-            QJsonDocument pdoc = QJsonDocument::fromJson(payload_str.toUtf8());
-            if (pdoc.isNull() || !pdoc.isObject()) {
-                //无法解析的 record：删除并记录
-                qWarning() << "[Delivery] dropped unparseable pending record in" << group;
-                dropped_any = true;
-                dirty = true;
-                group_dirty = true;
-                continue;
-            }
-            QJsonObject payload = pdoc.object();
-            //v3：payload 含 text_array 的旧批量格式直接丢弃
-            if (payload.contains("text_array")) {
-                qWarning() << "[Delivery] dropped legacy text_array pending record in" << group;
-                dropped_any = true;
-                dirty = true;
-                group_dirty = true;
-                continue;
-            }
-            if (payload.contains("token")) {
-                //删除 token 键（fromuid/touid 等业务字段保留）
-                payload.remove("token");
-                obj["payload"] = QString::fromUtf8(
-                    QJsonDocument(payload).toJson(QJsonDocument::Compact));
-                group_dirty = true;
-                dirty = true;
-            }
-            cleaned.append(obj);
-        }
-        if (group_dirty) {
-            delivery_settings.setValue("requests",
-                QString::fromUtf8(QJsonDocument(cleaned).toJson(QJsonDocument::Compact)));
-        }
-        delivery_settings.endGroup();
-    }
-
-    if (dirty) {
-        delivery_settings.sync();
-    }
-    //写入 v3 marker（全局顶层 key）
-    delivery_settings.setValue("auth_payload_version", 3);
-    delivery_settings.sync();
-
-    if (dropped_any) {
-        QMessageBox::warning(nullptr, tr("数据迁移"),
-            tr("检测到旧格式的离线消息记录，已自动删除以保证安全。"));
-    }
-}
-
-void TcpMgr::slot_send_reliable_chat(ReqId id, QByteArray payload, QString unique_id)
-{
-    //此 slot 由 queued connection 在 TCP 线程执行
-    addPendingRequest(id, payload, unique_id);
-
-    //立即发送一次（如果已连接）
-    if (_socket.state() == QAbstractSocket::ConnectedState) {
-        slot_send_data(id, payload);
-    }
-
-    //启动重传定时器
-    if (!_retry_timer->isActive() && _socket.state() == QAbstractSocket::ConnectedState) {
-        _retry_timer->start();
-    }
-}
-
-void TcpMgr::addPendingRequest(ReqId id, QByteArray payload, const QString& unique_id)
-{
-    if (_delivery_uid == 0) {
-        auto info = UserMgr::GetInstance()->GetUserInfo();
-        if (info) {
-            _delivery_uid = info->_uid;
-        }
-    }
-
-    PendingRequest req;
-    req.id = id;
-    req.payload = payload;
-    req.unique_id = unique_id;
-    req.retry_delay_ms = _retry_initial_ms;
-    req.next_send_epoch_ms = QDateTime::currentMSecsSinceEpoch() + _retry_initial_ms;
-
-    _pending_requests.append(req);
-    persistPendingRequests();
-}
-
-void TcpMgr::slot_retry_timeout()
-{
-    if (_socket.state() != QAbstractSocket::ConnectedState) {
-        _retry_timer->stop();
-        return;
-    }
-
-    //sender pending 与 recipient ACK pending 均为空时才停止
-    if (_pending_requests.isEmpty() && _pending_ack.isEmpty()) {
-        _retry_timer->stop();
-        return;
-    }
-
-    qint64 now = QDateTime::currentMSecsSinceEpoch();
-    for (int i = 0; i < _pending_requests.size(); ++i) {
-        PendingRequest& req = _pending_requests[i];
-        if (req.next_send_epoch_ms <= now) {
-            qDebug() << "[Delivery] Retrying id=" << req.id
-                     << " unique_id=" << req.unique_id
-                     << " delay=" << req.retry_delay_ms << "ms";
-            slot_send_data(req.id, req.payload);
-            //倍增退避，上限 _retry_max_ms
-            req.retry_delay_ms = qMin(req.retry_delay_ms * 2, _retry_max_ms);
-            req.next_send_epoch_ms = now + req.retry_delay_ms;
-        }
-    }
-
-    //§6.5：同时扫描待 ACK 项，到期则批量重发 1049
-    flushPendingAcks();
-}
-
-//§6.5 recipient ACK：批量发送到期项
-void TcpMgr::flushPendingAcks()
-{
-    if (_pending_ack.isEmpty() || _delivery_uid == 0
-        || _socket.state() != QAbstractSocket::ConnectedState) {
-        return;
-    }
-
-    qint64 now = QDateTime::currentMSecsSinceEpoch();
-    QJsonArray due_ids;
-    QList<int> sent_keys;
-    for (auto it = _pending_ack.begin(); it != _pending_ack.end(); ++it) {
-        if (it.value().next_send_epoch_ms <= now) {
-            due_ids.append(it.key());
-            sent_keys.append(it.key());
-        }
-    }
-
-    if (due_ids.isEmpty()) {
-        return;
-    }
-
-    QJsonObject obj;
-    obj["uid"] = _delivery_uid;
-    obj["message_ids"] = due_ids;
-    QJsonDocument doc(obj);
-    slot_send_data(ID_CHAT_DELIVERY_ACK_REQ, doc.toJson(QJsonDocument::Compact));
-
-    //更新退避与下次发送时刻
-    for (int k = 0; k < sent_keys.size(); ++k) {
-        AckPending& ap = _pending_ack[sent_keys[k]];
-        ap.retry_delay_ms = qMin(ap.retry_delay_ms * 2, _retry_max_ms);
-        ap.next_send_epoch_ms = now + ap.retry_delay_ms;
-    }
-
-    persistAckPending();
-    qDebug() << "[ACK] sent" << sent_keys.size() << "ids, pending_ack=" << _pending_ack.size();
-}
-
-void TcpMgr::persistAckPending()
-{
-    if (_delivery_uid == 0) {
-        return;
-    }
-
-    QSettings delivery_settings(QSettings::IniFormat, QSettings::UserScope,
-                                "llfc", "llfcchat-delivery");
-    QString uid_key = QString("uid_%1").arg(_delivery_uid);
-
-    QJsonArray arr;
-    for (auto it = _pending_ack.begin(); it != _pending_ack.end(); ++it) {
-        QJsonObject o;
-        o["message_id"] = it.key();
-        o["retry_delay_ms"] = it.value().retry_delay_ms;
-        arr.append(o);
-    }
-
-    delivery_settings.setValue(uid_key + "/ack_ids",
-        QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
-    delivery_settings.sync();
-}
-
-void TcpMgr::loadAckPendingFromDisk(int uid)
-{
-    QSettings delivery_settings(QSettings::IniFormat, QSettings::UserScope,
-                                "llfc", "llfcchat-delivery");
-    QString uid_key = QString("uid_%1").arg(uid);
-    QString ack_str = delivery_settings.value(uid_key + "/ack_ids").toString();
-
-    if (ack_str.isEmpty()) {
-        return;
-    }
-
-    QJsonDocument doc = QJsonDocument::fromJson(ack_str.toUtf8());
-    if (!doc.isArray()) {
-        return;
-    }
-    QJsonArray arr = doc.array();
-    for (int i = 0; i < arr.size(); ++i) {
-        QJsonObject o = arr.at(i).toObject();
-        int mid = o["message_id"].toInt();
-        if (mid <= 0) {
-            continue;
-        }
-        AckPending ap;
-        ap.retry_delay_ms = o["retry_delay_ms"].toInt();
-        if (ap.retry_delay_ms <= 0) {
-            ap.retry_delay_ms = _ack_retry_initial_ms;
-        }
-        ap.next_send_epoch_ms = 0; //立即发送
-        _pending_ack[mid] = ap;
-    }
-}
-
-//§6.5 ChatDialog 插入/duplicate 后 emit 此 slot（queued 回 TCP 线程）
-void TcpMgr::slot_msg_processed(int message_id)
-{
-    _pending_ui_ack.remove(message_id);
-    if (!_pending_ack.contains(message_id)) {
-        AckPending ap;
-        ap.retry_delay_ms = _ack_retry_initial_ms;
-        ap.next_send_epoch_ms = 0; //立即发送
-        _pending_ack[message_id] = ap;
-    }
-    flushPendingAcks();
-    //确保定时器运行（ACK pending 不为空）
-    if (!_retry_timer->isActive() && _socket.state() == QAbstractSocket::ConnectedState) {
-        _retry_timer->start();
-    }
-}
-
-//§6.6 离线 pull：启动定时循环
-void TcpMgr::slot_start_offline_pull()
-{
-    if (_socket.state() != QAbstractSocket::ConnectedState || _delivery_uid == 0) {
-        return;
-    }
-    if (!_offline_pull_timer->isActive()) {
-        _offline_pull_timer->start();
-    }
-    //立即触发一次拉取
-    slot_offline_pull_timeout();
-}
-
-void TcpMgr::slot_offline_pull_timeout()
-{
-    if (_socket.state() != QAbstractSocket::ConnectedState || _delivery_uid == 0) {
-        if (_offline_pull_timer) {
-            _offline_pull_timer->stop();
-        }
-        return;
-    }
-
-    //每轮从 after_message_id=0 开始（已 ACK 项已被移除）
-    QJsonObject obj;
-    obj["uid"] = _delivery_uid;
-    obj["after_message_id"] = 0;
-    obj["limit"] = _offline_pull_batch;
-    QJsonDocument doc(obj);
-    slot_send_data(ID_PULL_OFFLINE_MSG_REQ, doc.toJson(QJsonDocument::Compact));
-}
-
-void TcpMgr::persistPendingRequests()
-{
-    if (_delivery_uid == 0) {
-        return;
-    }
-
-    QSettings delivery_settings(QSettings::IniFormat, QSettings::UserScope,
-                                "llfc", "llfcchat-delivery");
-    QString uid_key = QString("uid_%1").arg(_delivery_uid);
-
-    QJsonArray arr;
-    for (int i = 0; i < _pending_requests.size(); ++i) {
-        const PendingRequest& req = _pending_requests[i];
-        QJsonObject obj;
-        obj["id"] = static_cast<int>(req.id);
-        obj["payload"] = QString::fromUtf8(req.payload);
-        //单条化：unique_id 单值落盘
-        obj["unique_id"] = req.unique_id;
-        arr.append(obj);
-    }
-
-    delivery_settings.setValue(uid_key + "/requests",
-        QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
-    delivery_settings.sync();
-}
-
-void TcpMgr::restorePendingRequests(int uid)
-{
-    //§6.2 纠错：本函数只加载持久 pending 到内存（不重建 bubble/MsgInfo、不重发、不启动定时器）。
-    //rebuild+重发+定时器由 StartPendingReplay → slot_start_pending_replay 在 GUI thread models
-    //建好后执行（ChatDialog::slot_load_chat_thread 最后一页 load_more=false 处调用）。
-
-    //同 uid：pending 已在内存，保留不动（内存为权威）
-    if (_delivery_uid == uid) {
-        return;
-    }
-
-    //切换 uid：清空内存，加载新 uid 的持久 pending（不同账号绝不互载）
-    _delivery_uid = uid;
-    _pending_requests.clear();
-    loadPendingFromDisk(uid);
-}
-
-void TcpMgr::loadPendingFromDisk(int uid)
-{
-    QSettings delivery_settings(QSettings::IniFormat, QSettings::UserScope,
-                                "llfc", "llfcchat-delivery");
-    QString uid_key = QString("uid_%1").arg(uid);
-    QString json_str = delivery_settings.value(uid_key + "/requests").toString();
-
-    if (json_str.isEmpty()) {
-        return;
-    }
-
-    QJsonDocument doc = QJsonDocument::fromJson(json_str.toUtf8());
-    if (!doc.isArray()) {
-        return;
-    }
-    QJsonArray arr = doc.array();
-
-    for (int i = 0; i < arr.size(); ++i) {
-        QJsonObject obj = arr.at(i).toObject();
-        PendingRequest req;
-        req.id = static_cast<ReqId>(obj["id"].toInt());
-        req.payload = obj["payload"].toString().toUtf8();
-        req.retry_delay_ms = _retry_initial_ms;
-        req.next_send_epoch_ms = 0; //立即发送（由 slot_start_pending_replay 触发）
-
-        //单条化：unique_id 单值。旧格式（unique_ids 数组）已被 sanitizeLegacyDeliverySettings
-        //丢弃（v3），此处读到空串视为损坏记录直接跳过
-        req.unique_id = obj["unique_id"].toString();
-        if (req.unique_id.isEmpty()) {
-            continue;
-        }
-
-        _pending_requests.append(req);
-    }
-}
-
-void TcpMgr::slot_start_pending_replay()
-{
-    //§6.2 纠错：TCP 线程只做解析 → DTO → emit（不在 TCP 线程触碰 ChatThreadData/_msg_unrsp_map
-    //或 QPixmap，前者 GUI 可并发访问，后者只能 GUI 线程创建）。
-    //GUI 线程收到 sig_replay_pending 后重建 bubble/MsgInfo/QPixmap，再 emit sig_replay_result 回执。
-    //回执到达 slot_replay_done 后才删除失效项、persistPendingRequests、重发保留项 + 启动扫描定时器。
-
-    //§6.5：同时恢复 ACK pending（随重启恢复，同一点触发；纯 message_id 状态，无 GUI 对象）
-    if (_delivery_uid != 0 && _pending_ack.isEmpty()) {
-        loadAckPendingFromDisk(_delivery_uid);
-    }
-
-    //解析 sender pending → 跨线程 DTO
-    std::vector<TextReplayDTO> texts;
-    std::vector<ImageReplayDTO> images;
-    for (int i = 0; i < _pending_requests.size(); ++i) {
-        const PendingRequest& req = _pending_requests[i];
-        QJsonDocument doc = QJsonDocument::fromJson(req.payload);
-        QJsonObject obj = doc.object();
-        if (req.id == ID_TEXT_CHAT_MSG_REQ) {
-            //单条化：payload 顶层平铺 content/unique_id
-            TextReplayDTO dto;
-            dto.thread_id = obj["thread_id"].toInt();
-            dto.fromuid = obj["fromuid"].toInt();
-            dto.unique_id = req.unique_id;
-            dto.content = obj["content"].toString();
-            texts.push_back(dto);
-        } else if (req.id == ID_IMG_CHAT_MSG_REQ) {
-            ImageReplayDTO dto;
-            dto.thread_id = obj["thread_id"].toInt();
-            dto.fromuid = obj["fromuid"].toInt();
-            dto.touid = obj["touid"].toInt();
-            dto.name = obj["name"].toString();
-            dto.md5 = obj["md5"].toString();
-            dto.text_or_url = obj["text_or_url"].toString();
-            dto.content_size = 0;
-            if (obj.contains("content_size")) {
-                dto.content_size = obj["content_size"].toString().toLongLong();
-            }
-            dto.unique_id = req.unique_id;
-            images.push_back(dto);
-        }
-    }
-
-    //总是 emit（即使两个列表都为空，GUI 仍会回执以便 TCP 完成 ACK flush + 定时器启动）
-    emit sig_replay_pending(texts, images);
-}
-
-void TcpMgr::removePendingByUniqueId(const QString& unique_id)
-{
-    if (unique_id.isEmpty()) {
-        return;
-    }
-
-    //单条化：一条 pending 对应一个 unique_id，命中即整项移除
-    for (int i = _pending_requests.size() - 1; i >= 0; --i) {
-        if (_pending_requests[i].unique_id == unique_id) {
-            _pending_requests.removeAt(i);
-        }
-    }
-}
-
-void TcpMgr::handleTextConflict(const QString& conflict_id)
-{
-    //单条化：1018 冲突响应带顶层 unique_id，直接定位对应 pending
-    if (conflict_id.isEmpty()) {
-        return;
-    }
-
-    for (int i = _pending_requests.size() - 1; i >= 0; --i) {
-        PendingRequest& req = _pending_requests[i];
-        if (req.id != ID_TEXT_CHAT_MSG_REQ || req.unique_id != conflict_id) {
-            continue;
-        }
-
-        QJsonDocument doc = QJsonDocument::fromJson(req.payload);
-        QJsonObject obj = doc.object();
-        int thread_id = obj["thread_id"].toInt();
-        int fromuid = obj["fromuid"].toInt();
-
-        //通过 sig_chat_msg_rsp 信号路径标 SEND_FAILED（MoveMsg + UpdateChatStatus）
-        auto msg = std::make_shared<TextChatData>(
-            conflict_id, thread_id,
-            ChatFormType::PRIVATE, ChatMsgType::TEXT,
-            obj["content"].toString(), fromuid,
-            MsgStatus::SEND_FAILED);
-        emit sig_chat_msg_rsp(thread_id, msg);
-
-        _pending_requests.removeAt(i);
-        break;
-    }
-
-    persistPendingRequests();
-}
-
-void TcpMgr::handleImageConflict(const QString& conflict_id)
-{
-    if (conflict_id.isEmpty()) {
-        return;
-    }
-
-    for (int i = _pending_requests.size() - 1; i >= 0; --i) {
-        PendingRequest& req = _pending_requests[i];
-        if (req.id != ID_IMG_CHAT_MSG_REQ) {
-            continue;
-        }
-        if (req.unique_id != conflict_id) {
-            continue;
-        }
-
-        QJsonDocument doc = QJsonDocument::fromJson(req.payload);
-        QJsonObject obj = doc.object();
-        int thread_id = obj["thread_id"].toInt();
-        int fromuid = obj["fromuid"].toInt();
-        QString name = obj["name"].toString();
-
-        //通过现有 sig_chat_img_rsp 信号路径标 SEND_FAILED
-        auto file_info = UserMgr::GetInstance()->GetTransFileByName(name);
-        if (file_info) {
-            auto img_msg = std::make_shared<ImgChatData>(
-                file_info, conflict_id, thread_id,
-                ChatFormType::PRIVATE, ChatMsgType::PIC,
-                fromuid, MsgStatus::SEND_FAILED);
-            emit sig_chat_img_rsp(thread_id, img_msg);
-        }
-
-        _pending_requests.removeAt(i);
-        break;
-    }
-
-    persistPendingRequests();
-}
-
-//§6.2 纠错：GUI 重建完成回执（queued 回 TCP 线程）。
-//删除文件缺失的失效项、persistPendingRequests、重发保留项 + 启动 250ms 扫描定时器。
-//ACK pending 恢复已在 slot_start_pending_replay 加载，此处 flush + 启动定时器。
-void TcpMgr::slot_replay_done(QStringList failed_unique_ids)
-{
-    //删除失效项（GUI 已标 SEND_FAILED）
-    for (int i = 0; i < failed_unique_ids.size(); ++i) {
-        removePendingByUniqueId(failed_unique_ids[i]);
-    }
-    persistPendingRequests();
-
-    //重发所有保留的 sender pending（GUI 已重建 bubble/MsgInfo，可安全重发）
-    if (_socket.state() == QAbstractSocket::ConnectedState) {
-        qint64 now = QDateTime::currentMSecsSinceEpoch();
-        for (int i = 0; i < _pending_requests.size(); ++i) {
-            PendingRequest& req = _pending_requests[i];
-            slot_send_data(req.id, req.payload);
-            req.next_send_epoch_ms = now + _retry_initial_ms;
-        }
-    }
-
-    //§6.5：重发恢复的 ACK pending
-    if (!_pending_ack.isEmpty()) {
-        flushPendingAcks();
-    }
-
-    //启动定时器（sender pending 或 ACK pending 任一非空）
-    if (!_retry_timer->isActive() && _socket.state() == QAbstractSocket::ConnectedState
-        && (!_pending_requests.isEmpty() || !_pending_ack.isEmpty())) {
-        _retry_timer->start();
-    }
-}
-
 TcpThread::TcpThread()
 {
     _tcp_thread = new QThread();
     TcpMgr::GetInstance()->moveToThread(_tcp_thread);
+    //OutboxDispatcher/ChatSyncManager 驻留 TCP 线程（独立 QObject）
+    OutboxDispatcher::GetInstance()->moveToThread(_tcp_thread);
+    ChatSyncManager::GetInstance()->moveToThread(_tcp_thread);
     QObject::connect(_tcp_thread, &QThread::finished, _tcp_thread, &QObject::deleteLater);
 
     _tcp_thread->start();
@@ -1915,4 +1143,5 @@ TcpThread::TcpThread()
 TcpThread::~TcpThread()
 {
     _tcp_thread->quit();
+    _tcp_thread->wait();
 }

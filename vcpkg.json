@@ -21,7 +21,8 @@
     },
     {
       "name": "qt5-base",
-      "default-features": false
+      "default-features": false,
+      "features": ["sqlite3plugin"]
     },
     {
       "name": "qt5-imageformats",

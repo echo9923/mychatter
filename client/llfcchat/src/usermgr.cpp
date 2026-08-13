@@ -146,7 +146,7 @@ std::vector<std::shared_ptr<UserInfo>> UserMgr::GetConListPerPage() {
 }
 
 
-UserMgr::UserMgr():_user_info(nullptr), _contact_loaded(0), _last_chat_thread_id(0),_cur_load_chat_index(0)
+UserMgr::UserMgr():_user_info(nullptr), _contact_loaded(0), _last_chat_thread_id(0)
 {
 
 }
@@ -216,13 +216,13 @@ std::shared_ptr<UserInfo> UserMgr::GetFriendById(int uid)
 
 
 
-int UserMgr::GetLastChatThreadId()
+qint64 UserMgr::GetLastChatThreadId()
 {
     std::lock_guard<std::mutex> lock(_mtx);
     return _last_chat_thread_id;
 }
 
-void UserMgr::SetLastChatThreadId(int id)
+void UserMgr::SetLastChatThreadId(qint64 id)
 {
     std::lock_guard<std::mutex> lock(_mtx);
     _last_chat_thread_id = id;
@@ -241,7 +241,7 @@ void UserMgr::AddChatThreadData(std::shared_ptr<ChatThreadData> chat_thread_data
     }
 }
 
-int UserMgr::GetThreadIdByUid(int uid)
+qint64 UserMgr::GetThreadIdByUid(int uid)
 {
    std::lock_guard<std::mutex> lock(_mtx);
    auto iter = _uid_to_thread_id.find(uid);
@@ -252,7 +252,7 @@ int UserMgr::GetThreadIdByUid(int uid)
    return iter.value();
 }
 
-std::shared_ptr<ChatThreadData> UserMgr::GetChatThreadByThreadId(int thread_id)
+std::shared_ptr<ChatThreadData> UserMgr::GetChatThreadByThreadId(qint64 thread_id)
 {
     std::lock_guard<std::mutex> lock(_mtx);
     auto find_iter = _chat_map.find(thread_id);
@@ -275,38 +275,6 @@ std::shared_ptr<ChatThreadData> UserMgr::GetChatThreadByUid(int uid) {
     }
 
     return chat_iter.value();
-}
-
-
-
-std::shared_ptr<ChatThreadData> UserMgr::GetCurLoadData()
-{
-    std::lock_guard<std::mutex> lock(_mtx);
-    if (_cur_load_chat_index >= _chat_thread_ids.size()) {
-        return nullptr;
-    }
-
-    auto iter = _chat_map.find(_chat_thread_ids[_cur_load_chat_index]);
-    if (iter == _chat_map.end()) {
-        return nullptr;
-    }
-
-    return iter.value();
-}
-
-std::shared_ptr<ChatThreadData> UserMgr::GetNextLoadData() {
-    std::lock_guard<std::mutex> lock(_mtx);
-    _cur_load_chat_index++;
-    if (_cur_load_chat_index >= _chat_thread_ids.size()) {
-        return nullptr;
-    }
-
-    auto iter = _chat_map.find(_chat_thread_ids[_cur_load_chat_index]);
-    if (iter == _chat_map.end()) {
-        return nullptr;
-    }
-
-    return iter.value();
 }
 
 void UserMgr::AddUploadFile(QString name, std::shared_ptr<QFileInfo> file_info)

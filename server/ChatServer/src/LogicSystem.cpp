@@ -36,22 +36,28 @@ std::size_t ReadWorkerCount(const std::string& key) {
 	return fallback;
 }
 
-/// 从 [Delivery] 读取整数配置；非法/缺失时回退 fallback（计划4.2/5.3）
-int ReadDeliveryInt(const std::string& key, int fallback) {
-	try {
-		auto val = ConfigMgr::Inst().GetValue("Delivery", key);
-		if (!val.empty()) {
+/// 从 JSON 值解析 64 位 id：十进制字符串（协议现状）与数字（旧格式）都兼容，
+/// 字符串必须整串消费；解析失败返回 false
+bool ParseJsonId(const json& v, std::int64_t& out) {
+	if (v.is_number_integer()) {
+		out = v.get<std::int64_t>();
+		return true;
+	}
+	if (v.is_string()) {
+		try {
+			auto s = v.get<std::string>();
 			std::size_t pos = 0;
-			int n = std::stoi(val, &pos);
-			if (pos == val.size() && n > 0) {
-				return n;
+			long long n = std::stoll(s, &pos);
+			if (pos == s.size()) {
+				out = n;
+				return true;
 			}
 		}
+		catch (...) {
+			//非法字符串，按解析失败处理
+		}
 	}
-	catch (...) {
-		//配置缺失/非数字，回退默认值
-	}
-	return fallback;
+	return false;
 }
 } // namespace
 
@@ -221,9 +227,9 @@ void LogicSystem::RegisterCallBacks() {
 			DealDeliveryAck(session, msg_type, msg_data);
 		};
 
-	_fun_callbacks[ID_PULL_OFFLINE_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+	_fun_callbacks[ID_SYNC_MESSAGE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
-			PullOfflineMsg(session, msg_type, msg_data);
+			DealSyncMessage(session, msg_type, msg_data);
 		};
 
 }
@@ -591,7 +597,14 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 
 	auto uid = root["fromuid"].get<int>();
 	auto touid = root["touid"].get<int>();
-	auto thread_id = root["thread_id"].get<int>();
+	//thread_id 按 64 位解析：协议字符串化后兼容十进制字符串与数字
+	std::int64_t thread_id = 0;
+	if (!ParseJsonId(root["thread_id"], thread_id)) {
+		json err;
+		err["error"] = ErrorCodes::Error_Json;
+		session->Send(err.dump(4), ID_TEXT_CHAT_MSG_RSP);
+		return;
+	}
 
 	//单条化：content/unique_id 顶层平铺（text_array 批量设计已删除）
 	auto content = root["content"].get<std::string>();
@@ -601,7 +614,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = uid;
 	rtvalue["touid"] = touid;
-	rtvalue["thread_id"] = thread_id;
+	rtvalue["thread_id"] = std::to_string(thread_id);
 
 	//构造 ChatMessage：status 统一 UN_READ，content_size 固定 0（计划5.4/3.2）
 	auto chat_msg = std::make_shared<ChatMessage>();
@@ -635,33 +648,18 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	//Stored/Duplicate：canonical 持久值 envelope 拍平到响应顶层（计划5.4/5.3）
 	rtvalue.update(BuildMessageEnvelope(chat_msg));
 
-	//【关键顺序】事务已提交 → 先发 1018（语义固定为“服务端已持久化”），再做 pending
-	//激活与 live delivery。不得用 Defer 延后：那会让 Redis/live 先于 sender ACK（计划5.4）
+	//【关键顺序】事务已提交 → 先发 1018（语义固定为“服务端已持久化”），再做 live delivery。
+	//不得用 Defer 延后：那会让 live 先于 sender ACK（计划5.4）
 	std::string sender_rsp = rtvalue.dump(4);
 	session->Send(sender_rsp, ID_TEXT_CHAT_MSG_RSP);
 
-	//仅 canonical delivery_status==Pending 才写 pending ZSET 并尝试 live delivery。
-	//已 ACK 的 duplicate 只重发上面的 sender response，绝不重新打开 pending（计划5.4）
+	//仅 canonical delivery_status==Pending 才尝试 live delivery。
+	//已 ACK 的 duplicate 只重发上面的 sender response（计划5.4）
 	if (chat_msg->delivery_status != DeliveryStatus::Pending) {
 		return;
 	}
 
-	//pending 激活：ZAdd offline_msg:<recv_uid>（score=member=十进制 message_id，天然幂等
-	//且按 DB ID 排序）+Expire。Redis 失败只日志，不否定 sender response；后续 pull 由
-	//MySQL 兜底（计划4.1/4.2/5.4）
-	int ttl = ReadDeliveryInt("OfflineTtlSeconds", 604800);
-	if (ttl < 1) ttl = 604800;
-	std::string zkey = OFFLINE_MSG_PREFIX + std::to_string(touid);
-	auto redis = RedisMgr::GetInstance();
-	std::string mid = std::to_string(chat_msg->message_id);
-	if (!redis->ZAdd(zkey, chat_msg->message_id, mid)) {
-		std::cout << "DealChatTextMsg ZAdd failed, key=" << zkey
-			<< " message_id=" << chat_msg->message_id << std::endl;
-	}
-	if (!redis->Expire(zkey, ttl)) {
-		std::cout << "DealChatTextMsg Expire failed, key=" << zkey << std::endl;
-	}
-
+	//同步行已随 AddChatMsg 事务写入 user_message_sync，receiver 增量同步兜底。
 	//live delivery：查询 touid 路由。pending duplicate 可能再次 live-push，这是
 	//at-least-once 允许的行为，recipient 以 message_id 去重（计划5.4）
 	auto to_str = std::to_string(touid);
@@ -669,7 +667,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	std::string to_ip_value = "";
 	bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
 	if (!b_ip) {
-		return; //目标不在任何节点，pending 已建立，等 receiver 登录 pull
+		return; //目标不在任何节点，同步行已持久化，等 receiver 增量同步
 	}
 
 	auto& cfg = ConfigMgr::Inst();
@@ -692,7 +690,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	//投递经 sender uid 固定的 delivery shard，避免 3s deadline 阻塞 logic shard，且同一
 	//sender 的多次跨服调用在 delivery worker 上保持顺序（计划5.6）。带重试的
 	//NotifyTextChatMsg 内部按 [Delivery] 配置 deadline/最多尝试次数/退避，重试耗尽只日志：
-	//pending 已在 RPC 前建立，receiver 后续 pull 兜底；不撤销 sender ACK、不改 DB。
+	//同步行已随事务提交，receiver 后续增量同步兜底；不撤销 sender ACK、不改 DB。
 	TextChatMsgReq text_msg_req;
 	text_msg_req.set_fromuid(uid);
 	text_msg_req.set_touid(touid);
@@ -711,17 +709,17 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 			std::cout << "DealChatTextMsg cross-server delivered, server=" << server_ip << std::endl;
 		}
 		else {
-			//重试耗尽 / 不可重试 / 未知 server：只日志。pending 已在 RPC 前建立，receiver 后续 pull 兜底（计划5.6）
+			//重试耗尽 / 不可重试 / 未知 server：只日志。同步行已随事务提交，receiver 后续增量同步兜底（计划5.6）
 			std::cout << "DealChatTextMsg cross-server delivery final result server=" << server_ip
 				<< " grpc_code=" << static_cast<int>(res.grpc_code)
 				<< " app_error=" << res.app_error
-				<< " (pending already established, receiver will pull)" << std::endl;
+				<< " (sync row committed, receiver will sync)" << std::endl;
 		}
 	});
 	if (!posted) {
-		//停机：delivery worker 已拒绝投递。pending 已建立，receiver 后续 pull 兜底（计划5.6）
+		//停机：delivery worker 已拒绝投递。同步行已随事务提交，receiver 后续增量同步兜底（计划5.6）
 		std::cout << "DealChatTextMsg PostDelivery rejected (stopping), server=" << server_ip
-			<< " (pending already established, receiver will pull)" << std::endl;
+			<< " (sync row committed, receiver will sync)" << std::endl;
 	}
 }
 
@@ -928,7 +926,6 @@ void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session,
 	//从数据库加chat_threads记录
 	auto root = json::parse(msg_data, nullptr, false);
 	auto uid = root["uid"].get<int>();
-	int last_id = root["thread_id"].get<int>();
 	std::cout << "get uid  threads  " << uid << std::endl;
 
 	json  rtvalue;
@@ -938,12 +935,19 @@ void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session,
 		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_LOAD_CHAT_THREAD_RSP);
 		});
-	
+
+	//thread_id 游标按 64 位解析：协议字符串化后兼容十进制字符串与数字
+	std::int64_t last_id = 0;
+	if (!ParseJsonId(root["thread_id"], last_id)) {
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		return;
+	}
+
 	std::vector<std::shared_ptr<ChatThreadInfo>> threads;
-	
+
 	int page_size = 10;
 	bool load_more = false;
-	int next_last_id = 0;
+	std::int64_t next_last_id = 0;
 	bool res = GetUserThreads(uid, last_id, page_size, threads, load_more, next_last_id);
 	if (!res) {
 		rtvalue["error"] = ErrorCodes::UidInvalid;
@@ -952,11 +956,11 @@ void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session,
 
 
 	rtvalue["load_more"] = load_more;
-	rtvalue["next_last_id"] = (int)next_last_id;
-	//整理threads数据写入json返回
+	rtvalue["next_last_id"] = std::to_string(next_last_id);
+	//整理threads数据写入json返回（thread_id 一律十进制字符串）
 	for (auto& thread : threads) {
 		json thread_value;
-		thread_value["thread_id"] = int(thread->_thread_id);
+		thread_value["thread_id"] = std::to_string(thread->_thread_id);
 		thread_value["type"] = thread->_type;
 		thread_value["user1_id"] = thread->_user1_id;
 		thread_value["user2_id"] = thread->_user2_id;
@@ -969,7 +973,7 @@ bool LogicSystem::GetUserThreads(int64_t userId,
 	int      pageSize,
 	std::vector<std::shared_ptr<ChatThreadInfo>>& threads,
 	bool& loadMore,
-	int& nextLastId)
+	int64_t& nextLastId)
 {
 	return MysqlMgr::GetInstance()->GetUserThreads(userId, lastId, pageSize, 
 		threads, loadMore, nextLastId);
@@ -991,32 +995,43 @@ void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const sho
 		session->Send(return_str, ID_CREATE_PRIVATE_CHAT_RSP);
 		});
 
-	int thread_id = 0;
+	std::int64_t thread_id = 0;
 	bool res = MysqlMgr::GetInstance()->CreatePrivateChat(uid, other_id, thread_id);
 	if (!res) {
 		rtvalue["error"] = ErrorCodes::CREATE_CHAT_FAILED;
 		return;
 	}
 
-	rtvalue["thread_id"] = thread_id;
+	rtvalue["thread_id"] = std::to_string(thread_id);
 }
 
-void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session, 
+void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 	const short& msg_type, const string& msg_data) {
 
 	auto root = json::parse(msg_data, nullptr, false);
-	auto thread_id = root["thread_id"].get<int>();
-	auto message_id = root["message_id"].get<int>();
-
 
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
-	rtvalue["thread_id"] = thread_id;
 
 	Defer defer([this, &rtvalue, session]() {
 		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_LOAD_CHAT_MSG_RSP);
 		});
+
+	//thread_id / before_message_id 按 64 位解析：协议字符串化后兼容十进制字符串与数字
+	std::int64_t thread_id = 0;
+	if (!ParseJsonId(root["thread_id"], thread_id)) {
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		return;
+	}
+	std::int64_t message_id = 0;
+	if (root.contains("before_message_id") &&
+		!ParseJsonId(root["before_message_id"], message_id)) {
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		return;
+	}
+
+	rtvalue["thread_id"] = std::to_string(thread_id);
 
 	int page_size = 10;
 	std::shared_ptr<PageResult> res = MysqlMgr::GetInstance()->LoadChatMsg(thread_id, message_id, page_size);
@@ -1025,13 +1040,13 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 		return;
 	}
 
-	rtvalue["last_message_id"] = res->next_cursor;
+	rtvalue["last_message_id"] = std::to_string(res->next_cursor);
 	rtvalue["load_more"] = res->load_more;
 	for (auto& chat : res->messages) {
 		json  chat_data;
 		chat_data["sender"] = chat.sender_id;
-		chat_data["msg_id"] = chat.message_id;
-		chat_data["thread_id"] = chat.thread_id;
+		chat_data["msg_id"] = std::to_string(chat.message_id);
+		chat_data["thread_id"] = std::to_string(chat.thread_id);
 		chat_data["unique_id"] = 0;
 		chat_data["msg_content"] = chat.content;
 		chat_data["chat_time"] = chat.chat_time;
@@ -1049,7 +1064,14 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 
 	auto uid = root["fromuid"].get<int>();
 	auto touid = root["touid"].get<int>();
-	auto thread_id = root["thread_id"].get<int>();
+	//thread_id 按 64 位解析：协议字符串化后兼容十进制字符串与数字
+	std::int64_t thread_id = 0;
+	if (!ParseJsonId(root["thread_id"], thread_id)) {
+		json err;
+		err["error"] = ErrorCodes::Error_Json;
+		session->Send(err.dump(4), ID_IMG_CHAT_MSG_RSP);
+		return;
+	}
 
 	auto md5 = root["md5"].get<std::string>();
 	auto unique_name = root["name"].get<std::string>();
@@ -1072,7 +1094,7 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = uid;
 	rtvalue["touid"] = touid;
-	rtvalue["thread_id"] = thread_id;
+	rtvalue["thread_id"] = std::to_string(thread_id);
 	rtvalue["md5"] = md5;
 	rtvalue["unique_name"] = unique_name;
 	rtvalue["unique_id"] = unique_id;
@@ -1108,22 +1130,23 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 		return;
 	}
 
-	//canonical：message_id 由 DAO 回写；content_size 十进制字符串（计划5.4/6.3）
-	rtvalue["message_id"] = chat_msg->message_id;
+	//canonical：message_id 十进制字符串；content_size 十进制字符串（计划5.4/6.3）
+	rtvalue["message_id"] = std::to_string(chat_msg->message_id);
 	rtvalue["content_size"] = std::to_string(chat_msg->content_size);
 
 	//【关键顺序】事务已提交 → 发 1036 sender response（语义固定为“服务端已持久化”）（计划5.4）
 	session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
 
-	//UN_UPLOAD 图片绝不 ZADD/实时通知，待 §5.7 上传完成点（UpdateUploadStatus 成功后）
-	//才激活 pending，避免拉取尚不可下载的图片（计划5.4/4.2）
+	//UN_UPLOAD 图片不写同步行、不实时通知，待 §5.7 上传完成点（UpdateUploadStatusWithSync
+	//成功后同事务补同步行）才对增量同步可见，避免同步到尚不可下载的图片（计划5.4/4.2）
 }
 
 json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) {
 	json env;
-	env["message_id"] = msg->message_id;
+	//message_id/thread_id 一律十进制字符串，避免 Qt JSON number 对 64 位值丢精度
+	env["message_id"] = std::to_string(msg->message_id);
 	env["unique_id"] = msg->unique_id;
-	env["thread_id"] = msg->thread_id;
+	env["thread_id"] = std::to_string(msg->thread_id);
 	env["fromuid"] = msg->sender_id;
 	env["touid"] = msg->recv_id;
 	env["msg_type"] = msg->msg_type;
@@ -1136,8 +1159,9 @@ json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) 
 }
 
 void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
-	//1049 {"uid":<receiver>,"message_ids":[...]} -> 1050 {"error":0,"message_ids":[...]}
-	//严格校验：JSON 对象、uid 正整数且 == session->GetUserId()、message_ids 非空数组且每项正 int
+	//1049 {"uid":<receiver>,"message_ids":["<id>",...]} -> 1050 {"error":0,"message_ids":["<id>",...]}
+	//严格校验：JSON 对象、uid 正整数且 == session->GetUserId()、message_ids 非空数组且每项
+	//为十进制字符串（协议字符串化），解析为 uint64 后去重升序
 	auto root = json::parse(msg_data, nullptr, false);
 
 	auto reject = [&session](ErrorCodes code) {
@@ -1169,21 +1193,21 @@ void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short
 		reject(ErrorCodes::Error_Json);
 		return;
 	}
-	//每项必须正 int，用 std::set 去重并升序
-	std::set<int> id_set;
+	//每项必须正 id 十进制字符串，用 std::set 去重并升序
+	std::set<std::int64_t> id_set;
 	for (const auto& e : ids_json) {
-		if (!e.is_number_integer()) {
+		std::int64_t v = 0;
+		if (!ParseJsonId(e, v)) {
 			reject(ErrorCodes::Error_Json);
 			return;
 		}
-		int v = e.get<int>();
 		if (v <= 0) {
 			reject(ErrorCodes::Error_Json);
 			return;
 		}
 		id_set.insert(v);
 	}
-	std::vector<int> ids(id_set.begin(), id_set.end());
+	std::vector<std::int64_t> ids(id_set.begin(), id_set.end());
 
 	//GetMessagesByIds 带 recv_id 防越权：返回行数必须与请求完全吻合，未知/不属于本 receiver 的 id 不会被返回
 	auto msgs = MysqlMgr::GetInstance()->GetMessagesByIds(uid, ids);
@@ -1192,49 +1216,35 @@ void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short
 		return;
 	}
 
-	//只有 DB 更新成功后才回 ACK response 并清 Redis（计划4.3/5.2）
+	//只有 DB 更新成功后才回 ACK response（计划4.3/5.2）
 	bool ok = MysqlMgr::GetInstance()->MarkMessagesDelivered(uid, ids);
 	if (!ok) {
 		reject(ErrorCodes::MESSAGE_STORE_FAILED);
 		return;
 	}
 
-	//先回 Success + 原（去重升序）ids，让客户端尽快确认；重复 ACK 因 DAO 幂等仍 success
+	//先回 Success + 原（去重升序）ids（十进制字符串数组），让客户端尽快确认；重复 ACK 因 DAO 幂等仍 success
 	json rsp;
 	rsp["error"] = ErrorCodes::Success;
 	json ids_arr = json::array();
-	for (int id : ids) {
-		ids_arr.push_back(id);
+	for (std::int64_t id : ids) {
+		ids_arr.push_back(std::to_string(id));
 	}
 	rsp["message_ids"] = ids_arr;
 	session->Send(rsp.dump(4), ID_CHAT_DELIVERY_ACK_RSP);
-
-	//DB 成功后逐个 ZREM offline_msg:<uid>；Redis 删除失败只记录，不影响 success
-	std::string zkey = OFFLINE_MSG_PREFIX + std::to_string(uid);
-	auto redis = RedisMgr::GetInstance();
-	for (int id : ids) {
-		if (!redis->ZRem(zkey, std::to_string(id))) {
-			std::cout << "ACK ZRem failed, key=" << zkey << " id=" << id << std::endl;
-		}
-	}
 }
 
-void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
-	//1051 {"uid":<receiver>,"after_message_id":<id>,"limit":<n>} -> 1052 {"error":0,"messages":[...],"next_message_id":<id>,"has_more":<bool>}
-	//配置：非法一律回退默认（计划4.2/5.3）
-	int pull_batch = ReadDeliveryInt("OfflinePullBatch", 100);
-	if (pull_batch < 1) pull_batch = 100;
-	int pull_max_bytes = ReadDeliveryInt("PullMaxBytes", 30000);
-	if (pull_max_bytes < 1) pull_max_bytes = 30000;
-	int ttl = ReadDeliveryInt("OfflineTtlSeconds", 604800);
-	if (ttl < 1) ttl = 604800;
-
+void LogicSystem::DealSyncMessage(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
+	//1051 增量 {"uid":<数字>,"after_sync_seq":"500","limit":100}
+	//    -> 1052 {"error":0,"messages":[envelope+sync_seq],"next_sync_seq":"<seq>","has_more":<bool>}
+	//1051 bootstrap {"uid":<数字>,"bootstrap":true}
+	//    -> 1052 {"error":0,"checkpoint":"<max_seq>"}（首启 checkpoint，不带消息）
 	auto root = json::parse(msg_data, nullptr, false);
 
 	auto reject = [&session](ErrorCodes code) {
 		json rsp;
 		rsp["error"] = code;
-		session->Send(rsp.dump(), ID_PULL_OFFLINE_MSG_RSP);
+		session->Send(rsp.dump(), ID_SYNC_MESSAGE_RSP);
 	};
 
 	if (!root.is_object()) {
@@ -1252,21 +1262,46 @@ void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short&
 		return;
 	}
 
-	int after_message_id = 0;
-	if (root.contains("after_message_id")) {
-		if (!root["after_message_id"].is_number_integer()) {
+	//bootstrap 变体：只回当前最大同步序号，供客户端首启建立 checkpoint
+	if (root.contains("bootstrap") && root["bootstrap"].is_boolean()
+		&& root["bootstrap"].get<bool>()) {
+		std::uint64_t max_seq = 0;
+		if (!MysqlMgr::GetInstance()->GetMaxSyncSeq(uid, max_seq)) {
+			//DAO 失败不能当作空 checkpoint 下发，客户端据此 transient 重试
+			reject(ErrorCodes::MESSAGE_STORE_FAILED);
+			return;
+		}
+		json rsp;
+		rsp["error"] = ErrorCodes::Success;
+		rsp["checkpoint"] = std::to_string(max_seq);
+		session->Send(rsp.dump(), ID_SYNC_MESSAGE_RSP);
+		return;
+	}
+
+	//after_sync_seq：十进制字符串（缺省 "0"），整串消费，解析失败回 Error_Json
+	std::uint64_t after_sync_seq = 0;
+	if (root.contains("after_sync_seq")) {
+		if (!root["after_sync_seq"].is_string()) {
 			reject(ErrorCodes::Error_Json);
 			return;
 		}
-		after_message_id = root["after_message_id"].get<int>();
-		if (after_message_id < 0) {
+		auto s = root["after_sync_seq"].get<std::string>();
+		try {
+			std::size_t pos = 0;
+			after_sync_seq = std::stoull(s, &pos);
+			if (pos != s.size()) {
+				reject(ErrorCodes::Error_Json);
+				return;
+			}
+		}
+		catch (...) {
 			reject(ErrorCodes::Error_Json);
 			return;
 		}
 	}
 
-	//limit 缺失用配置 OfflinePullBatch；请求 limit clamp 1-100
-	int limit = pull_batch;
+	//limit 缺失默认 100，clamp [1,200]
+	int limit = 100;
 	if (root.contains("limit")) {
 		if (!root["limit"].is_number_integer()) {
 			reject(ErrorCodes::Error_Json);
@@ -1275,148 +1310,34 @@ void LogicSystem::PullOfflineMsg(std::shared_ptr<CSession> session, const short&
 		limit = root["limit"].get<int>();
 	}
 	if (limit < 1) limit = 1;
-	if (limit > 100) limit = 100;
+	if (limit > 200) limit = 200;
 
-	std::string zkey = OFFLINE_MSG_PREFIX + std::to_string(uid);
-	auto redis = RedisMgr::GetInstance();
-	auto mysql = MysqlMgr::GetInstance();
-
-	//1) Redis ZRangeByScore(cursor, limit+1) 得候选 IDs
-	std::vector<std::string> redis_members;
-	redis->ZRangeByScore(zkey, after_message_id, limit + 1, redis_members);
-	std::vector<int> redis_id_ints;
-	std::set<int> redis_all_ids;
-	for (const auto& m : redis_members) {
-		try {
-			int v = std::stoi(m);
-			redis_id_ints.push_back(v);
-			redis_all_ids.insert(v);
-		}
-		catch (...) {
-			//非数字 member 视为陈旧，直接清理
-			redis->ZRem(zkey, m);
-		}
-	}
-
-	//2) GetMessagesByIds(redis_ids)；Redis 命中行仅 delivery_status==Pending 且排除 PIC/UN_UPLOAD 才参与 pull；
-	//   ACK/缺失/不可投递的陈旧 member 顺手 ZREM（best effort，失败不挤占 pending 页）
-	std::vector<std::shared_ptr<ChatMessage>> redis_msgs;
-	if (!redis_id_ints.empty()) {
-		redis_msgs = mysql->GetMessagesByIds(uid, redis_id_ints);
-	}
-	std::map<int, std::shared_ptr<ChatMessage>> redis_by_id;
-	for (auto& m : redis_msgs) {
-		redis_by_id[m->message_id] = m;
-	}
-	std::vector<std::shared_ptr<ChatMessage>> deliverable_from_redis;
-	for (int rid : redis_id_ints) {
-		auto it = redis_by_id.find(rid);
-		if (it == redis_by_id.end()) {
-			//DB 已无此行（已删除）→ 陈旧 member，ZREM
-			redis->ZRem(zkey, std::to_string(rid));
-			continue;
-		}
-		auto& m = it->second;
-		bool undeliverable = (m->delivery_status != DeliveryStatus::Pending)
-			|| (m->msg_type == static_cast<int>(ChatMsgType::PIC) && m->status == MsgStatus::UN_UPLOAD);
-		if (undeliverable) {
-			redis->ZRem(zkey, std::to_string(rid));
-			continue;
-		}
-		deliverable_from_redis.push_back(m);
-	}
-
-	//3) MySQL GetPendingMessages(uid, cursor, limit)：DAO 内部多取 1 条供 has_more
-	//   MySQL 是完整真值：delivery_status=0 且排除 PIC/UN_UPLOAD
-	auto mysql_msgs = mysql->GetPendingMessages(uid, after_message_id, limit);
-
-	//4) 并集 deliverable_from_redis + mysql_msgs，按 message_id 去重升序
-	std::map<int, std::shared_ptr<ChatMessage>> union_map;
-	for (auto& m : deliverable_from_redis) {
-		union_map[m->message_id] = m;
-	}
-	for (auto& m : mysql_msgs) {
-		union_map[m->message_id] = m;
-	}
-	std::vector<std::shared_ptr<ChatMessage>> candidates;
-	candidates.reserve(union_map.size());
-	for (auto& kv : union_map) {
-		candidates.push_back(kv.second);
-	}
-
-	//5) 缺失 Redis ID 的 DB pending → ZAdd+Expire 回填（失败不影响响应）
-	bool backfilled = false;
-	for (auto& m : mysql_msgs) {
-		if (redis_all_ids.find(m->message_id) == redis_all_ids.end()) {
-			std::string mid = std::to_string(m->message_id);
-			if (redis->ZAdd(zkey, m->message_id, mid)) {
-				backfilled = true;
-			}
-		}
-	}
-	if (backfilled) {
-		redis->Expire(zkey, ttl);
-	}
-
-	//6) 序列化：以 dump() 后 UTF-8 byte 数为准受 PullMaxBytes 上限，条数 limit 也是上限。
-	//   逐条构造候选 response；任何候选（含第一条）只要令 tentative response 超 PullMaxBytes
-	//   就永不 append，byte_stopped=true 并 break。绝不“始终至少包含第一条以推进 cursor”——
-	//   那会让单条超限消息越过上限、response 被 CSession::Send 的 short 长度截断后客户端卡死。
-	json rsp;
-	rsp["error"] = ErrorCodes::Success;
-	rsp["messages"] = json::array();
-	rsp["next_message_id"] = after_message_id;
-	rsp["has_more"] = true;
-
-	std::vector<int> included_ids;
-	bool byte_stopped = false;
-	int oversized_message_id = 0;
-	std::size_t oversized_bytes = 0;
-	for (auto& m : candidates) {
-		if (static_cast<int>(included_ids.size()) >= limit) {
-			break; //count limit reached
-		}
-		json env = BuildMessageEnvelope(m);
-		//tentative 测量：has_more 取最长 true 以留余量
-		json tent = rsp;
-		tent["messages"].push_back(env);
-		tent["next_message_id"] = m->message_id;
-		tent["has_more"] = true;
-		std::size_t tent_bytes = tent.dump().size();
-		if (tent_bytes > static_cast<std::size_t>(pull_max_bytes)) {
-			//加入本条会超限 → 永不 append（含第一条），记录后停止
-			byte_stopped = true;
-			oversized_message_id = m->message_id;
-			oversized_bytes = tent_bytes;
-			break;
-		}
-		//commit
-		rsp["messages"].push_back(env);
-		included_ids.push_back(m->message_id);
-	}
-
-	//病态情形：候选非空但首条即超 PullMaxBytes（included_ids 仍为空）。
-	//不得推进 cursor 却不投递任何消息：返回显式非循环错误 RPCFailed，cursor 不动、不 ACK、has_more=false。
-	if (included_ids.empty() && !candidates.empty()) {
-		std::cout << "PullOfflineMsg oversized first message, uid=" << uid
-			<< " message_id=" << oversized_message_id
-			<< " bytes=" << oversized_bytes
-			<< " pull_max_bytes=" << pull_max_bytes << std::endl;
-		json err_rsp;
-		err_rsp["error"] = ErrorCodes::RPCFailed;
-		err_rsp["messages"] = json::array();
-		err_rsp["next_message_id"] = after_message_id;
-		err_rsp["has_more"] = false;
-		session->Send(err_rsp.dump(), ID_PULL_OFFLINE_MSG_RSP);
+	//DAO 多取一条供 has_more 判断；失败不能当作空页（会让客户端误判已同步到最新）
+	std::vector<SyncedMessage> rows;
+	if (!MysqlMgr::GetInstance()->GetMessagesAfterSyncSeq(uid, after_sync_seq, limit, rows)) {
+		reject(ErrorCodes::MESSAGE_STORE_FAILED);
 		return;
 	}
 
-	//has_more 覆盖：byte 提前停止、count 上限、DB/Redis 多取 1 条后仍有剩余候选
-	bool has_more = byte_stopped || (candidates.size() > included_ids.size());
-	int next_message_id = included_ids.empty() ? after_message_id : included_ids.back();
-	rsp["next_message_id"] = next_message_id;
+	bool has_more = static_cast<int>(rows.size()) > limit;
+	if (has_more) {
+		rows.pop_back();  // 丢掉第 limit+1 条，下页从 next_sync_seq 再取
+	}
+
+	json rsp;
+	rsp["error"] = ErrorCodes::Success;
+	rsp["messages"] = json::array();
+	//空页 next_sync_seq 保持 after_sync_seq；非空页为本页最后一条的 sync_seq
+	std::uint64_t next_sync_seq = after_sync_seq;
+	for (auto& row : rows) {
+		json env = BuildMessageEnvelope(row.msg);
+		env["sync_seq"] = std::to_string(row.sync_seq);
+		rsp["messages"].push_back(env);
+		next_sync_seq = row.sync_seq;
+	}
+	rsp["next_sync_seq"] = std::to_string(next_sync_seq);
 	rsp["has_more"] = has_more;
 
-	session->Send(rsp.dump(), ID_PULL_OFFLINE_MSG_RSP);
+	session->Send(rsp.dump(), ID_SYNC_MESSAGE_RSP);
 }
 

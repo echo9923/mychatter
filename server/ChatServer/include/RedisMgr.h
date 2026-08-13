@@ -51,15 +51,6 @@ public:
 	/// 检查指定键是否存在
 	bool ExistsKey(const std::string &key);
 
-	/// 向有序集合添加成员及其分值（二进制安全，ZADD key score member）
-	bool ZAdd(const std::string& key, long long score, const std::string& member);
-	/// 按分值排他下界到 +inf 取出有序集合成员，最多 limit 条（ZRANGEBYSCORE key (min +inf LIMIT 0 limit）
-	bool ZRangeByScore(const std::string& key, long long exclusive_min, int limit, std::vector<std::string>& members);
-	/// 从有序集合移除指定成员（二进制安全，ZREM key member）
-	bool ZRem(const std::string& key, const std::string& member);
-	/// 为键设置过期时间，单位秒（EXPIRE key seconds）
-	bool Expire(const std::string& key, int seconds);
-
 	/// 关闭Redis连接池并释放所有连接
 	void Close() {
 		_con_pool->Close();

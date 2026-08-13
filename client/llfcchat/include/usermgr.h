@@ -38,16 +38,12 @@ public:
     void AddFriend(std::shared_ptr<AuthRsp> auth_rsp);
     void AddFriend(std::shared_ptr<AuthInfo> auth_info);
     std::shared_ptr<UserInfo> GetFriendById(int uid);
-    int GetLastChatThreadId();
-    void SetLastChatThreadId(int id);
+    qint64 GetLastChatThreadId();
+    void SetLastChatThreadId(qint64 id);
     void AddChatThreadData(std::shared_ptr<ChatThreadData> chat_thread_data, int other_uid);
-    int GetThreadIdByUid(int uid);
-    std::shared_ptr<ChatThreadData> GetChatThreadByThreadId(int thread_id);
+    qint64 GetThreadIdByUid(int uid);
+    std::shared_ptr<ChatThreadData> GetChatThreadByThreadId(qint64 thread_id);
     std::shared_ptr<ChatThreadData> GetChatThreadByUid(int uid);
-
-    //获取当前正在加载的聊天数据。
-    std::shared_ptr<ChatThreadData> GetCurLoadData();
-    std::shared_ptr<ChatThreadData> GetNextLoadData();
 
     //将md5和文件信息关联起来
     void AddUploadFile(QString name, std::shared_ptr<QFileInfo> file_info);
@@ -80,15 +76,13 @@ private:
     QString _token;
     int _contact_loaded;
     //建立会话id到数据的映射关系
-    QMap<int, std::shared_ptr<ChatThreadData>> _chat_map;
+    QMap<qint64, std::shared_ptr<ChatThreadData>> _chat_map;
     //聊天会话id列表
-    std::vector<int> _chat_thread_ids;
-    //记录已经加载聊天列表的会话索引
-    int _cur_load_chat_index;
+    std::vector<qint64> _chat_thread_ids;
     //上次会话的id
-    int _last_chat_thread_id;
+    qint64 _last_chat_thread_id;
     //缓存其他用户uid和聊天的thread_id的映射关系。
-    QMap<int, int> _uid_to_thread_id;
+    QMap<int, qint64> _uid_to_thread_id;
 
     std::mutex _mtx;
 

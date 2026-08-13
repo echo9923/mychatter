@@ -95,7 +95,7 @@ bool MysqlDao::UpdateHeadInfo(int uid, const std::string& icon)
 	return false;
 }
 
-bool MysqlDao::UpdateUploadStatus(int chat_message_id)
+bool MysqlDao::UpdateUploadStatusWithSync(long long chat_message_id, int sender_id, int recv_id)
 {
 	auto con = pool_->getConnection();
 	if (!con) {
@@ -107,8 +107,9 @@ bool MysqlDao::UpdateUploadStatus(int chat_message_id)
 
 	auto& conn = con->_con;
 	try {
-		// 连接池中被 AddFriend 等方法留下 autocommit=false 的连接，必须显式恢复。
-		conn->setAutoCommit(true);
+		// 状态迁移与同步行写入同生共死：显式事务（连接池存在 autocommit 残留，必须显式关闭）
+		conn->setAutoCommit(false);
+
 		std::string update_sql =
 			"UPDATE chat_message SET status = ? WHERE message_id = ?;";
 
@@ -120,20 +121,33 @@ bool MysqlDao::UpdateUploadStatus(int chat_message_id)
 
 		// 检查是否有行被更新（可选）
 		if (affected_rows == 0) {
+			conn->rollback();
 			std::cerr << "No chat message found with chat_message_id: " << chat_message_id << std::endl;
 			return false;
 		}
 
+		// 上传完成点才补双方同步行（此前 UN_UPLOAD 图片对增量同步不可见）；
+		// INSERT IGNORE 使续传重复完成天然幂等
+		std::unique_ptr<sql::PreparedStatement> sync_stmt(conn->prepareStatement(
+			"INSERT IGNORE INTO user_message_sync (uid, message_id) VALUES (?, ?), (?, ?)"
+		));
+		sync_stmt->setInt(1, sender_id);
+		sync_stmt->setInt64(2, chat_message_id);
+		sync_stmt->setInt(3, recv_id);
+		sync_stmt->setInt64(4, chat_message_id);
+		sync_stmt->executeUpdate();
+
+		conn->commit();
 		return true;
 	}
 	catch (sql::SQLException& e) {
-		std::cerr << "SQLException in UpdateUploadStatus: " << e.what() << std::endl;
+		std::cerr << "SQLException in UpdateUploadStatusWithSync: " << e.what() << std::endl;
+		conn->rollback();
 		return false;
 	}
-	return false;
 }
 
-std::shared_ptr<ChatMessage> MysqlDao::GetChatMsgById(int message_id) {
+std::shared_ptr<ChatMessage> MysqlDao::GetChatMsgById(long long message_id) {
 	auto con = pool_->getConnection();
 	if (!con) {
 		return nullptr;

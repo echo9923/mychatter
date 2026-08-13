@@ -21,7 +21,7 @@ function(llfc_find_server_dependencies)
 endfunction()
 
 function(llfc_find_client_dependencies)
-  find_package(Qt5 CONFIG REQUIRED COMPONENTS Core Gui Network Widgets)
+  find_package(Qt5 CONFIG REQUIRED COMPONENTS Core Gui Network Widgets Sql)
 endfunction()
 
 function(llfc_apply_msvc_defaults target_name)

@@ -17,12 +17,12 @@ bool MysqlMgr::UpdateUserIcon(int uid, const std::string& icon) {
 	return _dao.UpdateHeadInfo(uid, icon);
 }
 
-bool MysqlMgr::UpdateUploadStatus(int chat_messag_id)
+bool MysqlMgr::UpdateUploadStatusWithSync(long long chat_messag_id, int sender_id, int recv_id)
 {
-	return _dao.UpdateUploadStatus(chat_messag_id);
+	return _dao.UpdateUploadStatusWithSync(chat_messag_id, sender_id, recv_id);
 }
 
-std::shared_ptr<ChatMessage> MysqlMgr::GetChatMsgById(int message_id)
+std::shared_ptr<ChatMessage> MysqlMgr::GetChatMsgById(long long message_id)
 {
 	return _dao.GetChatMsgById(message_id);
 }

@@ -12,6 +12,7 @@
 #include <QListWidgetItem>
 #include "loadingdlg.h"
 #include "tcpmgr.h"
+#include "localchatstore.h"
 namespace Ui {
 class ChatDialog;
 }
@@ -23,8 +24,8 @@ class ChatDialog : public QDialog
 public:
     explicit ChatDialog(QWidget *parent = nullptr);
     ~ChatDialog();
+    //秒开：从本地 SQLite 加载会话列表，后台由 ChatSyncManager 增量刷新
     void loadChatList();
-    void loadChatMsg();
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override ;
 
@@ -32,13 +33,20 @@ protected:
     void LoadHeadIcon(QString avatarPath, QLabel* icon_label, QString file_name, QString req_type);
 private:
     void showLoadingDlg(bool show = true);
-    void AddLBGroup(StateWidget* lb); 
+    void AddLBGroup(StateWidget* lb);
     void ClearLabelState(StateWidget* lb);
     void loadMoreConUser();
-    void SetSelectChatItem(int thread_id = 0);
-    void SetSelectChatPage(int thread_id = 0);
+    void SetSelectChatItem(qint64 thread_id = 0);
+    void SetSelectChatPage(qint64 thread_id = 0);
     //§6.4 抽取自 slot_create_private_chat：为 thread 不存在时创建 ChatThreadData + 列表项
-    QListWidgetItem* createPrivateChatItem(int other_id, int thread_id);
+    QListWidgetItem* createPrivateChatItem(int other_id, qint64 thread_id);
+    //本地消息 DTO → 窗口消息对象（文本/图片）
+    std::shared_ptr<ChatDataBase> buildChatData(const LocalMessageDTO& dto);
+    //只对实际插入的消息上屏（insertedIds 去重保证推送与同步只展示一次）
+    void displayInsertedMessages(const QList<LocalMessageDTO>& msgs,
+        const QList<qint64>& insertedIds);
+    //本地不足时发 1029 拉更早历史（before_message_id 十进制字符串）
+    void requestOlderHistory(qint64 thread_id, qint64 oldest_loaded);
     Ui::ChatDialog *ui;
     bool _b_loading;
     QList<StateWidget*> _lb_list;
@@ -47,12 +55,11 @@ private:
     ChatUIMode _state;
     QWidget* _last_widget;
     //chat_thred_id和对应的item的映射关系。
-    QMap<int, QListWidgetItem*>  _chat_thread_items;
-    int _cur_chat_thread_id;
+    QMap<qint64, QListWidgetItem*>  _chat_thread_items;
+    qint64 _cur_chat_thread_id;
     QTimer * _timer;
     LoadingDlg* _loading_dlg;
-    std::shared_ptr<ChatThreadData> _cur_load_chat;
- 
+
 public slots:
     void slot_side_chat();
     void slot_side_contact();
@@ -70,18 +77,22 @@ public slots:
     void slot_item_clicked(QListWidgetItem *item);
     void slot_text_chat_msg(std::shared_ptr<TextChatData> msg);
     void slot_img_chat_msg(std::shared_ptr<ImgChatData> imgchat);
-    //§6.2 纠错：TCP 线程解析 pending DTO → GUI 线程重建未响应 bubble（文本）与 MsgInfo+QPixmap（图片）
-    void slot_replay_pending(std::vector<TextReplayDTO> texts, std::vector<ImageReplayDTO> images);
-    void slot_load_chat_thread(bool load_more, int last_thread_id,
-        std::vector<std::shared_ptr<ChatThreadInfo>> chat_threads);
+    void slot_create_private_chat(int uid, int other_id, qint64 thread_id);
 
-    void slot_create_private_chat(int uid, int other_id, int thread_id);
-
-    void slot_load_chat_msg(int thread_id, int msg_id, bool load_more, 
+    void slot_load_chat_msg(qint64 thread_id, qint64 msg_id, bool load_more,
         std::vector<std::shared_ptr<ChatDataBase>> msglists);
 
-    void slot_add_chat_msg(int thread_id, std::shared_ptr<TextChatData> msg);
-    void slot_add_img_msg(int thread_id, std::shared_ptr<ImgChatData> img_msg);
+    //—— 本地库结果信号（提交成功后才更新 UI）——
+    void slot_conversations_loaded(bool ok, QList<LocalConversationDTO> convs);
+    void slot_recent_messages_loaded(bool ok, qint64 threadId, QList<LocalMessageDTO> msgs,
+        bool historyComplete, qint64 oldestLoadedMessageId);
+    void slot_history_page_inserted(bool ok, qint64 threadId);
+    void slot_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs, QList<qint64> insertedIds);
+    void slot_sync_page_applied(bool ok, qint64 newSyncSeq, QList<LocalMessageDTO> msgs,
+        QList<qint64> insertedIds);
+    void slot_send_confirmed(bool ok, LocalMessageDTO dto);
+    void slot_send_failed_marked(bool ok, LocalMessageDTO dto);
+    void slot_image_stage_updated(bool ok, LocalMessageDTO dto);
     void slot_reset_icon(QString path);
     void slot_update_upload_progress(std::shared_ptr<MsgInfo> msg_info);
     void slot_update_download_progress(std::shared_ptr<MsgInfo> msg_info);

@@ -1,5 +1,6 @@
-// im_mysql.h — mysql-concpp wrapper for chat_message verification and teardown
-// (plan Verification.6). Single short-lived connection per scenario.
+// im_mysql.h — mysql-concpp wrapper for chat_message / user_message_sync
+// verification and teardown (plan Verification.6).
+// Single short-lived connection per scenario.
 #pragma once
 
 #include <cstdint>
@@ -16,8 +17,8 @@
 namespace imt {
 
 struct ChatMessageRow {
-	int         message_id = 0;
-	int         thread_id  = 0;
+	std::int64_t message_id = 0;   // chat_message.message_id 为 bigint UNSIGNED
+	std::int64_t thread_id  = 0;
 	int         sender_id  = 0;
 	int         recv_id    = 0;
 	std::string unique_id;
@@ -27,6 +28,12 @@ struct ChatMessageRow {
 	int         msg_type        = 0;   // ChatMsgType (TEXT=0, PIC=1 ...)
 	std::uint64_t content_size  = 0;
 	int         delivery_status = 0;   // 0=Pending, 1=Acked
+};
+
+// user_message_sync 的一行（增量同步游标表）。
+struct SyncRow {
+	std::uint64_t sync_seq   = 0;
+	std::uint64_t message_id = 0;
 };
 
 class Mysql {
@@ -56,7 +63,7 @@ public:
 	                                         int delivery_status);
 
 	// All rows for a specific message_id (single-row expected).
-	std::vector<ChatMessageRow> QueryByMessageId(int message_id);
+	std::vector<ChatMessageRow> QueryByMessageId(std::int64_t message_id);
 
 	// All chat_message rows for recv_id with a given delivery_status.
 	std::vector<ChatMessageRow> QueryByRecvIdAndDelivery(int recv_id,
@@ -65,6 +72,28 @@ public:
 	// Delete every chat_message row whose unique_id matches the LIKE pattern.
 	// Returns rows affected, or -1 on error.
 	long long DeleteByUniqueIdLike(const std::string& pattern);
+
+	// ---- user_message_sync 断言辅助（增量同步） ------------------------------
+
+	// 某 uid 在 after_seq 之后的 sync 行，按 sync_seq 升序；limit<=0 不限。
+	std::vector<SyncRow> QuerySyncRows(std::int64_t uid, std::uint64_t after_seq,
+	                                   int limit);
+
+	// 某 uid 当前最大 sync_seq（无行返回 0，对应 bootstrap checkpoint）。
+	std::uint64_t MaxSyncSeq(std::int64_t uid);
+
+	// COUNT(*) of sync rows whose message belongs to unique_id LIKE pattern.
+	long long CountSyncRowsByUniqueIdLike(const std::string& pattern);
+
+	// 删除 unique_id 匹配 LIKE 模式的消息对应的 sync 行（需先于
+	// DeleteByUniqueIdLike 调用，否则 JOIN 不到）。返回受影响行数，-1 出错。
+	long long DeleteSyncRowsByUniqueIdLike(const std::string& pattern);
+
+	// chat_message 当前 AUTO_INCREMENT（big-ids 场景结束后恢复用），-1 出错。
+	long long GetChatMessageAutoIncrement();
+
+	// ALTER TABLE chat_message AUTO_INCREMENT = value。
+	bool SetChatMessageAutoIncrement(std::int64_t value);
 
 private:
 	sql::Connection* con_ = nullptr;  // owned, freed in Close()

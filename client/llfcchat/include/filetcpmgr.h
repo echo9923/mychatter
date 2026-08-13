@@ -75,6 +75,8 @@ signals:
      void sig_continue_download_file(QString unique_name);
      void sig_update_download_progress(std::shared_ptr<MsgInfo>);
      void sig_download_finish(std::shared_ptr<MsgInfo>,QString file_path);
+     //聊天图片上传收全（1038/1044 完成分支），OutboxDispatcher 据此 confirmImageSent
+     void sig_chat_img_upload_done(QString unique_name);
      //3.2 Resource 登录(1054)成功信号
      void sig_resource_login_success();
      //3.2 Resource 登录(1054)失败信号（携带用户可见错误）

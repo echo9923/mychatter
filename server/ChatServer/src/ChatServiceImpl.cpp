@@ -152,13 +152,14 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 	//统一顶层拍平 live envelope（计划5.5，单条化后与 1039 图片通知同构）：
 	//textmsg proto 字段携带 unique_id/msg_id/msgcontent/chat_time，thread_id/fromuid/touid
 	//来自 req，msg_type=TEXT/status=UN_READ/content_size="0" 为常量。
+	//message_id/thread_id 一律十进制字符串，避免 Qt JSON number 对 64 位值丢精度。
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["fromuid"] = request->fromuid();
 	rtvalue["touid"] = request->touid();
-	rtvalue["thread_id"] = request->thread_id();
+	rtvalue["thread_id"] = std::to_string(request->thread_id());
 	const auto& msg = request->textmsg();
-	rtvalue["message_id"] = msg.msg_id();
+	rtvalue["message_id"] = std::to_string(msg.msg_id());
 	rtvalue["unique_id"] = msg.unique_id();
 	rtvalue["msg_type"] = static_cast<int>(ChatMsgType::TEXT);
 	rtvalue["content"] = msg.msgcontent();

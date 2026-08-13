@@ -10,8 +10,6 @@
 #include <memory>
 #include <QThread>
 #include <QQueue>
-#include <QTimer>
-#include <QDateTime>
 
 class TcpThread:public std::enable_shared_from_this<TcpThread> {
 public:
@@ -21,46 +19,8 @@ private:
     QThread* _tcp_thread;
 };
 
-//持久化待重传请求（§6.1，单条化：一条 pending = 一条消息 = 一个 unique_id）
-struct PendingRequest {
-    ReqId id;                  // 1017 文本 / 1035 图片
-    QByteArray payload;        // 原始 JSON payload
-    QString unique_id;         // 客户端唯一标识（幂等键）
-    qint64 retry_delay_ms;     // 当前退避间隔（倍增上限 30s）
-    qint64 next_send_epoch_ms; // 下次发送时刻（epoch ms）
-};
-
-//§6.5 recipient ACK 重传状态（每个已收到但服务端未确认的 message_id）
-struct AckPending {
-    qint64 retry_delay_ms;     // 当前退避间隔（倍增上限同 sender）
-    qint64 next_send_epoch_ms; // 下次发送时刻（epoch ms）
-};
-
-//§6.2 纠错：跨线程 replay DTO（TCP 线程解析内存 pending 构造，queued 传到 GUI 线程）
-//禁止携带裸指针；仅含值类型字段。文本 pending 摘要（单条化：一个 DTO 一条消息）
-struct TextReplayDTO {
-    int thread_id;
-    int fromuid;
-    QString unique_id;    // 仍 pending 的 unique_id
-    QString content;      // 文本内容
-};
-//图片 pending 摘要
-struct ImageReplayDTO {
-    int thread_id;
-    int fromuid;              // sender
-    int touid;                // receiver
-    QString name;             // 文件唯一名（UserMgr::AddTransFile key）
-    QString md5;
-    qint64 content_size;
-    QString text_or_url;      // 本地文件路径
-    QString unique_id;
-};
-
-Q_DECLARE_METATYPE(TextReplayDTO)
-Q_DECLARE_METATYPE(ImageReplayDTO)
-Q_DECLARE_METATYPE(std::vector<TextReplayDTO>)
-Q_DECLARE_METATYPE(std::vector<ImageReplayDTO>)
-
+//TcpMgr 回归纯传输：帧收发 + initHandlers 分发 + 公共 sendData 通道。
+//可靠语义（重传/ACK/同步）全部移交 OutboxDispatcher/ChatSyncManager。
 class TcpMgr:public QObject, public Singleton<TcpMgr>,
         public std::enable_shared_from_this<TcpMgr>
 {
@@ -68,12 +28,6 @@ class TcpMgr:public QObject, public Singleton<TcpMgr>,
 public:
    ~ TcpMgr();
     void CloseConnection();
-    //可靠发送：payload + unique_id 进入持久 pending，按退避无限重传直到 1018/1036 或冲突（§6.1）
-    void SendReliableChat(ReqId id, QByteArray payload, const QString& unique_id);
-    //§6.2 纠错：仅 emit queued signal，TCP 线程 slot 解析 pending→DTO→emit 给 GUI 线程重建
-    void StartPendingReplay();
-    //§6.6：仅 emit queued signal，TCP 线程 slot 启动离线 pull 循环
-    void StartOfflinePull();
     void ReconnectChat(const QString& host, quint16 port);
 
 private:
@@ -84,8 +38,13 @@ private:
     void handleMsg(ReqId id, int len, QByteArray data);
     void finishReconnectFailure();
     void CreatePlaceholderImgMsgL(QString img_path_str, QString msg_content,
-        int msg_id, int thread_id, int send_uid, int recv_id, int status, QString chat_time,
+        qint64 msg_id, qint64 thread_id, int send_uid, int recv_id, int status, QString chat_time,
         std::vector<std::shared_ptr<ChatDataBase>>& chat_datas);
+    //统一 envelope 分发（1019/1039 共用）：文本走 sig_text_chat_msg，图片走 sig_img_chat_msg+下载
+    void dispatchIncomingMessage(qint64 message_id, const QString& unique_id,
+        qint64 thread_id, int fromuid, int touid, int msg_type,
+        const QString& content, qint64 content_size,
+        const QString& chat_time, int status);
     QTcpSocket _socket;
     QString _host;
     uint16_t _port;
@@ -106,70 +65,19 @@ private:
     bool _manual_close;
     bool _reconnecting;
     bool _disconnect_notified;
-    //—— 可靠重传状态（全部只在 TCP 线程访问）——
-    QTimer* _retry_timer;                 // 250ms 扫描定时器，parent 到 this
-    QList<PendingRequest> _pending_requests;
-    int _delivery_uid;                    // 当前加载 pending 的 uid（0=未加载）
-    qint64 _retry_initial_ms;             // 初始退避（配置 RequestRetryInitialMs）
-    qint64 _retry_max_ms;                 // 退避上限（配置 RequestRetryMaxMs）
-    //—— §6.5 recipient ACK 状态（全部只在 TCP 线程访问）——
-    QSet<int> _pending_ui_ack;            // 已收到、待 ChatDialog 确认 UI 插入的 message_id
-    QMap<int, AckPending> _pending_ack;   // 已确认 UI、待服务端 1050 回复的 message_id
-    qint64 _ack_retry_initial_ms;         // ACK 初始退避（配置 AckRetryInitialMs）
-    //—— §6.6 离线 pull 状态（全部只在 TCP 线程访问）——
-    QTimer* _offline_pull_timer;          // 定时拉取定时器，parent 到 this
-    int _offline_pull_interval_ms;        // 配置 OfflinePullIntervalMs
-    int _offline_pull_batch;              // 配置 OfflinePullBatch
-    //可靠重传内部方法（均在 TCP 线程执行）
-    void loadDeliveryConfig();
-    void addPendingRequest(ReqId id, QByteArray payload, const QString& unique_id);
-    void persistPendingRequests();
-    void restorePendingRequests(int uid);
-    void loadPendingFromDisk(int uid);
-    void removePendingByUniqueId(const QString& unique_id);
-    void handleTextConflict(const QString& conflict_id);
-    void handleImageConflict(const QString& conflict_id);
-    //§6.4 统一 envelope 分发（1019/1039/1052 共用）：文本走 sig_text_chat_msg，图片走 sig_img_chat_msg+下载
-    void dispatchIncomingMessage(int message_id, const QString& unique_id,
-        int thread_id, int fromuid, int touid, int msg_type,
-        const QString& content, qint64 content_size,
-        const QString& chat_time, int status);
-    //3.2 一次性净化旧 QSettings 离线队列中的 token 字段（迁移到 auth_payload_version=2）
-    void sanitizeLegacyDeliverySettings();
-    //§6.5 ACK 批量发送（取出到期项，发 1049，更新退避，持久化）
-    void flushPendingAcks();
-    void persistAckPending();
-    void loadAckPendingFromDisk(int uid);
 public slots:
     void slot_tcp_close();
     void slot_tcp_connect(std::shared_ptr<ServerInfo> si);
     void slot_reconnect_chat(QString host, quint16 port);
     void slot_send_data(ReqId reqId, QByteArray data);
-    void slot_send_reliable_chat(ReqId id, QByteArray payload, QString unique_id);
-    void slot_retry_timeout();
-    void slot_start_pending_replay();
-    void slot_replay_done(QStringList failed_unique_ids);
-    void slot_start_offline_pull();
-    void slot_offline_pull_timeout();
-    void slot_msg_processed(int message_id);
 signals:
     void sig_close();
     void sig_con_success(bool bsuccess);
     void sig_reconnect_chat(QString host, quint16 port);
     void sig_reconnect_finished(bool success);
     void sig_send_data(ReqId reqId, QByteArray data);
-    //线程边界信号：公有 API 只 emit 此信号，slot_send_reliable_chat 在 TCP 线程执行
-    void sig_send_reliable_chat(ReqId id, QByteArray payload, QString unique_id);
-    //§6.2：公有 StartPendingReplay 只 emit 此信号，slot_start_pending_replay 在 TCP 线程执行
-    void sig_start_pending_replay();
-    //§6.2 纠错：TCP 线程解析 pending → DTO，queued 到 GUI 线程重建 bubble/MsgInfo/QPixmap
-    void sig_replay_pending(std::vector<TextReplayDTO> texts, std::vector<ImageReplayDTO> images);
-    //§6.2 纠错：GUI 重建完成后回执，queued 回 TCP 线程（failed_unique_ids=文件缺失需删除的项）
-    void sig_replay_result(QStringList failed_unique_ids);
-    //§6.6：公有 StartOfflinePull 只 emit 此信号，slot_start_offline_pull 在 TCP 线程执行
-    void sig_start_offline_pull();
-    //§6.5：ChatDialog 插入/duplicate 后 emit，queued 回 TCP 线程触发 1049 ACK
-    void sig_chat_msg_processed(int message_id);
+    //1006 登录/重连成功：OutboxDispatcher/ChatSyncManager 启动点
+    void sig_chat_login_ready();
     void sig_swich_chatdlg();
     //3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource（携带 ServerInfo）
     void sig_connect_resource(std::shared_ptr<ServerInfo> si);
@@ -182,15 +90,23 @@ signals:
     void sig_text_chat_msg(std::shared_ptr<TextChatData> msg);
     void sig_notify_offline();
     void sig_connection_closed();
-    void sig_load_chat_thread(bool load_more, int last_thread_id, 
+    void sig_load_chat_thread(bool load_more, qint64 last_thread_id,
         std::vector<std::shared_ptr<ChatThreadInfo>> chat_list);
-    void sig_create_private_chat(int uid, int other_id, int thread_id);
-    void sig_load_chat_msg(int thread_id, int message_id, bool load_more,
+    void sig_create_private_chat(int uid, int other_id, qint64 thread_id);
+    void sig_load_chat_msg(qint64 thread_id, qint64 message_id, bool load_more,
         std::vector<std::shared_ptr<ChatDataBase>> msg_list);
-
-    void sig_chat_msg_rsp(int thread_id, std::shared_ptr<TextChatData> msg);
-    void sig_chat_img_rsp(int thread_id, std::shared_ptr<ImgChatData> msg_list);
     void sig_img_chat_msg(std::shared_ptr<ImgChatData> msg_list);
+    //—— 领域转发信号：1018/1036/1050 → OutboxDispatcher，1052 → ChatSyncManager ——
+    //1018 文本回包（含 MESSAGE_CONFLICT/transient，由 Dispatcher 判定）
+    void sig_text_msg_rsp_forward(int error, QString unique_id, qint64 message_id,
+        QString chat_time);
+    //1036 图片元数据回包（含 MESSAGE_CONFLICT/transient，由 Dispatcher 判定）
+    void sig_img_msg_meta_rsp_forward(int error, QString unique_id, QString unique_name,
+        qint64 message_id, qint64 thread_id, qint64 fromuid, qint64 touid);
+    //1050 ACK 回包（message_ids 按字符串解析转 qint64）
+    void sig_delivery_ack_rsp_forward(int error, QList<qint64> message_ids);
+    //1052 增量同步回包（原始 JSON 对象交 ChatSyncManager）
+    void sig_sync_message_rsp(QJsonObject rsp);
 };
 
 #endif // TCPMGR_H

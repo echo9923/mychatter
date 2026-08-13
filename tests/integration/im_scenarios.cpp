@@ -1,4 +1,4 @@
-// im_scenarios.cpp — implementation of the four IM integration scenarios.
+// im_scenarios.cpp — implementation of the IM integration scenarios.
 //
 // Deterministic assertions (plan Verification.6):
 //   gate-smoke: 32 concurrent /get_test + /user_login all yield complete HTTP
@@ -13,6 +13,14 @@
 //   dedup:      pipelined re-send of an identical (sender_id,unique_id) yields the
 //               same message_id with exactly one DB row; a same-key different-
 //               content send returns MESSAGE_CONFLICT and leaves the original row.
+//   offline:    离线期间产生的消息，重连后经 1051/1052 增量同步按 sync_seq 升序补齐。
+//   lost-ack:   1050 丢失后重发同一 1049，服务端幂等成功（重复 ACK 不产生错误）。
+//   pull-bytes: 多页同步：超过一页的消息量逐页 after_sync_seq 推进，无遗漏无重复、
+//               sync_seq 严格递增、has_more 正确。
+//   sync-bootstrap: {bootstrap:true} 返回 checkpoint；checkpoint 之后的消息全部
+//               同步到、之前的不推。
+//   big-ids:    AUTO_INCREMENT 调到 2^32 以上后，>32 位 message_id 以十进制字符串
+//               在 1018/1052 全链路无损、同步游标正常推进（结束恢复原值）。
 #include "im_scenarios.h"
 
 #include <algorithm>
@@ -71,13 +79,13 @@ static std::string RunTag() {
 
 // Delete every chat_message row + Redis key the scenario may have created.
 // Only touches keys/rows tied to the fixture uids and the "imtest-" prefix.
+// user_message_sync 行需先按 unique_id JOIN 删除，再删 chat_message 本体。
 //
 // The per-user login token lives in utoken_<uid> (written by Status on every
 // password login, TTL 86400); clear it so each scenario starts clean.
 static void CleanupFootprint(Redis& redis, Mysql& mysql) {
+	mysql.DeleteSyncRowsByUniqueIdLike("imtest-%");
 	mysql.DeleteByUniqueIdLike("imtest-%");
-	redis.FlushZSet("offline_msg:" + std::to_string(SENDER_UID));
-	redis.FlushZSet("offline_msg:" + std::to_string(RECEIVER_UID));
 	for (int uid : { SENDER_UID, RECEIVER_UID }) {
 		const std::string u = std::to_string(uid);
 		redis.Del(UserTokenKey(uid));
@@ -224,16 +232,121 @@ static bool LoginUserPinned(TcpClient& c, int uid, Redis& redis,
 	return false;
 }
 
-// Build a 1017 body carrying a single text message (单条化：content/unique_id 顶层平铺).
-static std::string BuildTextReq(int fromuid, int touid, int thread_id,
+// Build a 1017 body carrying a single text message (单条化：content/unique_id 顶层平铺;
+// 协议字符串化：thread_id 为十进制字符串).
+static std::string BuildTextReq(int fromuid, int touid, std::int64_t thread_id,
                                 const std::string& content, const std::string& unique_id) {
 	json j;
 	j["fromuid"] = fromuid;
 	j["touid"]   = touid;
-	j["thread_id"] = thread_id;
+	j["thread_id"] = ToIdStr(thread_id);
 	j["content"]   = content;
 	j["unique_id"] = unique_id;
 	return j.dump();
+}
+
+// json 对象中按十进制字符串读取 id 字段（message_id/thread_id/sync_seq/
+// next_sync_seq/checkpoint）；缺省或非字符串返回 dfl。
+static std::int64_t JsonIdStr(const json& j, const char* key, std::int64_t dfl = 0) {
+	if (!j.is_object() || !j.contains(key) || !j[key].is_string()) return dfl;
+	return ParseIdStr(j[key].get<std::string>(), dfl);
+}
+
+// Build a 1049 delivery-ACK body: {"uid":<receiver>,"message_ids":["<id>",...]}
+// （协议字符串化：message_ids 数组元素为十进制字符串）
+static std::string BuildAckReq(int uid, const std::vector<std::int64_t>& ids) {
+	json j;
+	j["uid"] = uid;
+	json arr = json::array();
+	for (std::int64_t id : ids) arr.push_back(ToIdStr(id));
+	j["message_ids"] = arr;
+	return j.dump();
+}
+
+// Build a 1051 incremental-sync body:
+//   {"uid":<uid>,"after_sync_seq":"<seq十进制字符串>","limit":<n>}
+static std::string BuildSyncReq(int uid, std::uint64_t after_sync_seq, int limit) {
+	json j;
+	j["uid"] = uid;
+	j["after_sync_seq"] = std::to_string(after_sync_seq);
+	j["limit"] = limit;
+	return j.dump();
+}
+
+// Build a 1051 bootstrap body: {"uid":<uid>,"bootstrap":true}
+static std::string BuildSyncBootstrapReq(int uid) {
+	json j;
+	j["uid"] = uid;
+	j["bootstrap"] = true;
+	return j.dump();
+}
+
+// 1052 增量同步响应的单条 envelope（共享约定：message_id/thread_id/sync_seq 为
+// 十进制字符串；fromuid/touid/msg_type/status 为数字；content_size/chat_time 维持字符串）。
+struct SyncEnvelope {
+	std::int64_t  message_id = 0;
+	std::int64_t  thread_id  = 0;
+	std::uint64_t sync_seq   = 0;
+	int fromuid = 0;
+	int touid   = 0;
+	int msg_type = -1;
+	int status   = -1;
+	std::string unique_id;
+	std::string content;
+	std::string md5;
+	std::string content_size;
+	std::string chat_time;
+};
+
+// Parse the messages array of a 1052 response into envelopes (order preserved).
+static std::vector<SyncEnvelope> ExtractSyncMessages(const json& j) {
+	std::vector<SyncEnvelope> out;
+	if (!j.is_object() || !j.contains("messages")) return out;
+	const auto& msgs = j["messages"];
+	if (!msgs.is_array()) return out;
+	for (const auto& m : msgs) {
+		SyncEnvelope e;
+		e.message_id = JsonIdStr(m, "message_id", 0);
+		e.thread_id  = JsonIdStr(m, "thread_id", 0);
+		e.sync_seq   = static_cast<std::uint64_t>(JsonIdStr(m, "sync_seq", 0));
+		e.fromuid  = m.value("fromuid", 0);
+		e.touid    = m.value("touid", 0);
+		e.msg_type = m.value("msg_type", -1);
+		e.status   = m.value("status", -1);
+		e.unique_id = m.value("unique_id", "");
+		e.content   = m.value("content", "");
+		e.md5       = m.value("md5", "");
+		e.content_size = m.value("content_size", "");
+		e.chat_time    = m.value("chat_time", "");
+		out.push_back(std::move(e));
+	}
+	return out;
+}
+
+// 发送 1051 增量同步请求并等待 1052；成功时填充 messages/next_sync_seq/has_more。
+static bool DoSyncPage(TcpClient& c, int uid, std::uint64_t after, int limit,
+                       std::vector<SyncEnvelope>& msgs, std::uint64_t& next_seq,
+                       bool& has_more) {
+	if (!c.Send(ID_SYNC_MESSAGE_REQ, BuildSyncReq(uid, after, limit))) return false;
+	Frame f;
+	if (!c.Wait(ID_SYNC_MESSAGE_RSP, 10000, &f)) return false;
+	auto j = ParseJson(f.body);
+	if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return false;
+	msgs = ExtractSyncMessages(j);
+	next_seq = static_cast<std::uint64_t>(JsonIdStr(j, "next_sync_seq", (std::int64_t)after));
+	has_more = j.value("has_more", false);
+	return true;
+}
+
+// 发送 1051 bootstrap 请求并等待 1052；成功时填充 checkpoint（max_seq 十进制串解析）。
+static bool DoSyncBootstrap(TcpClient& c, int uid, std::uint64_t& checkpoint) {
+	if (!c.Send(ID_SYNC_MESSAGE_REQ, BuildSyncBootstrapReq(uid))) return false;
+	Frame f;
+	if (!c.Wait(ID_SYNC_MESSAGE_RSP, 10000, &f)) return false;
+	auto j = ParseJson(f.body);
+	if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return false;
+	checkpoint = static_cast<std::uint64_t>(JsonIdStr(j, "checkpoint", 0));
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +455,7 @@ struct OrderSide {
 	int peer = 0;
 	int total = 0;
 	const std::unordered_map<std::string, int>* uid_to_idx = nullptr;
-	std::vector<int>        message_ids;   // canonical id by submission index
+	std::vector<std::int64_t> message_ids;  // canonical id by submission index
 	std::vector<long long>  seqs;          // global receipt sequence by index
 	std::vector<char>       received;
 	std::atomic<int>        collected{0};
@@ -362,9 +475,9 @@ static void OrderConsumer(OrderSide& s, std::atomic<int>& gseq, int deadline_ms)
 		if (f.type != ID_TEXT_CHAT_MSG_RSP) continue;  // drain 1019 etc.
 		auto j = ParseJson(f.body);
 		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { s.ok = false; return; }
-		//单条化：1018 成功响应为顶层拍平 envelope
+		//单条化：1018 成功响应为顶层拍平 envelope（message_id 为十进制字符串）
 		const std::string uid = j.value("unique_id", "");
-		const int mid = j.value("message_id", 0);
+		const std::int64_t mid = JsonIdStr(j, "message_id", 0);
 		if (uid.empty() || mid <= 0) { s.ok = false; return; }
 		auto it = s.uid_to_idx->find(uid);
 		if (it == s.uid_to_idx->end()) continue;
@@ -478,7 +591,7 @@ static bool RunOrderScenario(int logic_workers, bool require_overlap, const std:
 	// (2) Per-uid: 1018 arrival order == submission order (same shard FIFO) and
 	//     canonical message_id strictly increases.
 	auto check_side = [&](OrderSide& s, const std::string& who) -> bool {
-		long long prev_seq = -1; int prev_mid = -1; bool ordered = true, increasing = true;
+		long long prev_seq = -1; std::int64_t prev_mid = -1; bool ordered = true, increasing = true;
 		for (int i = 0; i < s.total; ++i) {
 			if (!s.received[i]) { ordered = false; break; }
 			if (s.seqs[i] <= prev_seq) { ordered = false; }
@@ -533,20 +646,20 @@ bool ScenarioProbeCleanup() {
 	}
 	if (mysql.connected()) {
 		const long long rows = mysql.CountByUniqueIdLike("imtest-%");
+		const long long sync_rows = mysql.CountSyncRowsByUniqueIdLike("imtest-%");
 		std::printf("[probe] chat_message rows with unique_id LIKE 'imtest-%%': %lld\n", rows);
-		if (rows != 0) clean = false;
+		std::printf("[probe] user_message_sync rows tied to 'imtest-%%': %lld\n", sync_rows);
+		if (rows != 0 || sync_rows != 0) clean = false;
 	}
 	if (redis.connected()) {
-		int z1 = redis.ZCard("offline_msg:" + std::to_string(SENDER_UID));
-		int z2 = redis.ZCard("offline_msg:" + std::to_string(RECEIVER_UID));
 		bool t1=false, t2=false, u1=false, u2=false;
 		redis.Exists(UserTokenKey(SENDER_UID), t1);
 		redis.Exists(UserTokenKey(RECEIVER_UID), t2);
 		redis.Exists("uip_" + std::to_string(SENDER_UID), u1);
 		redis.Exists("uip_" + std::to_string(RECEIVER_UID), u2);
-		std::printf("[probe] offline_msg:%d=%d  offline_msg:%d=%d  utoken A=%d B=%d  uip A=%d B=%d\n",
-			SENDER_UID, z1, RECEIVER_UID, z2, (int)t1, (int)t2, (int)u1, (int)u2);
-		if (z1 != 0 || z2 != 0 || t1 || t2 || u1 || u2) clean = false;
+		std::printf("[probe] utoken A=%d B=%d  uip A=%d B=%d\n",
+			(int)t1, (int)t2, (int)u1, (int)u2);
+		if (t1 || t2 || u1 || u2) clean = false;
 	}
 	std::printf("[probe] result: %s\n", clean ? "CLEAN" : "DIRTY");
 	return clean;
@@ -602,11 +715,11 @@ bool ScenarioDedup() {
 		Frame r1, r2;
 		bool g1 = c.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &r1);
 		bool g2 = c.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &r2);
-		int mid1 = -1, mid2 = -1, err1 = -1, err2 = -1;
+		std::int64_t mid1 = -1, mid2 = -1; int err1 = -1, err2 = -1;
 		if (g1) { auto j = ParseJson(r1.body); err1 = j.value("error", -1);
-			if (err1 == 0) mid1 = j.value("message_id", -1); }
+			if (err1 == 0) mid1 = JsonIdStr(j, "message_id", -1); }
 		if (g2) { auto j = ParseJson(r2.body); err2 = j.value("error", -1);
-			if (err2 == 0) mid2 = j.value("message_id", -1); }
+			if (err2 == 0) mid2 = JsonIdStr(j, "message_id", -1); }
 
 		Check(s1 && s2 && g1 && g2 && err1 == 0 && err2 == 0,
 			"dedup: both re-sends get 1018 success",
@@ -631,9 +744,9 @@ bool ScenarioDedup() {
 			"original-content", uid2);
 		bool so = c.Send(ID_TEXT_CHAT_MSG_REQ, body_orig);
 		Frame ro; bool go = c.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &ro);
-		int mid_orig = -1, err_orig = -1;
+		std::int64_t mid_orig = -1; int err_orig = -1;
 		if (go) { auto j = ParseJson(ro.body); err_orig = j.value("error", -1);
-			if (err_orig == 0) mid_orig = j.value("message_id", -1); }
+			if (err_orig == 0) mid_orig = JsonIdStr(j, "message_id", -1); }
 		Check(so && go && err_orig == 0 && mid_orig > 0, "dedup: establish baseline row",
 			("err=" + std::to_string(err_orig) + " mid=" + std::to_string(mid_orig)).c_str());
 
@@ -655,7 +768,7 @@ bool ScenarioDedup() {
 		// Original row unchanged: still exactly one row, content == baseline.
 		const long long rows2 = mysql.CountByUniqueId(uid2);
 		std::string after_content;
-		int after_mid = -1;
+		std::int64_t after_mid = -1;
 		{ auto rows = mysql.QueryByUniqueId(SENDER_UID, uid2);
 		  if (!rows.empty()) { after_content = rows[0].content; after_mid = rows[0].message_id; } }
 		Check(rows2 == 1 && after_content == baseline_content && after_mid == mid_orig,
@@ -681,26 +794,8 @@ bool ScenarioDedup() {
 // bytes / cross-server / image-offline)
 // ---------------------------------------------------------------------------
 
-// Build a 1049 delivery-ACK body: {"uid":<receiver>,"message_ids":[...]}
-static std::string BuildAckReq(int uid, const std::vector<int>& ids) {
-	json j;
-	j["uid"] = uid;
-	json arr = json::array();
-	for (int id : ids) arr.push_back(id);
-	j["message_ids"] = arr;
-	return j.dump();
-}
-
-// Build a 1051 pull-offline body: {"uid":<receiver>,"after_message_id":<id>,"limit":<n>}
-static std::string BuildPullReq(int uid, int after_message_id, int limit) {
-	json j;
-	j["uid"] = uid;
-	j["after_message_id"] = after_message_id;
-	j["limit"] = limit;
-	return j.dump();
-}
-
 // Build a 1035 image-chat-metadata body.
+// （1035 不在协议字符串化清单内，thread_id 维持数字）
 static std::string BuildImgMetaReq(int fromuid, int touid, int thread_id,
                                    const std::string& md5, const std::string& name,
                                    const std::string& unique_id,
@@ -717,7 +812,8 @@ static std::string BuildImgMetaReq(int fromuid, int touid, int thread_id,
 }
 
 // Build a 1037 image-upload-chunk body (single-chunk).
-static std::string BuildImgUploadReq(int uid, int sender, int receiver, int message_id,
+// （1037 不在协议字符串化清单内，message_id 维持数字）
+static std::string BuildImgUploadReq(int uid, int sender, int receiver, std::int64_t message_id,
                                      const std::string& md5, const std::string& name,
                                      long long total_size, long long trans_size,
                                      int last, const std::string& data_b64) {
@@ -876,24 +972,12 @@ private:
 	unsigned short target_port_ = 0;
 };
 
-// Parse a 1052 pull response, extracting message_ids in order.
-static std::vector<int> ExtractPullMessageIds(const json& j) {
-	std::vector<int> ids;
-	if (!j.is_object() || !j.contains("messages")) return ids;
-	const auto& msgs = j["messages"];
-	if (!msgs.is_array()) return ids;
-	for (const auto& m : msgs) {
-		if (m.contains("message_id")) ids.push_back(m.value("message_id", 0));
-	}
-	return ids;
-}
-
 // ---------------------------------------------------------------------------
 // offline (Verification.6)
 //
-// receiver 下线时 sender 发 100 条→MySQL 全 delivery_status=0、Redis ZSET 100
-// 唯一 ID；receiver 登录后 headless 连续 1051 分页拉取，每 ID 只出现一次；
-// 1049/1050 完成后 DB 全 1 且 ZSET 空。
+// receiver 离线期间 sender 发 100 条（MySQL 全 delivery_status=0、
+// user_message_sync 双方各写一行）；receiver 重连后经 1051/1052 增量同步按
+// sync_seq 升序补齐，每 ID 只出现一次；1049/1050 完成后 DB 全 1。
 // ---------------------------------------------------------------------------
 bool ScenarioOffline() {
 	std::printf("\n=== scenario: offline ===\n");
@@ -927,6 +1011,21 @@ bool ScenarioOffline() {
 		Fail("offline: start ChatServer", "ready timeout"); cleanup(); return false;
 	}
 
+	// Step 0: receiver 短暂登录取 bootstrap checkpoint 作为同步起点，随后离线。
+	std::uint64_t checkpoint = 0;
+	{
+		TcpClient cR0;
+		if (!LoginUser(cR0, RECEIVER_UID).ok) {
+			Fail("offline: login receiver (checkpoint)", "gate/chat login failed");
+			cleanup(); pm.StopAll(); return false;
+		}
+		if (!DoSyncBootstrap(cR0, RECEIVER_UID, checkpoint)) {
+			Fail("offline: bootstrap checkpoint", "1051/1052 bootstrap failed");
+			cR0.Close(); cleanup(); pm.StopAll(); return false;
+		}
+		cR0.Close();
+	}
+
 	// Login sender only — receiver stays offline.
 	TcpClient cS;
 	if (!LoginUser(cS, SENDER_UID).ok) {
@@ -934,7 +1033,7 @@ bool ScenarioOffline() {
 	}
 
 	// Send MSG_COUNT messages while receiver is offline.
-	std::vector<int> sent_mids;
+	std::vector<std::int64_t> sent_mids;
 	sent_mids.reserve(MSG_COUNT);
 	bool send_ok = true;
 	for (int i = 0; i < MSG_COUNT; ++i) {
@@ -944,13 +1043,13 @@ bool ScenarioOffline() {
 			"offline-" + std::to_string(i), uid_str);
 		if (!cS.Send(ID_TEXT_CHAT_MSG_REQ, body)) { send_ok = false; break; }
 	}
-	// Collect all 1018 responses.
+	// Collect all 1018 responses (message_id 为十进制字符串).
 	for (int i = 0; i < MSG_COUNT && send_ok; ++i) {
 		Frame f;
 		if (!cS.Wait(ID_TEXT_CHAT_MSG_RSP, 15000, &f)) { send_ok = false; break; }
 		auto j = ParseJson(f.body);
 		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { send_ok = false; break; }
-		sent_mids.push_back(j.value("message_id", 0));
+		sent_mids.push_back(JsonIdStr(j, "message_id", 0));
 	}
 	Check(send_ok && (int)sent_mids.size() == MSG_COUNT,
 		"offline: sender received 100x 1018",
@@ -968,57 +1067,74 @@ bool ScenarioOffline() {
 		if (total != MSG_COUNT || pending != MSG_COUNT) all_ok = false;
 	}
 
-	// (2) Redis: ZSET has the pending IDs.
-	int zcard_before = redis.ZCard("offline_msg:" + std::to_string(RECEIVER_UID));
-	Check(zcard_before >= MSG_COUNT,
-		"offline: Redis ZSET has >= 100 pending IDs",
-		("zcard=" + std::to_string(zcard_before)).c_str());
-	if (zcard_before < MSG_COUNT) all_ok = false;
+	// (2) user_message_sync: checkpoint 之后 receiver 恰好多出 100 行。
+	{
+		const auto rows = mysql.QuerySyncRows(RECEIVER_UID, checkpoint, 0);
+		Check((int)rows.size() == MSG_COUNT,
+			"offline: receiver has 100 new sync rows after checkpoint",
+			("rows=" + std::to_string(rows.size())).c_str());
+		if ((int)rows.size() != MSG_COUNT) all_ok = false;
+	}
 
-	// Login receiver and pull all pending via 1051.
+	// Login receiver and sync all pending via 1051/1052.
 	TcpClient cR;
 	if (!LoginUser(cR, RECEIVER_UID).ok) {
 		Fail("offline: login receiver", "gate/chat login failed"); cS.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
-	// Paged pull: after_message_id=0, limit=100, follow has_more/next_message_id.
-	std::vector<int> pulled_ids;
-	int cursor = 0;
+	// 分页同步：after_sync_seq=checkpoint，limit=30 强制多页，沿 next_sync_seq 推进。
+	std::vector<std::int64_t> pulled_ids;
+	std::uint64_t cursor = checkpoint;
 	bool pull_ok = true;
+	bool seq_increasing = true;
+	bool cursor_consistent = true;
+	std::uint64_t prev_seq = checkpoint;
 	int pages = 0;
 	while (true) {
 		++pages;
-		std::string body = BuildPullReq(RECEIVER_UID, cursor, 100);
-		if (!cR.Send(ID_PULL_OFFLINE_MSG_REQ, body)) { pull_ok = false; break; }
-		Frame f;
-		if (!cR.Wait(ID_PULL_OFFLINE_MSG_RSP, 10000, &f)) { pull_ok = false; break; }
-		auto j = ParseJson(f.body);
-		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { pull_ok = false; break; }
-		auto page_ids = ExtractPullMessageIds(j);
-		for (int id : page_ids) pulled_ids.push_back(id);
-		bool has_more = j.value("has_more", false);
-		int next_mid = j.value("next_message_id", cursor);
-		if (!has_more || page_ids.empty()) break;
-		cursor = next_mid;
+		std::vector<SyncEnvelope> msgs;
+		std::uint64_t next_seq = cursor;
+		bool has_more = false;
+		if (!DoSyncPage(cR, RECEIVER_UID, cursor, 30, msgs, next_seq, has_more)) {
+			pull_ok = false; break;
+		}
+		for (const auto& m : msgs) {
+			if (m.sync_seq <= prev_seq && !pulled_ids.empty()) seq_increasing = false;
+			prev_seq = m.sync_seq;
+			pulled_ids.push_back(m.message_id);
+		}
+		// 非空页 next_sync_seq 应等于本页最后一条的 sync_seq。
+		if (!msgs.empty() && next_seq != msgs.back().sync_seq) cursor_consistent = false;
+		// 空页 next_sync_seq 应等于 after_sync_seq 且 has_more=false。
+		if (msgs.empty() && (next_seq != cursor || has_more)) cursor_consistent = false;
+		cursor = next_seq;
+		if (!has_more) break;
 		if (pages > 20) { pull_ok = false; break; }  // safety
 	}
 
-	// (3) Every sent ID appears exactly once in the pull stream.
-	std::set<int> sent_set(sent_mids.begin(), sent_mids.end());
-	std::set<int> pulled_set(pulled_ids.begin(), pulled_ids.end());
+	// (3) Every sent ID appears exactly once in the sync stream, in sync_seq order.
+	std::set<std::int64_t> sent_set(sent_mids.begin(), sent_mids.end());
+	std::set<std::int64_t> pulled_set(pulled_ids.begin(), pulled_ids.end());
 	bool no_dup = ((int)pulled_ids.size() == (int)pulled_set.size());
 	bool all_present = (sent_set == pulled_set);
 	Check(pull_ok && no_dup && all_present && (int)pulled_set.size() == MSG_COUNT,
-		"offline: paged pull returns all 100 IDs exactly once",
+		"offline: paged sync returns all 100 IDs exactly once",
 		("pulled=" + std::to_string(pulled_ids.size()) +
 		 " unique=" + std::to_string(pulled_set.size()) +
 		 " dup=" + std::to_string(!no_dup)).c_str());
 	if (!(pull_ok && no_dup && all_present)) all_ok = false;
 
-	// (4) ACK all via 1049 → 1050.
+	Check(seq_increasing && cursor_consistent && pages >= 2,
+		"offline: sync_seq strictly increasing, next_sync_seq consistent",
+		("pages=" + std::to_string(pages) +
+		 " increasing=" + std::to_string(seq_increasing) +
+		 " consistent=" + std::to_string(cursor_consistent)).c_str());
+	if (!(seq_increasing && cursor_consistent)) all_ok = false;
+
+	// (4) ACK all via 1049 → 1050（message_ids 为字符串数组）.
 	bool ack_ok = false;
 	{
-		std::vector<int> ids_vec(pulled_set.begin(), pulled_set.end());
+		std::vector<std::int64_t> ids_vec(pulled_set.begin(), pulled_set.end());
 		std::string body = BuildAckReq(RECEIVER_UID, ids_vec);
 		if (cR.Send(ID_CHAT_DELIVERY_ACK_REQ, body)) {
 			Frame f;
@@ -1031,10 +1147,10 @@ bool ScenarioOffline() {
 	Check(ack_ok, "offline: ACK 1049/1050 success", "ack failed");
 	if (!ack_ok) all_ok = false;
 
-	// (5) After ACK: MySQL all delivery_status=1, Redis ZSET empty.
-	// The server ZRems AFTER sending 1050, so poll briefly for the ZSET to drain.
+	// (5) After ACK: MySQL all delivery_status=1（短暂轮询等服务端落库）。
 	for (int poll = 0; poll < 50; ++poll) {
-		if (redis.ZCard("offline_msg:" + std::to_string(RECEIVER_UID)) == 0) break;
+		const std::string pattern = "imtest-offline-" + tag + "-%";
+		if (mysql.CountByUniqueIdLikeAndDelivery(pattern, 0) == 0) break;
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 	{
@@ -1046,11 +1162,6 @@ bool ScenarioOffline() {
 			("pending=" + std::to_string(pending) + " acked=" + std::to_string(acked)).c_str());
 		if (!(pending == 0 && acked == MSG_COUNT)) all_ok = false;
 	}
-	int zcard_after = redis.ZCard("offline_msg:" + std::to_string(RECEIVER_UID));
-	Check(zcard_after == 0,
-		"offline: post-ACK Redis ZSET empty",
-		("zcard=" + std::to_string(zcard_after)).c_str());
-	if (zcard_after != 0) all_ok = false;
 
 	cS.Close(); cR.Close();
 	cleanup();
@@ -1061,8 +1172,8 @@ bool ScenarioOffline() {
 // ---------------------------------------------------------------------------
 // lost-ack (Verification.6)
 //
-// 故意丢第一轮 1049（不发），下一次 pull 再得同一 message_id；去重层不重复呈现，
-// 第二次 ACK 后不再返回。
+// 第一次 1049 的 1050 回包假设丢失：客户端重发同一 1049，服务端幂等成功
+// （重复 ACK 不产生错误），DB delivery_status 保持 1 且无重复记录。
 // ---------------------------------------------------------------------------
 bool ScenarioLostAck() {
 	std::printf("\n=== scenario: lost-ack ===\n");
@@ -1095,7 +1206,8 @@ bool ScenarioLostAck() {
 		Fail("lost-ack: start ChatServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 
-	// Send one message to offline receiver.
+	// Send one message to offline receiver（checkpoint 需在发送前捕获）。
+	const std::uint64_t checkpoint = mysql.MaxSyncSeq(RECEIVER_UID);
 	TcpClient cS;
 	if (!LoginUser(cS, SENDER_UID).ok) {
 		Fail("lost-ack: login sender", "gate/chat login failed"); cleanup(); pm.StopAll(); return false;
@@ -1105,66 +1217,69 @@ bool ScenarioLostAck() {
 		"lost-ack-msg", uid_str);
 	cS.Send(ID_TEXT_CHAT_MSG_REQ, body);
 	Frame rsp; bool got_rsp = cS.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &rsp);
-	int sent_mid = -1;
+	std::int64_t sent_mid = -1;
 	if (got_rsp) {
 		auto j = ParseJson(rsp.body);
 		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS)
-			sent_mid = j.value("message_id", -1);
+			sent_mid = JsonIdStr(j, "message_id", -1);
 	}
 	Check(got_rsp && sent_mid > 0, "lost-ack: message sent and persisted",
 		("mid=" + std::to_string(sent_mid)).c_str());
 	if (!(got_rsp && sent_mid > 0)) { cS.Close(); cleanup(); pm.StopAll(); return false; }
 
-	// Login receiver, pull → get message_id (first time).
+	// Login receiver, sync from checkpoint → get message_id.
 	TcpClient cR;
 	if (!LoginUser(cR, RECEIVER_UID).ok) {
 		Fail("lost-ack: login receiver", "gate/chat login failed"); cS.Close(); cleanup(); pm.StopAll(); return false;
 	}
-
-	auto do_pull = [&](int after) -> std::vector<int> {
-		cR.Send(ID_PULL_OFFLINE_MSG_REQ, BuildPullReq(RECEIVER_UID, after, 100));
-		Frame f;
-		if (!cR.Wait(ID_PULL_OFFLINE_MSG_RSP, 10000, &f)) return {};
-		auto j = ParseJson(f.body);
-		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return {};
-		return ExtractPullMessageIds(j);
-	};
-
-	auto first_ids = do_pull(0);
-	bool first_has = std::find(first_ids.begin(), first_ids.end(), sent_mid) != first_ids.end();
-	Check(first_has, "lost-ack: first pull returns the message",
-		("ids=" + std::to_string(first_ids.size())).c_str());
-	if (!first_has) all_ok = false;
-
-	// Deliberately do NOT ACK (simulates lost first 1049 round).
-	// Pull again → same message_id must still be there.
-	auto second_ids = do_pull(0);
-	bool second_has = std::find(second_ids.begin(), second_ids.end(), sent_mid) != second_ids.end();
-	Check(second_has, "lost-ack: re-pull (no ACK) returns same message_id",
-		("ids=" + std::to_string(second_ids.size())).c_str());
-	if (!second_has) all_ok = false;
-
-	// Now ACK it (second round).
-	bool ack_ok = false;
 	{
-		std::string ab = BuildAckReq(RECEIVER_UID, {sent_mid});
-		if (cR.Send(ID_CHAT_DELIVERY_ACK_REQ, ab)) {
-			Frame af;
-			if (cR.Wait(ID_CHAT_DELIVERY_ACK_RSP, 10000, &af)) {
-				auto j = ParseJson(af.body);
-				ack_ok = j.is_object() && j.value("error", -1) == ERR_SUCCESS;
-			}
-		}
+		std::vector<SyncEnvelope> msgs;
+		std::uint64_t next_seq = checkpoint;
+		bool has_more = false;
+		bool synced = DoSyncPage(cR, RECEIVER_UID, checkpoint, 100, msgs, next_seq, has_more);
+		bool found = false;
+		for (const auto& m : msgs) if (m.message_id == sent_mid) found = true;
+		Check(synced && found, "lost-ack: sync returns the message",
+			("synced=" + std::to_string(synced) + " msgs=" + std::to_string(msgs.size())).c_str());
+		if (!(synced && found)) all_ok = false;
 	}
-	Check(ack_ok, "lost-ack: second ACK succeeds", "ack failed");
-	if (!ack_ok) all_ok = false;
 
-	// Pull again → message_id no longer returned.
-	auto third_ids = do_pull(0);
-	bool third_absent = std::find(third_ids.begin(), third_ids.end(), sent_mid) == third_ids.end();
-	Check(third_absent, "lost-ack: post-ACK pull no longer returns message",
-		("ids=" + std::to_string(third_ids.size())).c_str());
-	if (!third_absent) all_ok = false;
+	// First ACK round: 1049 → 1050 success, DB delivery_status=1.
+	auto do_ack = [&]() -> bool {
+		if (!cR.Send(ID_CHAT_DELIVERY_ACK_REQ, BuildAckReq(RECEIVER_UID, {sent_mid}))) return false;
+		Frame af;
+		if (!cR.Wait(ID_CHAT_DELIVERY_ACK_RSP, 10000, &af)) return false;
+		auto j = ParseJson(af.body);
+		return j.is_object() && j.value("error", -1) == ERR_SUCCESS;
+	};
+	bool ack1 = do_ack();
+	Check(ack1, "lost-ack: first ACK succeeds", "ack failed");
+	if (!ack1) all_ok = false;
+	for (int poll = 0; poll < 50; ++poll) {
+		if (mysql.CountByUniqueIdLikeAndDelivery(uid_str, 0) == 0) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+	{
+		const long long acked = mysql.CountByUniqueIdLikeAndDelivery(uid_str, 1);
+		Check(acked == 1, "lost-ack: post-ACK delivery_status=1",
+			("acked=" + std::to_string(acked)).c_str());
+		if (acked != 1) all_ok = false;
+	}
+
+	// 模拟 1050 丢失：重发同一 1049，服务端幂等成功（重复 ACK 不产生错误）。
+	bool ack2 = do_ack();
+	Check(ack2, "lost-ack: duplicate ACK idempotent success", "duplicate ack failed");
+	if (!ack2) all_ok = false;
+
+	// 重复 ACK 无副作用：仍单行、delivery_status 保持 1。
+	{
+		const long long rows = mysql.CountByUniqueId(uid_str);
+		const long long acked = mysql.CountByUniqueIdLikeAndDelivery(uid_str, 1);
+		Check(rows == 1 && acked == 1,
+			"lost-ack: duplicate ACK leaves single acked row",
+			("rows=" + std::to_string(rows) + " acked=" + std::to_string(acked)).c_str());
+		if (!(rows == 1 && acked == 1)) all_ok = false;
+	}
 
 	cS.Close(); cR.Close();
 	cleanup();
@@ -1175,8 +1290,8 @@ bool ScenarioLostAck() {
 // ---------------------------------------------------------------------------
 // pull-bytes (Verification.6)
 //
-// 接近单条 2 KiB 消息连续多发，1052 每页 encoded payload < PullMaxBytes(30000)
-// 且 < 16-bit frame 上限；has_more/next_message_id 正确续取。
+// 多页同步：制造超过一页的消息量（250 条，limit=100 → 3 页），逐页
+// after_sync_seq 推进；断言无遗漏无重复、sync_seq 严格递增、has_more 正确。
 // ---------------------------------------------------------------------------
 bool ScenarioPullBytes() {
 	std::printf("\n=== scenario: pull-bytes ===\n");
@@ -1184,10 +1299,7 @@ bool ScenarioPullBytes() {
 	Redis redis; Mysql mysql;
 	std::string tag = RunTag();
 	bool all_ok = true;
-	const int MSG_COUNT = 40;  // ~1.9KiB each → multiple pages under PullMaxBytes
-	// Server MAX_LENGTH=2048 caps the 1017 body; content must leave room for JSON
-	// overhead (~114 bytes), so 1900 chars → body ~2014 bytes, just under the limit.
-	const int CONTENT_LEN = 1900;
+	const int MSG_COUNT = 250;  // limit=100 → 3 页（100/100/50）
 
 	auto cleanup = [&] { CleanupFootprint(redis, mysql); };
 
@@ -1218,15 +1330,16 @@ bool ScenarioPullBytes() {
 		Fail("pull-bytes: login sender", "gate/chat login failed"); cleanup(); pm.StopAll(); return false;
 	}
 
-	// Send MSG_COUNT ~2KiB messages to offline receiver.
+	// 同步起点：发送前 receiver 的最大 sync_seq。
+	const std::uint64_t checkpoint = mysql.MaxSyncSeq(RECEIVER_UID);
+
+	// Send MSG_COUNT messages to offline receiver.
 	const std::string pattern = "imtest-pullbytes-" + tag + "-%";
 	for (int i = 0; i < MSG_COUNT; ++i) {
 		char buf[64]; std::snprintf(buf, sizeof(buf), "%03d", i);
 		const std::string uid_str = "imtest-pullbytes-" + tag + "-" + buf;
-		// content of exactly CONTENT_LEN chars.
-		std::string content(CONTENT_LEN, 'A' + (i % 26));
 		std::string body = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
-			content, uid_str);
+			"pullbytes-" + std::to_string(i), uid_str);
 		cS.Send(ID_TEXT_CHAT_MSG_REQ, body);
 	}
 	// Drain 1018 responses.
@@ -1241,51 +1354,59 @@ bool ScenarioPullBytes() {
 		("got=" + std::to_string(got_1018)).c_str());
 	if (got_1018 != MSG_COUNT) all_ok = false;
 
-	// Login receiver, pull page by page.
+	// Login receiver, sync page by page (limit=100 强制 3 页).
 	TcpClient cR;
 	if (!LoginUser(cR, RECEIVER_UID).ok) {
 		Fail("pull-bytes: login receiver", "gate/chat login failed"); cS.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
-	std::set<int> all_pulled;
-	int cursor = 0;
+	std::vector<std::int64_t> all_pulled;
+	std::uint64_t cursor = checkpoint;
 	bool pull_ok = true;
-	bool byte_violation = false;
+	bool seq_increasing = true;
+	bool has_more_ok = true;
+	std::uint64_t prev_seq = checkpoint;
 	int pages = 0;
 	while (true) {
 		++pages;
-		cR.Send(ID_PULL_OFFLINE_MSG_REQ, BuildPullReq(RECEIVER_UID, cursor, 100));
-		Frame f;
-		if (!cR.Wait(ID_PULL_OFFLINE_MSG_RSP, 10000, &f)) { pull_ok = false; break; }
-		// Assert the raw frame body (encoded 1052 payload) stays under both limits.
-		const std::size_t body_bytes = f.body.size();
-		const std::size_t frame_bytes = body_bytes + HEAD_TOTAL_LEN;
-		if (body_bytes > (std::size_t)PULL_MAX_BYTES) byte_violation = true;
-		if (frame_bytes > 0xFF00) byte_violation = true;  // short safety
-		auto j = ParseJson(f.body);
-		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { pull_ok = false; break; }
-		auto ids = ExtractPullMessageIds(j);
-		for (int id : ids) all_pulled.insert(id);
-		bool has_more = j.value("has_more", false);
-		int next_mid = j.value("next_message_id", cursor);
-		if (!has_more || ids.empty()) break;
-		cursor = next_mid;
+		std::vector<SyncEnvelope> msgs;
+		std::uint64_t next_seq = cursor;
+		bool has_more = false;
+		if (!DoSyncPage(cR, RECEIVER_UID, cursor, 100, msgs, next_seq, has_more)) {
+			pull_ok = false; break;
+		}
+		// has_more 正确性：本场景恰 3 页（100/100/50），仅最后一页为 false。
+		const bool expect_more = ((int)all_pulled.size() + (int)msgs.size()) < MSG_COUNT;
+		if (has_more != expect_more) has_more_ok = false;
+		for (const auto& m : msgs) {
+			if (m.sync_seq <= prev_seq) seq_increasing = false;
+			prev_seq = m.sync_seq;
+			all_pulled.push_back(m.message_id);
+		}
+		cursor = next_seq;
+		if (!has_more) break;
 		if (pages > 20) { pull_ok = false; break; }
 	}
 
-	Check(!byte_violation, "pull-bytes: every 1052 frame < PullMaxBytes and < SHRT_MAX",
-		byte_violation ? "frame exceeded limit" : "ok");
-	if (byte_violation) all_ok = false;
-
-	Check(pull_ok && (int)all_pulled.size() == MSG_COUNT,
-		"pull-bytes: paged pull returns all messages",
+	std::set<std::int64_t> pulled_set(all_pulled.begin(), all_pulled.end());
+	Check(pull_ok && (int)all_pulled.size() == MSG_COUNT &&
+	      (int)pulled_set.size() == MSG_COUNT,
+		"pull-bytes: multi-page sync returns all messages, no miss no dup",
 		("pulled=" + std::to_string(all_pulled.size()) +
+		 " unique=" + std::to_string(pulled_set.size()) +
 		 " pages=" + std::to_string(pages)).c_str());
-	if (!pull_ok || (int)all_pulled.size() != MSG_COUNT) all_ok = false;
+	if (!pull_ok || (int)pulled_set.size() != MSG_COUNT) all_ok = false;
 
-	// Clean up: ACK all.
+	Check(seq_increasing && has_more_ok && pages == 3,
+		"pull-bytes: sync_seq strictly increasing across pages, has_more correct",
+		("pages=" + std::to_string(pages) +
+		 " increasing=" + std::to_string(seq_increasing) +
+		 " has_more_ok=" + std::to_string(has_more_ok)).c_str());
+	if (!(seq_increasing && has_more_ok)) all_ok = false;
+
+	// Clean up: ACK all（message_ids 为字符串数组）.
 	if (!all_pulled.empty()) {
-		std::vector<int> v(all_pulled.begin(), all_pulled.end());
+		std::vector<std::int64_t> v(pulled_set.begin(), pulled_set.end());
 		cR.Send(ID_CHAT_DELIVERY_ACK_REQ, BuildAckReq(RECEIVER_UID, v));
 		Frame af; cR.Wait(ID_CHAT_DELIVERY_ACK_RSP, 10000, &af);
 	}
@@ -1301,8 +1422,8 @@ bool ScenarioPullBytes() {
 //
 // 双 Chat 实例，receiver 登录到 chatserver2；在本节点 gRPC 端口放可控 proxy，
 // 只在第一次 NotifyTextChatMsg 断流并计数尝试次数；验证每次调用 ≤3s、最多 3
-// 次、sender 仍收 1018；kill/restart receiver ChatServer 后 receiver 从 pending
-// pull 到消息。
+// 次、sender 仍收 1018；kill/restart receiver ChatServer 后 receiver 经增量同步
+// 补齐消息。
 // ---------------------------------------------------------------------------
 bool ScenarioCrossServer() {
 	std::printf("\n=== scenario: cross-server ===\n");
@@ -1364,6 +1485,9 @@ bool ScenarioCrossServer() {
 		cR.Close(); proxy.Stop(); cleanup(); pm.StopAll(); return false;
 	}
 
+	// 同步起点：发送前 receiver 的最大 sync_seq。
+	const std::uint64_t checkpoint = mysql.MaxSyncSeq(RECEIVER_UID);
+
 	// Sender sends one message to receiver (cross-server via proxy → broken).
 	const std::string uid_str = "imtest-cross-" + tag;
 	std::string body = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
@@ -1374,11 +1498,11 @@ bool ScenarioCrossServer() {
 	// Sender still receives 1018 (MySQL commit before RPC).
 	Frame rsp;
 	bool got_1018 = cS.Wait(ID_TEXT_CHAT_MSG_RSP, 15000, &rsp);
-	int sent_mid = -1;
+	std::int64_t sent_mid = -1;
 	if (got_1018) {
 		auto j = ParseJson(rsp.body);
 		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS)
-			sent_mid = j.value("message_id", -1);
+			sent_mid = JsonIdStr(j, "message_id", -1);
 	}
 	Check(got_1018 && sent_mid > 0, "cross-server: sender got 1018 despite broken RPC",
 		("mid=" + std::to_string(sent_mid)).c_str());
@@ -1404,7 +1528,8 @@ bool ScenarioCrossServer() {
 		(std::to_string(rpc_phase_sec) + "s").c_str());
 	if (rpc_phase_sec > 15.0) all_ok = false;
 
-	// Message is in pending: MySQL delivery_status=0, Redis ZSET has the ID.
+	// Message is in pending: MySQL delivery_status=0，且 user_message_sync 已写行
+	// （同步行与消息同事务落库，不依赖跨服 RPC 是否成功）。
 	{
 		auto rows = mysql.QueryByUniqueId(SENDER_UID, uid_str);
 		bool db_pending = !rows.empty() && rows[0].delivery_status == 0;
@@ -1412,17 +1537,16 @@ bool ScenarioCrossServer() {
 			rows.empty() ? "no row" : ("ds=" + std::to_string(rows[0].delivery_status)).c_str());
 		if (!db_pending) all_ok = false;
 	}
-	int zc = redis.ZCard("offline_msg:" + std::to_string(RECEIVER_UID));
-	bool redis_pending = false;
 	{
-		std::vector<std::string> members;
-		redis.ZRange("offline_msg:" + std::to_string(RECEIVER_UID), members);
-		std::string mid_str = std::to_string(sent_mid);
-		for (const auto& m : members) { if (m == mid_str) { redis_pending = true; break; } }
+		const auto sync_rows = mysql.QuerySyncRows(RECEIVER_UID, checkpoint, 0);
+		bool sync_pending = false;
+		for (const auto& r : sync_rows) {
+			if (r.message_id == (std::uint64_t)sent_mid) { sync_pending = true; break; }
+		}
+		Check(sync_pending, "cross-server: message_id has user_message_sync row",
+			("mid=" + std::to_string(sent_mid)).c_str());
+		if (!sync_pending) all_ok = false;
 	}
-	Check(redis_pending, "cross-server: message_id in Redis pending ZSET",
-		("zcard=" + std::to_string(zc)).c_str());
-	if (!redis_pending) all_ok = false;
 
 	// Phase 2: kill/restart chatserver2, receiver reconnects, pulls pending.
 	proxy.Stop();
@@ -1454,17 +1578,18 @@ bool ScenarioCrossServer() {
 		cS.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
-	// Pull pending → should get the message.
-	cR2.Send(ID_PULL_OFFLINE_MSG_REQ, BuildPullReq(RECEIVER_UID, 0, 100));
-	Frame pf;
-	bool pull_ok = cR2.Wait(ID_PULL_OFFLINE_MSG_RSP, 10000, &pf);
+	// Sync from checkpoint → should get the message（checkpoint 之前的旧消息不推）。
+	std::vector<SyncEnvelope> sync_msgs;
+	std::uint64_t next_seq = checkpoint;
+	bool has_more = false;
+	bool pull_ok = DoSyncPage(cR2, RECEIVER_UID, checkpoint, 100, sync_msgs, next_seq, has_more);
 	bool got_msg = false;
 	if (pull_ok) {
-		auto j = ParseJson(pf.body);
-		auto ids = ExtractPullMessageIds(j);
-		got_msg = std::find(ids.begin(), ids.end(), sent_mid) != ids.end();
+		for (const auto& m : sync_msgs) {
+			if (m.message_id == sent_mid) { got_msg = true; break; }
+		}
 	}
-	Check(got_msg, "cross-server: receiver pulled message after restart",
+	Check(got_msg, "cross-server: receiver synced message after restart",
 		("sent_mid=" + std::to_string(sent_mid)).c_str());
 	if (!got_msg) all_ok = false;
 
@@ -1483,8 +1608,8 @@ bool ScenarioCrossServer() {
 // ---------------------------------------------------------------------------
 // image-offline (Verification.6)
 //
-// 走 ResourceServer 分片上传，完成前 UN_UPLOAD 行绝不出现在 pull；完成后 pending
-// ID 出现，离线 receiver 拉到 msg_type=PIC/content_size，ACK 后清理。
+// 走 ResourceServer 分片上传，完成前 UN_UPLOAD 行绝不出现在增量同步流；完成后
+// sync 行写入，同步流出现 msg_type=PIC/content_size 的消息，ACK 后清理。
 // ---------------------------------------------------------------------------
 bool ScenarioImageOffline() {
 	std::printf("\n=== scenario: image-offline ===\n");
@@ -1533,21 +1658,23 @@ bool ScenarioImageOffline() {
 	const std::string img_name = "test_img_" + tag + ".png";
 	const std::string md5 = "d41d8cd98f00b204e9800998ecf8427e";  // md5 of empty
 	const long long file_size = 1024;
+	// 同步起点：元数据写入前 receiver 的最大 sync_seq。
+	const std::uint64_t checkpoint = mysql.MaxSyncSeq(RECEIVER_UID);
 	std::string meta_body = BuildImgMetaReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
 		md5, img_name, uid_str, file_size);
 	cS.Send(ID_IMG_CHAT_MSG_REQ, meta_body);
 	Frame mrs; bool got_1036 = cS.Wait(ID_IMG_CHAT_MSG_RSP, 10000, &mrs);
-	int msg_id = -1;
+	std::int64_t msg_id = -1;
 	if (got_1036) {
 		auto j = ParseJson(mrs.body);
 		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS)
-			msg_id = j.value("message_id", -1);
+			msg_id = JsonIdStr(j, "message_id", -1);
 	}
 	Check(got_1036 && msg_id > 0, "image-offline: 1035/1036 metadata persisted",
 		("msg_id=" + std::to_string(msg_id)).c_str());
 	if (!(got_1036 && msg_id > 0)) { cS.Close(); cleanup(); pm.StopAll(); return false; }
 
-	// Step 2: verify UN_UPLOAD row is NOT in pending pull / Redis ZSET.
+	// Step 2: verify UN_UPLOAD row is NOT in the sync stream / user_message_sync.
 	{
 		auto rows = mysql.QueryByMessageId(msg_id);
 		bool is_un_upload = !rows.empty() &&
@@ -1557,15 +1684,36 @@ bool ScenarioImageOffline() {
 			rows.empty() ? "no row" : ("status=" + std::to_string(rows[0].status)).c_str());
 		if (!is_un_upload) all_ok = false;
 	}
-	// Redis ZSET must NOT contain this message_id yet.
+	// user_message_sync 必须还没有该 message_id（元数据阶段不写同步行）。
 	{
-		std::vector<std::string> members;
-		redis.ZRange("offline_msg:" + std::to_string(RECEIVER_UID), members);
-		std::string mid_str = std::to_string(msg_id);
-		bool absent = std::find(members.begin(), members.end(), mid_str) == members.end();
-		Check(absent, "image-offline: UN_UPLOAD msg_id absent from Redis ZSET",
+		const auto sync_rows = mysql.QuerySyncRows(RECEIVER_UID, checkpoint, 0);
+		bool absent = true;
+		for (const auto& r : sync_rows) {
+			if (r.message_id == (std::uint64_t)msg_id) { absent = false; break; }
+		}
+		Check(absent, "image-offline: UN_UPLOAD msg_id absent from user_message_sync",
 			absent ? "ok" : "present before upload!");
 		if (!absent) all_ok = false;
+	}
+
+	// Login receiver：上传完成前同步流不含该 message_id；保持在线到上传后再同步。
+	TcpClient cR;
+	if (!LoginUser(cR, RECEIVER_UID).ok) {
+		Fail("image-offline: login receiver", "gate/chat login failed");
+		cS.Close(); cleanup(); pm.StopAll(); return false;
+	}
+	std::uint64_t cursor = checkpoint;
+	{
+		std::vector<SyncEnvelope> msgs;
+		std::uint64_t next_seq = cursor;
+		bool has_more = false;
+		bool synced = DoSyncPage(cR, RECEIVER_UID, cursor, 100, msgs, next_seq, has_more);
+		bool found = false;
+		for (const auto& m : msgs) if (m.message_id == msg_id) found = true;
+		Check(synced && !found, "image-offline: sync stream excludes msg before upload",
+			("synced=" + std::to_string(synced) + " found=" + std::to_string(found)).c_str());
+		if (!(synced && !found)) all_ok = false;
+		cursor = next_seq;
 	}
 
 	// Step 3: connect to ResourceServer, authenticate (1053) with the sender's
@@ -1598,7 +1746,7 @@ bool ScenarioImageOffline() {
 		("err=" + std::to_string(up_err)).c_str());
 	if (!(got_1038 && up_err == ERR_SUCCESS)) all_ok = false;
 
-	// Step 4: after upload, verify pending activation.
+	// Step 4: after upload, verify sync activation.
 	// Give the server a brief moment to run CompleteChatImageUpload.
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	{
@@ -1608,47 +1756,38 @@ bool ScenarioImageOffline() {
 			rows.empty() ? "no row" : ("status=" + std::to_string(rows[0].status)).c_str());
 		if (!uploaded) all_ok = false;
 	}
-	{
-		std::vector<std::string> members;
-		redis.ZRange("offline_msg:" + std::to_string(RECEIVER_UID), members);
-		std::string mid_str = std::to_string(msg_id);
-		bool present = std::find(members.begin(), members.end(), mid_str) != members.end();
-		Check(present, "image-offline: msg_id in Redis ZSET after upload",
-			present ? "ok" : "absent after upload!");
-		if (!present) all_ok = false;
+	// 上传完成后 user_message_sync 应写入该 message_id（轮询等事务提交）。
+	bool sync_row_present = false;
+	for (int poll = 0; poll < 50 && !sync_row_present; ++poll) {
+		const auto sync_rows = mysql.QuerySyncRows(RECEIVER_UID, cursor, 0);
+		for (const auto& r : sync_rows) {
+			if (r.message_id == (std::uint64_t)msg_id) { sync_row_present = true; break; }
+		}
+		if (!sync_row_present) std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
+	Check(sync_row_present, "image-offline: msg_id in user_message_sync after upload",
+		sync_row_present ? "ok" : "absent after upload!");
+	if (!sync_row_present) all_ok = false;
 
-	// Step 5: login receiver, pull → get PIC message with content_size.
-	TcpClient cR;
-	if (!LoginUser(cR, RECEIVER_UID).ok) {
-		Fail("image-offline: login receiver", "gate/chat login failed");
-		cS.Close(); cleanup(); pm.StopAll(); return false;
-	}
-	cR.Send(ID_PULL_OFFLINE_MSG_REQ, BuildPullReq(RECEIVER_UID, 0, 100));
-	Frame pf; bool pull_ok = cR.Wait(ID_PULL_OFFLINE_MSG_RSP, 10000, &pf);
+	// Step 5: receiver 再次同步 → 出现 PIC 消息且 content_size 正确。
 	bool got_pic = false;
 	long long pulled_size = -1;
-	if (pull_ok) {
-		auto j = ParseJson(pf.body);
-		if (j.is_object() && j.contains("messages")) {
-			for (const auto& m : j["messages"]) {
-				if (m.value("message_id", 0) == msg_id) {
+	{
+		std::vector<SyncEnvelope> msgs;
+		std::uint64_t next_seq = cursor;
+		bool has_more = false;
+		if (DoSyncPage(cR, RECEIVER_UID, cursor, 100, msgs, next_seq, has_more)) {
+			for (const auto& m : msgs) {
+				if (m.message_id == msg_id && m.msg_type == MSG_TYPE_PIC) {
 					got_pic = true;
-					if (m.value("msg_type", -1) == MSG_TYPE_PIC) {
-						// content_size is a string in the envelope.
-						if (m["content_size"].is_string()) {
-							pulled_size = std::stoll(m["content_size"].get<std::string>());
-						} else {
-							pulled_size = m.value("content_size", (long long)0);
-						}
-					}
+					pulled_size = ParseIdStr(m.content_size, -1);
 					break;
 				}
 			}
 		}
 	}
 	Check(got_pic && pulled_size == file_size,
-		"image-offline: receiver pulled PIC msg with correct content_size",
+		"image-offline: receiver synced PIC msg with correct content_size",
 		("got_pic=" + std::to_string(got_pic) + " size=" + std::to_string(pulled_size)).c_str());
 	if (!(got_pic && pulled_size == file_size)) all_ok = false;
 
@@ -1962,6 +2101,13 @@ bool ScenarioChatFailover() {
 		("ttl=" + std::to_string(ttl_before)).c_str());
 	if (!token_before_ok) all_ok = false;
 
+	// 同步起点：故障前 receiver 的 bootstrap checkpoint（之后产生的消息才需补齐）。
+	std::uint64_t checkpoint = 0;
+	if (!DoSyncBootstrap(original_receiver, failover_uid, checkpoint)) {
+		Fail("chat-failover: bootstrap checkpoint before failure", "1051/1052 failed");
+		original_receiver.Close(); cleanup(); pm.StopAll(); return false;
+	}
+
 	const std::string stopped_name = initial.server_name;
 	const std::string survivor_name = stopped_name == "chatserver1"
 		? "chatserver2" : "chatserver1";
@@ -2010,7 +2156,7 @@ bool ScenarioChatFailover() {
 		message_sender_uid, failover_uid, THREAD_ID, content, unique_id);
 	Frame sender_rsp;
 	json sender_envelope;
-	int message_id = -1;
+	std::int64_t message_id = -1;
 	bool sender_ack = sender.Send(ID_TEXT_CHAT_MSG_REQ, text_body) &&
 		sender.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &sender_rsp);
 	if (sender_ack) {
@@ -2020,7 +2166,7 @@ bool ScenarioChatFailover() {
 			response_json.contains("message_id");
 		if (sender_ack) {
 			sender_envelope = response_json;
-			message_id = sender_envelope.value("message_id", -1);
+			message_id = JsonIdStr(sender_envelope, "message_id", -1);
 			sender_ack = message_id > 0 &&
 				sender_envelope.value("unique_id", "") == unique_id;
 		}
@@ -2040,18 +2186,17 @@ bool ScenarioChatFailover() {
 		 " message_id=" + std::to_string(message_id)).c_str());
 	if (!mysql_pending) all_ok = false;
 
-	const std::string offline_key = "offline_msg:" + std::to_string(failover_uid);
-	bool redis_pending = false;
-	for (int poll = 0; poll < 50 && !redis_pending; ++poll) {
-		std::vector<std::string> members;
-		redis.ZRange(offline_key, members);
-		redis_pending = std::find(members.begin(), members.end(),
-			std::to_string(message_id)) != members.end();
-		if (!redis_pending) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	// 故障期间的实时投递失败不影响可恢复性：user_message_sync 行同事务落库。
+	bool sync_row_present = false;
+	{
+		const auto sync_rows = mysql.QuerySyncRows(failover_uid, checkpoint, 0);
+		for (const auto& r : sync_rows) {
+			if (r.message_id == (std::uint64_t)message_id) { sync_row_present = true; break; }
+		}
 	}
-	Check(redis_pending, "chat-failover: Redis records pending message id",
+	Check(sync_row_present, "chat-failover: user_message_sync records message id",
 		("message_id=" + std::to_string(message_id)).c_str());
-	if (!redis_pending) all_ok = false;
+	if (!sync_row_present) all_ok = false;
 
 	json request;
 	request["uid"] = failover_uid;
@@ -2099,36 +2244,34 @@ bool ScenarioChatFailover() {
 		 " error=" + std::to_string(login.error)).c_str());
 	if (!connect_ok || !login.ok) all_ok = false;
 
-	json recovered_envelope;
+	// 重连存活节点后从 checkpoint 增量同步，应补齐故障期间产生的消息。
+	SyncEnvelope recovered_envelope;
 	bool recovered_message = false;
-	if (connect_ok && login.ok &&
-		recovered_receiver.Send(ID_PULL_OFFLINE_MSG_REQ,
-			BuildPullReq(failover_uid, 0, 100))) {
-		Frame pull_frame;
-		if (recovered_receiver.Wait(ID_PULL_OFFLINE_MSG_RSP, 10000, &pull_frame)) {
-			const auto pull = ParseJson(pull_frame.body);
-			if (pull.is_object() && pull.value("error", -1) == ERR_SUCCESS &&
-				pull.contains("messages") && pull["messages"].is_array()) {
-				for (const auto& message : pull["messages"]) {
-					if (message.value("message_id", -1) == message_id) {
-						recovered_envelope = message;
-						recovered_message = true;
-						break;
-					}
+	if (connect_ok && login.ok) {
+		std::vector<SyncEnvelope> sync_msgs;
+		std::uint64_t next_seq = checkpoint;
+		bool has_more = false;
+		if (DoSyncPage(recovered_receiver, failover_uid, checkpoint, 100,
+			sync_msgs, next_seq, has_more)) {
+			for (const auto& message : sync_msgs) {
+				if (message.message_id == message_id) {
+					recovered_envelope = message;
+					recovered_message = true;
+					break;
 				}
 			}
 		}
 	}
 
 	const bool envelope_preserved = recovered_message && mysql_pending &&
-		recovered_envelope.value("message_id", -1) == stored_message.message_id &&
-		recovered_envelope.value("unique_id", "") == stored_message.unique_id &&
-		recovered_envelope.value("thread_id", -1) == stored_message.thread_id &&
-		recovered_envelope.value("fromuid", -1) == stored_message.sender_id &&
-		recovered_envelope.value("touid", -1) == stored_message.recv_id &&
-		recovered_envelope.value("content", "") == stored_message.content &&
+		recovered_envelope.message_id == stored_message.message_id &&
+		recovered_envelope.unique_id == stored_message.unique_id &&
+		recovered_envelope.thread_id == stored_message.thread_id &&
+		recovered_envelope.fromuid == stored_message.sender_id &&
+		recovered_envelope.touid == stored_message.recv_id &&
+		recovered_envelope.content == stored_message.content &&
 		!stored_message.chat_time.empty() &&
-		recovered_envelope.value("chat_time", "") == stored_message.chat_time;
+		recovered_envelope.chat_time == stored_message.chat_time;
 	Check(envelope_preserved,
 		"chat-failover: recovered envelope preserves persisted message",
 		("recovered=" + std::to_string(recovered_message) +
@@ -2151,17 +2294,13 @@ bool ScenarioChatFailover() {
 	bool cleanup_after_ack = false;
 	for (int poll = 0; poll < 50 && !cleanup_after_ack; ++poll) {
 		const auto rows = mysql.QueryByMessageId(message_id);
-		std::vector<std::string> members;
-		redis.ZRange(offline_key, members);
-		const bool absent = std::find(members.begin(), members.end(),
-			std::to_string(message_id)) == members.end();
 		cleanup_after_ack = rows.size() == 1 &&
-			rows[0].delivery_status == 1 && absent;
+			rows[0].delivery_status == 1;
 		if (!cleanup_after_ack)
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 	Check(cleanup_after_ack,
-		"chat-failover: ACK clears MySQL pending state and Redis ZSET",
+		"chat-failover: ACK clears MySQL pending state",
 		cleanup_after_ack ? "" : ("message_id=" + std::to_string(message_id)).c_str());
 	if (!cleanup_after_ack) all_ok = false;
 
@@ -2427,6 +2566,275 @@ bool ScenarioSimpleAuth() {
 		}
 	}
 
+	cleanup();
+	pm.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// sync-bootstrap (增量同步 checkpoint)
+//
+// {bootstrap:true} 只回 {error, checkpoint:"<max_seq>"}；checkpoint 之后产生的
+// 消息全部同步到、之前的不推；空页 next_sync_seq=after_sync_seq、has_more=false。
+// ---------------------------------------------------------------------------
+bool ScenarioSyncBootstrap() {
+	std::printf("\n=== scenario: sync-bootstrap ===\n");
+	ProcessManager pm;
+	Redis redis; Mysql mysql;
+	std::string tag = RunTag();
+	bool all_ok = true;
+	const int MSG_COUNT = 3;
+
+	auto cleanup = [&] { CleanupFootprint(redis, mysql); };
+
+	if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)) {
+		Fail("sync-bootstrap: connect Redis", "redis connect failed"); return false;
+	}
+	if (!mysql.Connect(MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWD, MYSQL_SCHEMA)) {
+		Fail("sync-bootstrap: connect MySQL", "mysql connect failed"); return false;
+	}
+	cleanup();
+
+	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
+		MakeStatusIni(), STATUS_GRPC_PORT }, 15000)) {
+		Fail("sync-bootstrap: start StatusServer", "ready timeout"); cleanup(); return false;
+	}
+	if (!pm.Start({ "GateServer", { "GateServer", "GateServer.exe" },
+		MakeGateIni(), GATE_HTTP_PORT }, 15000)) {
+		Fail("sync-bootstrap: start GateServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+	}
+	if (!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
+		MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
+		CHAT1_TCP_PORT }, 15000)) {
+		Fail("sync-bootstrap: start ChatServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+	}
+
+	// receiver 登录并取 bootstrap checkpoint；与 DB 最大 sync_seq 一致。
+	TcpClient cR;
+	if (!LoginUser(cR, RECEIVER_UID).ok) {
+		Fail("sync-bootstrap: login receiver", "gate/chat login failed"); cleanup(); pm.StopAll(); return false;
+	}
+	std::uint64_t checkpoint = 0;
+	bool boot_ok = DoSyncBootstrap(cR, RECEIVER_UID, checkpoint);
+	Check(boot_ok, "sync-bootstrap: {bootstrap:true} returns checkpoint", "bootstrap failed");
+	if (!boot_ok) { cleanup(); pm.StopAll(); return false; }
+	{
+		const std::uint64_t db_max = mysql.MaxSyncSeq(RECEIVER_UID);
+		Check(checkpoint == db_max, "sync-bootstrap: checkpoint == DB max sync_seq",
+			("checkpoint=" + std::to_string(checkpoint) +
+			 " db_max=" + std::to_string(db_max)).c_str());
+		if (checkpoint != db_max) all_ok = false;
+	}
+
+	// checkpoint 之后 sender 发 3 条。
+	TcpClient cS;
+	if (!LoginUser(cS, SENDER_UID).ok) {
+		Fail("sync-bootstrap: login sender", "gate/chat login failed"); cR.Close(); cleanup(); pm.StopAll(); return false;
+	}
+	std::vector<std::int64_t> sent_mids;
+	bool send_ok = true;
+	for (int i = 0; i < MSG_COUNT; ++i) {
+		const std::string uid_str = "imtest-boot-" + tag + "-" + std::to_string(i);
+		if (!cS.Send(ID_TEXT_CHAT_MSG_REQ, BuildTextReq(SENDER_UID, RECEIVER_UID,
+			THREAD_ID, "boot-" + std::to_string(i), uid_str))) { send_ok = false; break; }
+		Frame f;
+		if (!cS.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &f)) { send_ok = false; break; }
+		auto j = ParseJson(f.body);
+		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { send_ok = false; break; }
+		sent_mids.push_back(JsonIdStr(j, "message_id", 0));
+	}
+	Check(send_ok && (int)sent_mids.size() == MSG_COUNT,
+		"sync-bootstrap: sender sent 3 messages after checkpoint",
+		("sent=" + std::to_string(sent_mids.size())).c_str());
+	if (!send_ok || (int)sent_mids.size() != MSG_COUNT) all_ok = false;
+
+	// 从 checkpoint 同步：恰得 3 条新消息（之前的旧消息不推），sync_seq 严格递增。
+	std::vector<SyncEnvelope> msgs;
+	std::uint64_t next_seq = checkpoint;
+	bool has_more = false;
+	bool sync_ok = DoSyncPage(cR, RECEIVER_UID, checkpoint, 100, msgs, next_seq, has_more);
+	bool increasing = true;
+	{
+		std::uint64_t prev = checkpoint;
+		for (const auto& m : msgs) {
+			if (m.sync_seq <= prev) increasing = false;
+			prev = m.sync_seq;
+		}
+	}
+	std::set<std::int64_t> sent_set(sent_mids.begin(), sent_mids.end());
+	std::set<std::int64_t> got_set;
+	for (const auto& m : msgs) got_set.insert(m.message_id);
+	Check(sync_ok && increasing && got_set == sent_set && (int)msgs.size() == MSG_COUNT,
+		"sync-bootstrap: only post-checkpoint messages synced, ascending",
+		("synced=" + std::to_string(msgs.size()) +
+		 " increasing=" + std::to_string(increasing) +
+		 " has_more=" + std::to_string(has_more)).c_str());
+	if (!(sync_ok && increasing && got_set == sent_set)) all_ok = false;
+
+	// 再次 bootstrap：checkpoint 推进到最后一条的 sync_seq。
+	std::uint64_t checkpoint2 = 0;
+	bool boot2_ok = DoSyncBootstrap(cR, RECEIVER_UID, checkpoint2);
+	bool advanced = boot2_ok && !msgs.empty() && checkpoint2 == msgs.back().sync_seq;
+	Check(advanced, "sync-bootstrap: checkpoint advances past synced messages",
+		("checkpoint2=" + std::to_string(checkpoint2)).c_str());
+	if (!advanced) all_ok = false;
+
+	// 从 checkpoint2 同步：空页，next_sync_seq=after_sync_seq、has_more=false。
+	{
+		std::vector<SyncEnvelope> empty_msgs;
+		std::uint64_t next2 = 0;
+		bool more2 = true;
+		bool page_ok = DoSyncPage(cR, RECEIVER_UID, checkpoint2, 100, empty_msgs, next2, more2);
+		Check(page_ok && empty_msgs.empty() && next2 == checkpoint2 && !more2,
+			"sync-bootstrap: empty page keeps cursor, has_more=false",
+			("msgs=" + std::to_string(empty_msgs.size()) +
+			 " next=" + std::to_string(next2) +
+			 " has_more=" + std::to_string(more2)).c_str());
+		if (!(page_ok && empty_msgs.empty() && next2 == checkpoint2 && !more2)) all_ok = false;
+	}
+
+	cS.Close(); cR.Close();
+	cleanup();
+	pm.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// big-ids (64 位 message_id 链路)
+//
+// ALTER TABLE chat_message AUTO_INCREMENT=4294967300（>2^32）后收发一条文本，
+// 断言 >32 位 message_id 以十进制字符串在 1018/1052 全链路无损、同步游标正常
+// 推进；场景结束（含失败路径）恢复原 AUTO_INCREMENT。
+// ---------------------------------------------------------------------------
+bool ScenarioBigIds() {
+	std::printf("\n=== scenario: big-ids ===\n");
+	ProcessManager pm;
+	Redis redis; Mysql mysql;
+	std::string tag = RunTag();
+	bool all_ok = true;
+	const std::int64_t BIG_BASE = 4294967300LL;  // 2^32 + 4
+
+	if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)) {
+		Fail("big-ids: connect Redis", "redis connect failed"); return false;
+	}
+	if (!mysql.Connect(MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWD, MYSQL_SCHEMA)) {
+		Fail("big-ids: connect MySQL", "mysql connect failed"); return false;
+	}
+
+	// 先删测试行（含大 id 行）再把 AUTO_INCREMENT 调回原值，顺序不能反：
+	// 大 id 行还在时无法把 AUTO_INCREMENT 调到其之下。
+	const long long orig_ai = mysql.GetChatMessageAutoIncrement();
+	auto cleanup = [&] {
+		CleanupFootprint(redis, mysql);
+		if (orig_ai > 0) mysql.SetChatMessageAutoIncrement(orig_ai);
+	};
+	cleanup();
+
+	if (orig_ai <= 0 || !mysql.SetChatMessageAutoIncrement(BIG_BASE)) {
+		Fail("big-ids: raise AUTO_INCREMENT", "alter table failed");
+		cleanup(); return false;
+	}
+
+	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
+		MakeStatusIni(), STATUS_GRPC_PORT }, 15000)) {
+		Fail("big-ids: start StatusServer", "ready timeout"); cleanup(); return false;
+	}
+	if (!pm.Start({ "GateServer", { "GateServer", "GateServer.exe" },
+		MakeGateIni(), GATE_HTTP_PORT }, 15000)) {
+		Fail("big-ids: start GateServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+	}
+	if (!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
+		MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
+		CHAT1_TCP_PORT }, 15000)) {
+		Fail("big-ids: start ChatServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+	}
+
+	// receiver 取同步起点。
+	TcpClient cR;
+	if (!LoginUser(cR, RECEIVER_UID).ok) {
+		Fail("big-ids: login receiver", "gate/chat login failed"); cleanup(); pm.StopAll(); return false;
+	}
+	std::uint64_t checkpoint = 0;
+	if (!DoSyncBootstrap(cR, RECEIVER_UID, checkpoint)) {
+		Fail("big-ids: bootstrap checkpoint", "1051/1052 bootstrap failed");
+		cR.Close(); cleanup(); pm.StopAll(); return false;
+	}
+
+	// sender 发一条文本，1018 的 message_id 必须是 >32 位的十进制字符串。
+	TcpClient cS;
+	if (!LoginUser(cS, SENDER_UID).ok) {
+		Fail("big-ids: login sender", "gate/chat login failed"); cR.Close(); cleanup(); pm.StopAll(); return false;
+	}
+	const std::string uid_str = "imtest-bigids-" + tag;
+	cS.Send(ID_TEXT_CHAT_MSG_REQ, BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+		"big-ids-msg", uid_str));
+	Frame rsp; bool got_rsp = cS.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &rsp);
+	std::int64_t sent_mid = -1;
+	bool mid_is_string = false;
+	if (got_rsp) {
+		auto j = ParseJson(rsp.body);
+		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS) {
+			mid_is_string = j.contains("message_id") && j["message_id"].is_string();
+			sent_mid = JsonIdStr(j, "message_id", -1);
+		}
+	}
+	Check(got_rsp && mid_is_string && sent_mid >= BIG_BASE,
+		"big-ids: 1018 message_id is >32-bit decimal string",
+		("mid=" + std::to_string(sent_mid) +
+		 " is_string=" + std::to_string(mid_is_string)).c_str());
+	if (!(got_rsp && sent_mid >= BIG_BASE)) { cS.Close(); cR.Close(); cleanup(); pm.StopAll(); return false; }
+
+	// 1018 的 thread_id 也是十进制字符串。
+	{
+		auto j = ParseJson(rsp.body);
+		const bool tid_ok = j.contains("thread_id") && j["thread_id"].is_string() &&
+			JsonIdStr(j, "thread_id", -1) == THREAD_ID;
+		Check(tid_ok, "big-ids: 1018 thread_id is decimal string",
+			tid_ok ? "ok" : "thread_id not string");
+		if (!tid_ok) all_ok = false;
+	}
+
+	// DB 直读：64 位值无损落库。
+	{
+		auto rows = mysql.QueryByUniqueId(SENDER_UID, uid_str);
+		Check(rows.size() == 1 && rows[0].message_id == sent_mid,
+			"big-ids: DB row keeps >32-bit message_id",
+			rows.empty() ? "no row" : ("mid=" + std::to_string(rows[0].message_id)).c_str());
+		if (!(rows.size() == 1 && rows[0].message_id == sent_mid)) all_ok = false;
+	}
+
+	// 1052 同步流：大 id envelope 无损，sync_seq 游标正常推进。
+	{
+		std::vector<SyncEnvelope> msgs;
+		std::uint64_t next_seq = checkpoint;
+		bool has_more = false;
+		bool synced = DoSyncPage(cR, RECEIVER_UID, checkpoint, 100, msgs, next_seq, has_more);
+		bool found = false;
+		std::uint64_t msg_seq = 0;
+		for (const auto& m : msgs) {
+			if (m.message_id == sent_mid) { found = true; msg_seq = m.sync_seq; break; }
+		}
+		Check(synced && found && msg_seq > checkpoint && next_seq == msg_seq,
+			"big-ids: 1052 sync delivers big id, cursor advances",
+			("synced=" + std::to_string(synced) + " found=" + std::to_string(found) +
+			 " seq=" + std::to_string(msg_seq) +
+			 " next=" + std::to_string(next_seq)).c_str());
+		if (!(synced && found && msg_seq > checkpoint)) all_ok = false;
+	}
+
+	// 1049 ACK 大 id（字符串数组元素）→ 1050 成功。
+	{
+		bool ack_ok = cR.Send(ID_CHAT_DELIVERY_ACK_REQ, BuildAckReq(RECEIVER_UID, {sent_mid}));
+		if (ack_ok) {
+			Frame af;
+			ack_ok = cR.Wait(ID_CHAT_DELIVERY_ACK_RSP, 10000, &af) &&
+				ParseJson(af.body).value("error", -1) == ERR_SUCCESS;
+		}
+		Check(ack_ok, "big-ids: ACK big message_id succeeds", "ack failed");
+		if (!ack_ok) all_ok = false;
+	}
+
+	cS.Close(); cR.Close();
 	cleanup();
 	pm.StopAll();
 	return all_ok;

@@ -49,6 +49,7 @@ set(LLFCCHAT_SOURCES
   src/authenfriend.cpp
   src/chatdialog.cpp
   src/chatpage.cpp
+  src/chatsyncmanager.cpp
   src/chatuserlist.cpp
   src/chatuserwid.cpp
   src/clickedbtn.cpp
@@ -71,9 +72,12 @@ set(LLFCCHAT_SOURCES
   src/lineitem.cpp
   src/listitembase.cpp
   src/loadingdlg.cpp
+  src/localchatdb.cpp
+  src/localchatstore.cpp
   src/logindialog.cpp
   src/main.cpp
   src/mainwindow.cpp
+  src/outboxdispatcher.cpp
   src/registerdialog.cpp
   src/resetdialog.cpp
   src/searchlist.cpp
@@ -102,6 +106,7 @@ set(LLFCCHAT_HEADERS
   include/authenfriend.h
   include/chatdialog.h
   include/chatpage.h
+  include/chatsyncmanager.h
   include/chatuserlist.h
   include/chatuserwid.h
   include/clickedbtn.h
@@ -125,8 +130,12 @@ set(LLFCCHAT_HEADERS
   include/lineitem.h
   include/listitembase.h
   include/loadingdlg.h
+  include/localchatdb.h
+  include/localchatstore.h
+  include/localmessageDTO.h
   include/logindialog.h
   include/mainwindow.h
+  include/outboxdispatcher.h
   include/registerdialog.h
   include/resetdialog.h
   include/searchlist.h
@@ -192,6 +201,7 @@ target_link_libraries(llfcchat PRIVATE
   Qt5::Core
   Qt5::Gui
   Qt5::Network
+  Qt5::Sql
   Qt5::Widgets
   Qt5::WinMain
 )
@@ -204,6 +214,7 @@ qt5_import_plugins(llfcchat
     Qt5::QJpegPlugin
     Qt5::QWebpPlugin
   INCLUDE_BY_TYPE styles Qt5::QWindowsVistaStylePlugin
+  INCLUDE_BY_TYPE sqldrivers Qt5::QSQLiteDriverPlugin
 )
 
 llfc_apply_msvc_defaults(llfcchat)

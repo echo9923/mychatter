@@ -287,8 +287,7 @@ std::string MakeChatIni(const std::string& self_name, unsigned short tcp_port,
 	s += RedisBlock();
 	s += "[Concurrency]\nLogicWorkers = " + std::to_string(logic_workers)
 		+ "\nDeliveryWorkers = 4\n";
-	s += "[Delivery]\nOfflineTtlSeconds = 604800\nOfflinePullBatch = 100\n";
-	s += "PullMaxBytes = 30000\nRpcDeadlineMs = 3000\nRpcMaxAttempts = 3\nRpcBackoffMs = 100\n";
+	s += "[Delivery]\nRpcDeadlineMs = 3000\nRpcMaxAttempts = 3\nRpcBackoffMs = 100\n";
 	s += "[Discovery]\nReportIntervalSeconds = 2\nLeaseTtlSeconds = 8\n";
 	return s;
 }
@@ -315,8 +314,7 @@ std::string MakeResourceIni() {
 	s += RedisBlock();
 	s += "[Output]\nPath = bin\n";
 	s += "[Static]\nPath = static\n";
-	s += "[Delivery]\nOfflineTtlSeconds = 604800\nOfflinePullBatch = 100\n";
-	s += "PullMaxBytes = 30000\nRpcDeadlineMs = 3000\nRpcMaxAttempts = 3\nRpcBackoffMs = 100\n";
+	s += "[Delivery]\nRpcDeadlineMs = 3000\nRpcMaxAttempts = 3\nRpcBackoffMs = 100\n";
 	return s;
 }
 

@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 
@@ -67,8 +68,9 @@ inline constexpr short ID_IMG_CHAT_UPLOAD_RSP     = 1038;
 inline constexpr short ID_NOTIFY_IMG_CHAT_MSG     = 1039;
 inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = 1049;
 inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = 1050;
-inline constexpr short ID_PULL_OFFLINE_MSG_REQ    = 1051;
-inline constexpr short ID_PULL_OFFLINE_MSG_RSP    = 1052;
+// 1051/1052 数值不变，语义由离线拉取改为 user_message_sync 增量同步。
+inline constexpr short ID_SYNC_MESSAGE_REQ        = 1051;
+inline constexpr short ID_SYNC_MESSAGE_RSP        = 1052;
 // Resource auth: client presents the login token once per connection;
 // all subsequent file frames are authorized against the bound session.
 inline constexpr short ID_RESOURCE_LOGIN_REQ       = 1053;
@@ -138,8 +140,13 @@ inline std::string UserTokenKey(int uid) {
 // by an entire scenario run. Used for the final summary line.
 inline int Failures() { return g_failures.load(); }
 
-// PullMaxBytes from [Delivery] config; the harness-generated INI sets 30000.
-// Used by pull-bytes to assert the 1052 frame stays under this ceiling.
-inline constexpr int PULL_MAX_BYTES = 30000;
+// ---- 协议字符串化辅助 -------------------------------------------------------
+// TCP JSON 中 message_id/thread_id/sync_seq 一律十进制字符串（64 位无损）。
+inline std::string ToIdStr(std::int64_t v) { return std::to_string(v); }
+// 解析十进制字符串 id；空串/非法输入返回 dfl。
+inline std::int64_t ParseIdStr(const std::string& s, std::int64_t dfl = 0) {
+	if (s.empty()) return dfl;
+	try { return std::stoll(s); } catch (...) { return dfl; }
+}
 
 } // namespace imt

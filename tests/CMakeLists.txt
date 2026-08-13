@@ -59,6 +59,48 @@ llfc_apply_msvc_defaults(password_hash_tests)
 
 add_test(NAME password_hash_tests COMMAND password_hash_tests)
 
+# --- Client local store (SQLite) tests ---------------------------------------
+# Compiles the client's production LocalChatDb sources directly (mirrors
+# worker_pool_tests). localchatdb.cpp includes the client's global.h, which
+# drags in Qt Widgets/Network headers and needs global.cpp for
+# calculateFileHash, so the Qt module set matches the client's (minus WinMain).
+# Qt5 is static in the vcpkg triplet, so the QSQLITE driver is pulled in via
+# qt5_import_plugins exactly like the llfcchat client target.
+llfc_find_client_dependencies()
+
+add_executable(local_store_tests
+  local_store_tests.cpp
+  ../client/llfcchat/src/localchatdb.cpp
+  ../client/llfcchat/src/global.cpp
+)
+
+target_include_directories(local_store_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/include"
+)
+
+target_link_libraries(local_store_tests PRIVATE
+  Qt5::Core
+  Qt5::Gui
+  Qt5::Network
+  Qt5::Sql
+  Qt5::Widgets
+)
+
+# Client code (and the test itself) is C++11 — pin it so that stays enforced.
+set_target_properties(local_store_tests PROPERTIES
+  CXX_STANDARD 11
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+)
+
+qt5_import_plugins(local_store_tests
+  INCLUDE_BY_TYPE sqldrivers Qt5::QSQLiteDriverPlugin
+)
+
+llfc_apply_msvc_defaults(local_store_tests)
+
+add_test(NAME local_store_tests COMMAND local_store_tests)
+
 # ---------------------------------------------------------------------------
 # Integration tests — headless client + harness (Verification.2-3 first half).
 #
@@ -139,6 +181,7 @@ if(LLFC_RUN_INTEGRATION_TESTS)
     gate-smoke order-n4 order-n1 dedup
     offline lost-ack pull-bytes cross-server image-offline
     status-discovery chat-failover simple-auth
+    sync-bootstrap big-ids
   )
   foreach(_scn ${_im_scenarios})
     add_test(NAME im_integration_${_scn}

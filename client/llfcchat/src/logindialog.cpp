@@ -9,6 +9,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include "filetcpmgr.h"
+#include "localchatstore.h"
 
 LoginDialog::LoginDialog(QWidget *parent) :
     QDialog(parent),
@@ -100,6 +101,8 @@ void LoginDialog::initHttpHandlers()
         _si = std::make_shared<ServerInfo>();
 
         _si->_uid = jsonObj["uid"].toInt();
+        //拿到 uid 后立即打开该账号的本地库（后续秒开/落库都依赖它）
+        LocalChatStore::GetInstance()->openUserDb(_si->_uid);
         _si->_chat_host = jsonObj["chathost"].toString();
         _si->_chat_port = jsonObj["chatport"].toString();
         _si->_token = jsonObj["token"].toString();

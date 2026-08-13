@@ -377,9 +377,9 @@ void CSession::NotifyChatImgRecv(const ::message::NotifyChatImgReq* request) {
 	//统一可映射字段（计划5.5/6.4）：1039 JSON 含 message_id,unique_id="",
 	//thread_id,fromuid,touid,msg_type=PIC,content=file_name,content_size=total_size
 	//十进制字符串。客户端据此构造与文本一致的 envelope。
-	rtvalue["message_id"] = request->message_id();
+	rtvalue["message_id"] = std::to_string(request->message_id());
 	rtvalue["unique_id"] = "";
-	rtvalue["thread_id"] = request->thread_id();
+	rtvalue["thread_id"] = std::to_string(request->thread_id());
 	rtvalue["fromuid"] = request->from_uid();
 	rtvalue["touid"] = request->to_uid();
 	rtvalue["msg_type"] = static_cast<int>(ChatMsgType::PIC);
