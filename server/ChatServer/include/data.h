@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <memory>
 
 /**
  * @brief 用户基本信息结构体
@@ -58,7 +59,7 @@ struct ApplyInfo {
  * 对应数据库中的聊天会话记录，表示两个用户之间的私聊或一个群聊。
  */
 struct ChatThreadInfo {
-	int _thread_id;     ///< 会话线程ID（主键）
+	std::int64_t _thread_id{0};  ///< 会话线程ID（主键，64 位）
 	std::string _type;  ///< 会话类型: "private"(私聊) 或 "group"(群聊)
 	int _user1_id;      ///< 私聊时对应 user1_id；群聊时设为 0
 	int _user2_id;      ///< 私聊时对应 user2_id；群聊时设为 0
@@ -81,8 +82,8 @@ enum class DeliveryStatus {
  * 对应数据库中的一条聊天消息记录。
  */
 struct ChatMessage {
-	int message_id;         ///< 消息ID（主键，自增）
-	int thread_id;          ///< 所属会话线程ID
+	std::int64_t message_id{0}; ///< 消息ID（主键，自增，64 位）
+	std::int64_t thread_id{0};  ///< 所属会话线程ID（64 位）
 	int sender_id;          ///< 发送者用户ID
 	int recv_id;            ///< 接收者用户ID
 	std::string unique_id;  ///< 消息唯一标识（客户端生成，用于去重，历史/系统消息为空串）
@@ -95,6 +96,17 @@ struct ChatMessage {
 };
 
 /**
+ * @brief 增量同步结果项
+ *
+ * user_message_sync 与 chat_message JOIN 的一行：sync_seq 为该用户的同步序号，
+ * 同一 uid 下严格递增，客户端据此推进同步游标。
+ */
+struct SyncedMessage {
+	std::uint64_t sync_seq{0};              ///< 用户维度同步序号（user_message_sync 主键）
+	std::shared_ptr<ChatMessage> msg;       ///< 消息本体
+};
+
+/**
  * @brief 分页查询结果结构体
  * 
  * 用于聊天消息的分页加载，支持基于游标的向下滚动加载。
@@ -102,7 +114,7 @@ struct ChatMessage {
 struct PageResult {
 	std::vector<ChatMessage> messages; ///< 本页查询到的消息列表
 	bool load_more;                    ///< 是否还有更多数据可加载
-	int next_cursor;                   ///< 下一页的游标（本页最后一条message_id）
+	std::int64_t next_cursor{0};       ///< 下一页的游标（本页最后一条message_id）
 };
 
 /**

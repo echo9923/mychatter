@@ -16,7 +16,7 @@ struct FileTask {
 	FileTask(std::shared_ptr<CSession> session,  MSG_TYPES msg_type, int uid, std::string path, std::string name,
 		int seq, int total_size, int trans_size, int last,
 		std::string file_data,
-		std::function<void(const json&)> callback,int chat_msg_id=0,
+		std::function<void(const json&)> callback,long long chat_msg_id=0,
 		int sender = 0, int receiver = 0) :_session(session), _msg_type(msg_type),_uid(uid),
 		_seq(seq), _path(path), _name(name), _total_size(total_size),
 		_trans_size(trans_size), _last(last), _file_data(file_data), _callback(callback), _chat_msg_id(chat_msg_id),
@@ -34,10 +34,10 @@ struct FileTask {
 	int _last ;
 	std::string _file_data;
 	std::function<void(const json&)>  _callback;  //添加回调函数
-	int _chat_msg_id;
+	long long _chat_msg_id;   // 64 位：关联 chat_message.message_id
 	int _sender;
 	int _receiver;
-	int _thread_id;
+	long long _thread_id;     // 64 位
 };
 
 
@@ -65,7 +65,7 @@ public:
 	void PostTask(std::shared_ptr<FileTask> task);
 private:
 	void task_callback(std::shared_ptr<FileTask>);
-	//图片上传完成点统一处理：UpdateUploadStatus 成功后激活 pending（ZADD+EXPIRE）并尝试跨服 live 通知（计划5.7）
+	//图片上传完成点统一处理：UpdateUploadStatusWithSync 单事务（状态迁移+双方同步行）成功后尝试跨服 live 通知（计划5.7）
 	void CompleteChatImageUpload(std::shared_ptr<FileTask> task);
 	std::unordered_map<MSG_TYPES, std::function<void(std::shared_ptr<FileTask>)> > _handlers;
 	std::thread _work_thread;

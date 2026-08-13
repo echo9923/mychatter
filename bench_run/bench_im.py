@@ -125,7 +125,8 @@ async def main():
             while len(send_t0[a]) >= args.window:
                 await asyncio.sleep(0.0005)
             send_t0[a][uq] = time.perf_counter()
-            await send_frame(w, 1017, {"fromuid": a, "touid": b, "thread_id": tid,
+            # 协议字符串化：1017 请求 thread_id 为十进制字符串
+            await send_frame(w, 1017, {"fromuid": a, "touid": b, "thread_id": str(tid),
                 "content": CONTENT, "unique_id": uq})
 
     readers = [asyncio.create_task(reader_loop(u)) for u in conns]

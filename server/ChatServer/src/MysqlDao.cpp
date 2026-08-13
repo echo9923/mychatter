@@ -2,6 +2,23 @@
 #include "ConfigMgr.h"
 #include "PasswordHash.h"
 
+namespace {
+/// 在已有事务的连接上 INSERT IGNORE 双方同步行（sender/recv 各一行，增量同步数据源）。
+/// 重复执行天然无操作；SQL 错误抛异常，由调用方 catch 后整体回滚。
+void InsertSyncRowsIgnore(sql::Connection* conn, std::int64_t message_id, int sender_id, int recv_id) {
+	std::unique_ptr<sql::PreparedStatement> pstmt(
+		conn->prepareStatement(
+			"INSERT IGNORE INTO user_message_sync (uid, message_id) VALUES (?, ?), (?, ?)"
+		)
+	);
+	pstmt->setInt(1, sender_id);
+	pstmt->setInt64(2, message_id);
+	pstmt->setInt(3, recv_id);
+	pstmt->setInt64(4, message_id);
+	pstmt->executeUpdate();
+}
+} // namespace
+
 MysqlDao::MysqlDao()
 {
 	auto& cfg = ConfigMgr::Inst();
@@ -396,6 +413,8 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
 
 			if (rs->next()) {
 				auto messageId = rs->getInt64(1);
+				// 系统消息（申请描述）同事务补双方同步行，否则永远不会被增量同步
+				InsertSyncRowsIgnore(con->_con.get(), messageId, to, from);
 				auto tx_data = std::make_shared<AddFriendMsg>();
 				tx_data->set_sender_id(to);
 				tx_data->set_msg_id(messageId);
@@ -437,6 +456,8 @@ bool MysqlDao::AddFriend(const int& from, const int& to, std::string back_name,
 
 			if (rs->next()) {
 				auto messageId = rs->getInt64(1);
+				// 系统消息（成为好友）同事务补双方同步行，否则永远不会被增量同步
+				InsertSyncRowsIgnore(con->_con.get(), messageId, from, to);
 				auto tx_data = std::make_shared<AddFriendMsg>();
 				tx_data->set_sender_id(from);
 				tx_data->set_msg_id(messageId);
@@ -657,7 +678,7 @@ bool MysqlDao::GetUserThreads(
 	int      pageSize,
 	std::vector<std::shared_ptr<ChatThreadInfo>>& threads,
 	bool& loadMore,
-	int& nextLastId)
+	int64_t& nextLastId)
 {
 	// 初始状态
 	loadMore = false;
@@ -742,7 +763,7 @@ bool MysqlDao::GetUserThreads(
 	return true;
 }
 
-bool MysqlDao::CreatePrivateChat(int user1_id, int user2_id, int& thread_id)
+bool MysqlDao::CreatePrivateChat(int user1_id, int user2_id, std::int64_t& thread_id)
 {
 	auto con = pool_->getConnection();
 	if (!con) {
@@ -771,7 +792,7 @@ bool MysqlDao::CreatePrivateChat(int user1_id, int user2_id, int& thread_id)
 
 		if (res->next()) {
 			// 如果已存在，返回该 thread_id
-			thread_id = res->getInt("thread_id");
+			thread_id = res->getInt64("thread_id");
 			conn->commit();  // 提交事务
 			return true;
 		}
@@ -789,7 +810,7 @@ bool MysqlDao::CreatePrivateChat(int user1_id, int user2_id, int& thread_id)
 		std::unique_ptr<sql::PreparedStatement> pstmt_last_insert_id(conn->prepareStatement(get_last_insert_id_sql));
 		std::unique_ptr<sql::ResultSet> res_last_id(pstmt_last_insert_id->executeQuery());
 		res_last_id->next();
-		thread_id = res_last_id->getInt(1);
+		thread_id = res_last_id->getInt64(1);
 
 		// 3. 在 private_chat 表插入新记录
 		std::string insert_private_chat_sql =
@@ -825,7 +846,7 @@ bool MysqlDao::CreatePrivateChat(int user1_id, int user2_id, int& thread_id)
 				std::unique_ptr<sql::ResultSet> res_retry(pstmt_retry->executeQuery());
 
 				if (res_retry->next()) {
-					thread_id = res_retry->getInt("thread_id");
+					thread_id = res_retry->getInt64("thread_id");
 					return true;
 				}
 			}
@@ -841,7 +862,7 @@ bool MysqlDao::CreatePrivateChat(int user1_id, int user2_id, int& thread_id)
 	return false;
 }
 
-std::shared_ptr<PageResult> MysqlDao::LoadChatMsg(int thread_id, int last_message_id, int page_size)
+std::shared_ptr<PageResult> MysqlDao::LoadChatMsg(std::int64_t thread_id, std::int64_t last_message_id, int page_size)
 {
 	auto con = pool_->getConnection();
 	if (!con) {
@@ -872,8 +893,8 @@ std::shared_ptr<PageResult> MysqlDao::LoadChatMsg(int thread_id, int last_messag
 		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
 			conn->prepareStatement(sql)
 			);
-		pstmt->setInt(1, thread_id);
-		pstmt->setInt(2, last_message_id);
+		pstmt->setInt64(1, thread_id);
+		pstmt->setInt64(2, last_message_id);
 		pstmt->setInt(3, fetch_limit);
 
 		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
@@ -955,7 +976,7 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 	if (!rs->next()) {
 		return SaveMessageResult::Failed;
 	}
-	msg->message_id = static_cast<int>(rs->getUInt64(1));
+	msg->message_id = static_cast<std::int64_t>(rs->getUInt64(1));
 
 	// 无条件按 canonical message_id 回读核对冲突字段，并恢复持久化状态。
 	// 行不存在→Failed；五个业务字段全等才是同一消息；否则→Conflict。
@@ -973,7 +994,7 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 	}
 
 	bool same =
-		static_cast<int>(rr->getUInt64("thread_id")) == msg->thread_id &&
+		static_cast<std::int64_t>(rr->getUInt64("thread_id")) == msg->thread_id &&
 		static_cast<int>(rr->getUInt64("recv_id")) == msg->recv_id &&
 		rr->getString("content") == msg->content &&
 		rr->getInt("msg_type") == msg->msg_type &&
@@ -984,6 +1005,12 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 		msg->status = rr->getInt("status");
 		msg->chat_time = rr->getString("created_at");
 		msg->delivery_status = static_cast<DeliveryStatus>(rr->getInt("delivery_status"));
+		// 非图片元数据（msg_type!=1）同事务补双方同步行；INSERT IGNORE 使 Duplicate 天然
+		// 无操作。图片同步行由 ResourceServer 上传完成点（UpdateUploadStatusWithSync）补写。
+		// Conflict 不写：canonical 行属于另一消息，避免把它推给非其接收者的用户。
+		if (msg->msg_type != static_cast<int>(ChatMsgType::PIC)) {
+			InsertSyncRowsIgnore(conn, msg->message_id, msg->sender_id, msg->recv_id);
+		}
 		return affected == 1 ? SaveMessageResult::Stored : SaveMessageResult::Duplicate;
 	}
 	out_conflict_uid = msg->unique_id;
@@ -1020,12 +1047,12 @@ SaveMessageResult MysqlDao::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
 	}
 }
 
-std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetPendingMessages(int recv_uid,
-	int after_message_id, int limit) {
-	std::vector<std::shared_ptr<ChatMessage>> result;
+bool MysqlDao::GetMessagesAfterSyncSeq(int uid, std::uint64_t after_sync_seq, int limit,
+	std::vector<SyncedMessage>& messages) {
+	messages.clear();
 	auto con = pool_->getConnection();
 	if (!con) {
-		return result;
+		return false;
 	}
 	Defer defer([this, &con]() {
 		pool_->returnConnection(std::move(con));
@@ -1033,25 +1060,26 @@ std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetPendingMessages(int recv_
 	auto& conn = con->_con;
 
 	try {
-		// delivery_status=0 的待投递消息；排除尚未上传完成的图片（msg_type=PIC && status=UN_UPLOAD）。
-		// 多取一条供调用方判断 has_more，按 message_id 升序。
+		// 按 sync_seq 严格升序，多取一条供调用方判断 has_more
 		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
 			conn->prepareStatement(
-				"SELECT message_id, thread_id, sender_id, recv_id, content, "
-				"created_at, updated_at, status, msg_type, unique_id, "
-				"content_size, delivery_status "
-				"FROM chat_message "
-				"WHERE recv_id = ? AND delivery_status = 0 AND message_id > ? "
-				"AND NOT (msg_type = 1 AND status = 3) "
-				"ORDER BY message_id ASC LIMIT ?"
+				"SELECT s.sync_seq, m.message_id, m.thread_id, m.sender_id, m.recv_id, m.content, "
+				"m.created_at, m.updated_at, m.status, m.msg_type, m.unique_id, "
+				"m.content_size, m.delivery_status "
+				"FROM user_message_sync s "
+				"JOIN chat_message m ON m.message_id = s.message_id "
+				"WHERE s.uid = ? AND s.sync_seq > ? "
+				"ORDER BY s.sync_seq ASC LIMIT ?"
 			)
 		);
-		pstmt->setInt(1, recv_uid);
-		pstmt->setInt(2, after_message_id);
+		pstmt->setInt(1, uid);
+		pstmt->setUInt64(2, after_sync_seq);
 		pstmt->setInt(3, limit + 1);  // 多取一条供 has_more 判断
 
 		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
 		while (rs->next()) {
+			SyncedMessage row;
+			row.sync_seq = rs->getUInt64("sync_seq");
 			auto msg = std::make_shared<ChatMessage>();
 			msg->message_id = rs->getUInt64("message_id");
 			msg->thread_id = rs->getUInt64("thread_id");
@@ -1064,18 +1092,51 @@ std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetPendingMessages(int recv_
 			msg->unique_id = rs->getString("unique_id");
 			msg->content_size = rs->getUInt64("content_size");
 			msg->delivery_status = static_cast<DeliveryStatus>(rs->getInt("delivery_status"));
-			result.push_back(msg);
+			row.msg = msg;
+			messages.push_back(row);
 		}
+		return true;
 	}
 	catch (sql::SQLException& e) {
-		std::cerr << "GetPendingMessages SQLException: " << e.what() << std::endl;
-		result.clear();
+		std::cerr << "GetMessagesAfterSyncSeq SQLException: " << e.what() << std::endl;
+		messages.clear();
+		return false;
 	}
-	return result;
+}
+
+bool MysqlDao::GetMaxSyncSeq(int uid, std::uint64_t& max_seq) {
+	max_seq = 0;
+	auto con = pool_->getConnection();
+	if (!con) {
+		return false;
+	}
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+	});
+	auto& conn = con->_con;
+
+	try {
+		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
+			conn->prepareStatement(
+				"SELECT COALESCE(MAX(sync_seq), 0) AS max_seq FROM user_message_sync WHERE uid = ?"
+			)
+		);
+		pstmt->setInt(1, uid);
+
+		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
+		if (rs->next()) {
+			max_seq = rs->getUInt64("max_seq");
+		}
+		return true;
+	}
+	catch (sql::SQLException& e) {
+		std::cerr << "GetMaxSyncSeq SQLException: " << e.what() << std::endl;
+		return false;
+	}
 }
 
 std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetMessagesByIds(int recv_uid,
-	const std::vector<int>& ids) {
+	const std::vector<std::int64_t>& ids) {
 	std::vector<std::shared_ptr<ChatMessage>> result;
 	if (ids.empty()) {
 		return result;
@@ -1103,7 +1164,7 @@ std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetMessagesByIds(int recv_ui
 		auto pstmt = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(sql));
 		pstmt->setInt(1, recv_uid);
 		for (std::size_t i = 0; i < ids.size(); ++i) {
-			pstmt->setInt(static_cast<unsigned int>(2 + i), ids[i]);
+			pstmt->setInt64(static_cast<unsigned int>(2 + i), ids[i]);
 		}
 
 		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
@@ -1130,7 +1191,7 @@ std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetMessagesByIds(int recv_ui
 	return result;
 }
 
-bool MysqlDao::MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids) {
+bool MysqlDao::MarkMessagesDelivered(int recv_uid, const std::vector<std::int64_t>& ids) {
 	if (ids.empty()) {
 		return true;
 	}
@@ -1158,7 +1219,7 @@ bool MysqlDao::MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids) 
 		auto pstmt = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(sql));
 		pstmt->setInt(1, recv_uid);
 		for (std::size_t i = 0; i < ids.size(); ++i) {
-			pstmt->setInt(static_cast<unsigned int>(2 + i), ids[i]);
+			pstmt->setInt64(static_cast<unsigned int>(2 + i), ids[i]);
 		}
 		pstmt->executeUpdate();
 		return true;

@@ -209,7 +209,7 @@ void LogicWorker::RegisterCallBacks()
 			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
 			auto sender = uid;
 			auto receiver = root["receiver"].get<int>();
-			auto message_id = root["message_id"].get<int>();
+			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
 			//转化为字符串
 			auto uid_str = std::to_string(uid);
 			auto file_path_str = (file_path / uid_str / name).string();
@@ -298,7 +298,7 @@ void LogicWorker::RegisterCallBacks()
 			auto file_data = root["data"].get<std::string>();
 			auto file_path = ConfigMgr::Inst().GetFileOutPath();
 			auto uid = session->GetUserId();
-			auto message_id = root["message_id"].get<int>();
+			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
 			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
 			auto sender = uid;
 			auto receiver = root["receiver"].get<int>();
@@ -387,7 +387,7 @@ void LogicWorker::RegisterCallBacks()
 			auto file_data = root["data"].get<std::string>();
 			auto file_path = ConfigMgr::Inst().GetFileOutPath();
 			auto uid = session->GetUserId();
-			auto message_id = root["message_id"].get<int>();
+			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
 			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
 			auto sender = uid;
 			auto receiver = root["receiver"].get<int>();
@@ -467,7 +467,7 @@ void LogicWorker::RegisterCallBacks()
 	_fun_callbacks[ID_IMG_CHAT_DOWN_INFO_SYNC_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
-			auto message_id = root["message_id"].get<int>();
+			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
 			auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(message_id);
 			if (chat_msg == nullptr) {
 				json rtvalue;
@@ -518,7 +518,7 @@ void LogicWorker::RegisterCallBacks()
 			auto total_size_str = root["total_size"].get<std::string>();
 			auto trans_size_str = root["trans_size"].get<std::string>();
 			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto message_id = root["message_id"].get<int>();
+			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
 			auto sender = root["sender_id"].get<int>();
 			auto receiver = root["receiver_id"].get<int>();
 			auto uid = session->GetUserId();

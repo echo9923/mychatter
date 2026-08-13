@@ -76,7 +76,7 @@ struct AuthInfo {
     QString _nick;
     QString _icon;
     int _sex;
-    int _thread_id;
+    qint64 _thread_id;
     std::vector<std::shared_ptr<TextChatData>> _chat_datas;
 };
 
@@ -99,7 +99,7 @@ struct AuthRsp {
     QString _nick;
     QString _icon;
     int _sex;
-    int _thread_id;
+    qint64 _thread_id;
     std::vector<std::shared_ptr<TextChatData>> _chat_datas;
 };
 
@@ -144,14 +144,14 @@ Q_DECLARE_METATYPE(std::shared_ptr<UserInfo>)
 class ChatDataBase {
 public:
     ChatDataBase() = default;
-    ChatDataBase(int msg_id, int thread_id, ChatFormType form_type, ChatMsgType msg_type,
+    ChatDataBase(qint64 msg_id, qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type,
         QString content,int _send_uid, int status, QString chat_time );
-    ChatDataBase(QString unique_id, int thread_id, ChatFormType form_type, ChatMsgType msg_type,
+    ChatDataBase(QString unique_id, qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type,
         QString content, int send_uid, int status, QString chat_time);
-    ChatDataBase(int msg_id, QString unique_id, int thread_id, ChatFormType form_type, ChatMsgType msg_type,
+    ChatDataBase(qint64 msg_id, QString unique_id, qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type,
         QString content, int send_uid, int status, QString chat_time);
-    int GetMsgId() { return _msg_id; }
-    int GetThreadId() { return _thread_id; }
+    qint64 GetMsgId() { return _msg_id; }
+    qint64 GetThreadId() { return _thread_id; }
     ChatFormType GetFormType() { return _form_type; }
     ChatMsgType GetMsgType() { return _msg_type; }
     QString GetContent() { return _content; }
@@ -159,16 +159,17 @@ public:
     QString GetMsgContent(){return _content;}
     QString GetUniqueId();
     int GetStatus() { return _status; }
-    void SetMsgId(int msg_id) { _msg_id = msg_id; }
+    QString GetChatTime() { return _chat_time; }
+    void SetMsgId(qint64 msg_id) { _msg_id = msg_id; }
     void SetStatus(int status) { _status = status; }
     virtual ~ChatDataBase() {}  // 添加虚析构函数
 protected:
     //客户端本地唯一标识
     QString _unique_id;
     //消息id
-    int _msg_id;
+    qint64 _msg_id;
     //会话id
-    int _thread_id;
+    qint64 _thread_id;
     //群聊还是私聊
     ChatFormType _form_type;
     //文本信息为0，图片为1，文件为2
@@ -187,21 +188,21 @@ Q_DECLARE_METATYPE(std::vector<std::shared_ptr<ChatDataBase>>)
 class TextChatData : public ChatDataBase {
 public:
 
-    TextChatData(int msg_id, int thread_id, ChatFormType form_type, ChatMsgType msg_type,  QString content,
+    TextChatData(qint64 msg_id, qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type,  QString content,
         int send_uid, int status, QString chat_time="") :
         ChatDataBase(msg_id, thread_id, form_type, msg_type, content, send_uid, status, chat_time)
     {
-        
+
     }
 
-    TextChatData(QString unique_id, int thread_id, ChatFormType form_type, ChatMsgType msg_type, QString content,
+    TextChatData(QString unique_id, qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type, QString content,
         int send_uid, int status, QString chat_time="") :
         ChatDataBase(unique_id, thread_id, form_type, msg_type, content, send_uid, status, chat_time)
     {
-        
+
     }
 
-    TextChatData(int msg_id, QString unique_id, int thread_id, ChatFormType form_type, ChatMsgType msg_type, QString content,
+    TextChatData(qint64 msg_id, QString unique_id, qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type, QString content,
         int send_uid, int status, QString chat_time = "") :
         ChatDataBase(msg_id, unique_id, thread_id, form_type, msg_type, content, send_uid, status, chat_time)
     {
@@ -217,14 +218,14 @@ Q_DECLARE_METATYPE(std::vector<std::shared_ptr<TextChatData>>)
 
 class ImgChatData : public ChatDataBase {
 public:
-    ImgChatData(std::shared_ptr<MsgInfo> msg_info, QString unique_id, 
-        int thread_id, ChatFormType form_type, ChatMsgType msg_type,
-        int send_uid, int status, QString chat_time = ""): 
+    ImgChatData(std::shared_ptr<MsgInfo> msg_info, QString unique_id,
+        qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type,
+        int send_uid, int status, QString chat_time = ""):
         ChatDataBase(unique_id,thread_id, form_type, msg_type, msg_info->_text_or_url,
             send_uid, status, chat_time), _msg_info(msg_info){
         _msg_id = _msg_info->_msg_id;
     }
-   
+
     ~ImgChatData() override {}
 
     std::shared_ptr<MsgInfo> _msg_info;
@@ -234,49 +235,52 @@ Q_DECLARE_METATYPE(std::shared_ptr<ImgChatData>)
 
 //聊天线程信息
 struct ChatThreadInfo {
-    int _thread_id;
+    qint64 _thread_id;
     QString _type;     // "private" or "group"
     int _user1_id;    // 私聊时对应 private_chat.user1_id；群聊时设为 0
     int _user2_id;    // 私聊时对应 private_chat.user2_id；群聊时设为 0
+    qint64 _last_msg_id = 0;    // 该会话最后一条消息 id（bootstrap 写库用）
     ChatThreadInfo() = default;
 };
 
 Q_DECLARE_METATYPE(std::vector<std::shared_ptr<ChatThreadInfo>>)
 
-//客户端本地存储的聊天线程数据结构
+//客户端本地存储的聊天线程数据结构（只保存当前窗口消息，历史真值在 SQLite）
 class ChatThreadData {
 public:
     ChatThreadData() = default;
-    ChatThreadData(int other_id, int thread_id, int last_msg_id):
+    ChatThreadData(int other_id, qint64 thread_id, qint64 last_msg_id):
         _other_id(other_id), _thread_id(thread_id), _last_msg_id(last_msg_id){}
     void AddMsg(std::shared_ptr<ChatDataBase> msg);
     void MoveMsg(std::shared_ptr<ChatDataBase> msg);
     void UpdateProgress(std::shared_ptr<MsgInfo> msg);
-    void SetLastMsgId(int msg_id);
+    void SetLastMsgId(qint64 msg_id);
     int  GetOtherId();
     QString GetGroupName();
-    int  GetThreadId();
-    QMap<int, std::shared_ptr<ChatDataBase>>&  GetMsgMapRef();
-    void AppendMsg(int msg_id, std::shared_ptr<ChatDataBase> base_msg);
+    qint64  GetThreadId();
+    QMap<qint64, std::shared_ptr<ChatDataBase>>&  GetMsgMapRef();
+    void AppendMsg(qint64 msg_id, std::shared_ptr<ChatDataBase> base_msg);
+    //清空窗口消息（LoadRecentMessages 重载前调用）
+    void ClearMsgs();
     //§6.4 recipient 去重：message_id 是否已在 _msg_map 中
-    bool ContainsMessage(int msg_id);
+    bool ContainsMessage(qint64 msg_id);
     QString GetLastMsg();
-    int GetLastMsgId();
+    qint64 GetLastMsgId();
     QMap<QString, std::shared_ptr<ChatDataBase>>& GetMsgUnRspRef();
     void AppendUnRspMsg(QString unique_id, std::shared_ptr<ChatDataBase> base_msg);
-    std::shared_ptr<ChatDataBase> GetChatDataBase(int msg_id);
+    std::shared_ptr<ChatDataBase> GetChatDataBase(qint64 msg_id);
 private:
     //如果是私聊，则为对方的id；如果是群聊，则为0
     int _other_id;
-    int _last_msg_id;
-    int _thread_id;
+    qint64 _last_msg_id;
+    qint64 _thread_id;
     QString _last_msg;
     //群聊信息,成员列表
     std::vector<int> _group_members;
     //群聊名称
     QString _group_name;
     //缓存消息map，抽象为基类，因为会有图片等其他类型消息
-    QMap<int, std::shared_ptr<ChatDataBase>>  _msg_map;
+    QMap<qint64, std::shared_ptr<ChatDataBase>>  _msg_map;
     //缓存未回复的消息
         //已发送的消息，还未收到回应的。
     QMap<QString, std::shared_ptr<ChatDataBase>> _msg_unrsp_map;

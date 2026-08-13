@@ -600,6 +600,8 @@ void FileTcpMgr::initHandlers()
 			file_info->_rsp_size = file_info->_total_size;
 			//通知界面显示
 			emit sig_update_upload_progress(file_info);
+			//通知 OutboxDispatcher 上传收全（confirmImageSent 删 outbox）
+			emit sig_chat_img_upload_done(name);
 			UserMgr::GetInstance()->RmvTransFileByName(name);
 			auto free_file = UserMgr::GetInstance()->GetFreeUploadFile();
 			if (free_file == nullptr) {
@@ -681,6 +683,8 @@ void FileTcpMgr::initHandlers()
 			file_info->_rsp_size = file_info->_total_size;
 			//通知界面显示
 			emit sig_update_upload_progress(file_info);
+			//通知 OutboxDispatcher 上传收全（confirmImageSent 删 outbox）
+			emit sig_chat_img_upload_done(name);
 			UserMgr::GetInstance()->RmvTransFileByName(name);
 			auto free_file = UserMgr::GetInstance()->GetFreeUploadFile();
 			if (free_file == nullptr) {
@@ -845,8 +849,9 @@ void FileTcpMgr::initHandlers()
 
 		qDebug() << "Receive download file info rsp success";
 
-		int message_id = jsonObj["message_id"].toInt();
-		int thread_id = jsonObj["thread_id"].toInt();
+		//message_id/thread_id 按 64 位解析（兼容数字与十进制字符串），避免 >32 位截断
+		qint64 message_id = jsonObj["message_id"].toVariant().toLongLong();
+		qint64 thread_id = jsonObj["thread_id"].toVariant().toLongLong();
 		int sender_id = jsonObj["sender_id"].toInt();
 		int recv_id = jsonObj["recv_id"].toInt();
 		QString name = jsonObj["name"].toString();

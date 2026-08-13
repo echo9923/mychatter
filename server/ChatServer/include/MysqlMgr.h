@@ -45,21 +45,23 @@ public:
 		int      pageSize,
 		std::vector<std::shared_ptr<ChatThreadInfo>>& threads,
 		bool& loadMore,
-		int& nextLastId);
+		int64_t& nextLastId);
 	/// 创建私聊会话
-	bool CreatePrivateChat(int user1_id, int user2_id, int &thread_id);
+	bool CreatePrivateChat(int user1_id, int user2_id, std::int64_t &thread_id);
 	/// 分页加载历史聊天消息
-	std::shared_ptr<PageResult> LoadChatMsg(int threadId, int lastId, int pageSize);
+	std::shared_ptr<PageResult> LoadChatMsg(std::int64_t threadId, std::int64_t lastId, int pageSize);
 	/// 插入单条聊天消息（幂等），返回持久化结果；成功/重复时回写 canonical message_id
 	SaveMessageResult AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
-	/// 拉取接收者的待投递消息（delivery_status=0，排除未上传完成的图片），多取一条供 has_more
-	std::vector<std::shared_ptr<ChatMessage>> GetPendingMessages(int recv_uid,
-		int after_message_id, int limit);
+	/// 拉取用户在指定同步序号之后的消息（增量同步，按 sync_seq 升序，多取一条供 has_more）
+	bool GetMessagesAfterSyncSeq(int uid, std::uint64_t after_sync_seq, int limit,
+		std::vector<SyncedMessage>& messages);
+	/// 取用户当前最大同步序号（bootstrap checkpoint）
+	bool GetMaxSyncSeq(int uid, std::uint64_t& max_seq);
 	/// 按 recv_uid+ids 批量取回消息（防越权）
 	std::vector<std::shared_ptr<ChatMessage>> GetMessagesByIds(int recv_uid,
-		const std::vector<int>& ids);
+		const std::vector<std::int64_t>& ids);
 	/// 将指定接收者的一批消息标记为已投递（ACK，带 recv_id 防越权，幂等）
-	bool MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids);
+	bool MarkMessagesDelivered(int recv_uid, const std::vector<std::int64_t>& ids);
 
 private:
 	/// 私有构造函数，初始化MysqlDao

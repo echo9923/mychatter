@@ -4,7 +4,9 @@
 #include <QWidget>
 #include "userdata.h"
 #include <QMap>
+#include <QHash>
 #include "chatitembase.h"
+#include "localmessageDTO.h"
 
 namespace Ui {
 class ChatPage;
@@ -37,6 +39,8 @@ private slots:
     void on_clicked_paused(QString unique_name, TransferType transfer_type);
     //接收PictureBubble传回来的继续信号
     void on_clicked_resume(QString unique_name, TransferType transfer_type);
+    //本地库入库提交成功后才上屏（sending 气泡）并通知 Dispatcher
+    void slot_send_enqueued(bool ok, LocalMessageDTO dto);
 
 private:
     void clearItems();
@@ -46,6 +50,9 @@ private:
     QHash<QString, ChatItemBase*> _unrsp_item_map;
     //管理已经回复的消息
     QHash<qint64, ChatItemBase*> _base_item_map;
+    //发送中的入库请求（client_message_id → DTO / 图片 MsgInfo）
+    QHash<QString, LocalMessageDTO> _pending_sends;
+    QHash<QString, std::shared_ptr<MsgInfo>> _pending_img_infos;
 };
 
 #endif // CHATPAGE_H

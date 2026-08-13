@@ -36,7 +36,7 @@ public:
 	 * @param chatserver 目标 ChatServer 节点名（_hash_channels 键）
 	 * @return 同时含 grpc 状态码与对端应用层 error 的 NotifyResult
 	 */
-	NotifyResult NotifyChatImgMsg(int message_id, std::string chatserver);
+	NotifyResult NotifyChatImgMsg(long long message_id, std::string chatserver);
 private:
 	ChatServerGrpcClient() = default;
 	//sever_ip到共享channel的映射,  <chatserver1,std::shared_ptr<Channel>>

@@ -60,17 +60,17 @@ bool MysqlMgr::GetUserThreads(int64_t userId,
 	int      pageSize,
 	std::vector<std::shared_ptr<ChatThreadInfo>>& threads,
 	bool& loadMore,
-	int& nextLastId)
+	int64_t& nextLastId)
 {
 	return _dao.GetUserThreads(userId, lastId, pageSize, threads, loadMore, nextLastId);
 }
 
-bool MysqlMgr::CreatePrivateChat(int user1_id, int user2_id, int& thread_id)
+bool MysqlMgr::CreatePrivateChat(int user1_id, int user2_id, std::int64_t& thread_id)
 {
 	return _dao.CreatePrivateChat(user1_id, user2_id, thread_id);
 }
 
-std::shared_ptr<PageResult> MysqlMgr::LoadChatMsg(int threadId, int lastId, int pageSize)
+std::shared_ptr<PageResult> MysqlMgr::LoadChatMsg(std::int64_t threadId, std::int64_t lastId, int pageSize)
 {
 	return _dao.LoadChatMsg(threadId, lastId, pageSize);
 }
@@ -79,17 +79,21 @@ SaveMessageResult MysqlMgr::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
 	return _dao.AddChatMsg(chat_data);
 }
 
-std::vector<std::shared_ptr<ChatMessage>> MysqlMgr::GetPendingMessages(int recv_uid,
-	int after_message_id, int limit) {
-	return _dao.GetPendingMessages(recv_uid, after_message_id, limit);
+bool MysqlMgr::GetMessagesAfterSyncSeq(int uid, std::uint64_t after_sync_seq, int limit,
+	std::vector<SyncedMessage>& messages) {
+	return _dao.GetMessagesAfterSyncSeq(uid, after_sync_seq, limit, messages);
+}
+
+bool MysqlMgr::GetMaxSyncSeq(int uid, std::uint64_t& max_seq) {
+	return _dao.GetMaxSyncSeq(uid, max_seq);
 }
 
 std::vector<std::shared_ptr<ChatMessage>> MysqlMgr::GetMessagesByIds(int recv_uid,
-	const std::vector<int>& ids) {
+	const std::vector<std::int64_t>& ids) {
 	return _dao.GetMessagesByIds(recv_uid, ids);
 }
 
-bool MysqlMgr::MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids) {
+bool MysqlMgr::MarkMessagesDelivered(int recv_uid, const std::vector<std::int64_t>& ids) {
 	return _dao.MarkMessagesDelivered(recv_uid, ids);
 }
 

@@ -95,7 +95,7 @@ std::shared_ptr<Channel> ChatServerGrpcClient::ResolveChannel(
 	return channel;
 }
 
-NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(int message_id, std::string chatserver)
+NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(long long message_id, std::string chatserver)
 {
 	NotifyResult result{ grpc::StatusCode::OK, ErrorCodes::Success };
 

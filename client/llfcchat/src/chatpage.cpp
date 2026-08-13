@@ -13,6 +13,8 @@
 #include <QUuid>
 #include <QStandardPaths>
 #include "filetcpmgr.h"
+#include "localchatstore.h"
+#include "outboxdispatcher.h"
 #include <memory>
 
 ChatPage::ChatPage(QWidget *parent) :
@@ -27,6 +29,10 @@ ChatPage::ChatPage(QWidget *parent) :
     //设置图标样式
     ui->emo_lb->SetState("normal","hover","press","normal","hover","press");
     ui->file_lb->SetState("normal","hover","press","normal","hover","press");
+
+    //入库提交成功后才上屏（sending 气泡）
+    connect(LocalChatStore::GetInstance().get(), &LocalChatStore::sig_send_enqueued,
+        this, &ChatPage::slot_send_enqueued);
 
 }
 
@@ -421,9 +427,6 @@ void ChatPage::on_send_btn_clicked() {
 
     auto user_info = UserMgr::GetInstance()->GetUserInfo();
     auto pTextEdit = ui->chatEdit;
-    ChatRole role = ChatRole::Self;
-    QString userName = user_info->_name;
-    QString userIcon = user_info->_icon;
 
     const QVector<std::shared_ptr<MsgInfo>>& msgList = pTextEdit->getMsgList();
     auto thread_id = _chat_data->GetThreadId();
@@ -435,84 +438,114 @@ void ChatPage::on_send_btn_clicked() {
         }
 
         MsgType type = msgList[i]->_msg_type;
-        ChatItemBase* pChatItem = new ChatItemBase(role);
-        pChatItem->setUserName(userName);
-        SetSelfIcon(pChatItem, user_info->_icon);
-        QWidget* pBubble = nullptr;
         //生成唯一id
         QUuid uuid = QUuid::createUuid();
         //转为字符串
         QString uuidString = uuid.toString();
+
+        //文本与图片都先 enqueueSend 入库，提交成功信号回来才上屏并通知 Dispatcher
+        LocalMessageDTO dto;
+        dto.client_message_id = uuidString;
+        dto.thread_id = thread_id;
+        dto.sender_id = user_info->_uid;
+        dto.receiver_id = _chat_data->GetOtherId();
         if (type == MsgType::TEXT_MSG)
         {
-            pBubble = new TextBubble(role, msgList[i]->_text_or_url);
-
-            //单条化：content/unique_id 顶层平铺，逐条立即发送（text_array 批量设计已删除）
             QByteArray utf8Message = msgList[i]->_text_or_url.toUtf8();
-            auto content = QString::fromUtf8(utf8Message);
-            QJsonObject textObj;
-            textObj["fromuid"] = user_info->_uid;
-            textObj["touid"] = _chat_data->GetOtherId();
-            textObj["thread_id"] = thread_id;
-            textObj["content"] = content;
-            textObj["unique_id"] = uuidString;
-            QJsonDocument doc(textObj);
-            QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-            //可靠发送（持久重传）
-            TcpMgr::GetInstance()->SendReliableChat(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData, uuidString);
-            //注意，此处先按私聊处理
-            auto txt_msg = std::make_shared<TextChatData>(uuidString, thread_id, ChatFormType::PRIVATE,
-                ChatMsgType::TEXT, content, user_info->_uid, 0);
-            //将未回复的消息加入到未回复列表中，以便后续处理
-            _chat_data->AppendUnRspMsg(uuidString, txt_msg);
+            dto.message_type = static_cast<int>(ChatMsgType::TEXT);
+            dto.content = QString::fromUtf8(utf8Message);
+            dto.content_size = "0";
         }
         else if (type == MsgType::IMG_MSG)
         {
-            pBubble = new PictureBubble(QPixmap(msgList[i]->_text_or_url), role, msgList[i]->_total_size);
-            //需要组织成文件发送，具体参考头像上传
-            auto img_msg = std::make_shared<ImgChatData>(msgList[i],uuidString, thread_id, ChatFormType::PRIVATE,
-                ChatMsgType::PIC, user_info->_uid, 0);
-            //将未回复的消息加入到未回复列表中，以便后续处理
-            _chat_data->AppendUnRspMsg(uuidString, img_msg);
-            QJsonObject textObj;
-            textObj["fromuid"] = user_info->_uid;
-            textObj["touid"] = _chat_data->GetOtherId();
-            textObj["thread_id"] = thread_id;
-            textObj["md5"] = msgList[i]->_md5;
-            textObj["name"] = msgList[i]->_unique_name;
-            //3.2 不再发送 token（Chat 由 session:token:v2 鉴权，避免会话 token 落入离线队列）
-            textObj["unique_id"] = uuidString;
-            textObj["text_or_url"] = msgList[i]->_text_or_url;
-            textObj["content_size"] = QString::number(msgList[i]->_total_size);
-
-            //文件信息加入管理
-            UserMgr::GetInstance()->AddTransFile(msgList[i]->_unique_name, msgList[i]);
-            QJsonDocument doc(textObj);
-            QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-            //可靠发送（持久重传）
-            TcpMgr::GetInstance()->SendReliableChat(ReqId::ID_IMG_CHAT_MSG_REQ, jsonData, uuidString);
-            //链接暂停信号
-            connect(dynamic_cast<PictureBubble*>(pBubble), &PictureBubble::pauseRequested,
-                this, &ChatPage::on_clicked_paused);
-            //链接恢复信号
-            connect(dynamic_cast<PictureBubble*>(pBubble), &PictureBubble::resumeRequested,
-                this, &ChatPage::on_clicked_resume);
-
+            dto.message_type = static_cast<int>(ChatMsgType::PIC);
+            //content 为文件唯一名，local_path 为本地路径（重传/续传依据）
+            dto.content = msgList[i]->_unique_name;
+            dto.local_path = msgList[i]->_text_or_url;
+            dto.content_size = QString::number(msgList[i]->_total_size);
+            _pending_img_infos[uuidString] = msgList[i];
         }
         else if (type == MsgType::FILE_MSG)
         {
-
+            continue;
         }
-        //发送消息
-        if (pBubble != nullptr)
-        {
-            pChatItem->setWidget(pBubble);
-            pChatItem->setStatus(0);
-            ui->chat_data_list->appendChatItem(pChatItem);
-            _unrsp_item_map[uuidString] = pChatItem;
-        }
-
+        _pending_sends[uuidString] = dto;
+        LocalChatStore::GetInstance()->enqueueSend(dto);
     }
+}
+
+//入库提交成功：上屏（sending 气泡）+ 通知 Dispatcher 立即派发
+void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto)
+{
+    auto iter = _pending_sends.find(dto.client_message_id);
+    if (iter == _pending_sends.end()) {
+        return;
+    }
+    _pending_sends.erase(iter);
+    if (!ok) {
+        qWarning() << "[ChatPage] enqueue send failed:" << dto.client_message_id;
+        _pending_img_infos.remove(dto.client_message_id);
+        return;
+    }
+
+    auto user_info = UserMgr::GetInstance()->GetUserInfo();
+    ChatRole role = ChatRole::Self;
+    ChatItemBase* pChatItem = new ChatItemBase(role);
+    pChatItem->setUserName(user_info->_name);
+    SetSelfIcon(pChatItem, user_info->_icon);
+    QWidget* pBubble = nullptr;
+
+    auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
+    if (dto.message_type == static_cast<int>(ChatMsgType::TEXT)) {
+        pBubble = new TextBubble(role, dto.content);
+        //注意，此处先按私聊处理
+        auto txt_msg = std::make_shared<TextChatData>(dto.client_message_id, dto.thread_id,
+            ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content, user_info->_uid, 0);
+        //将未回复的消息加入到未回复列表中，以便后续处理
+        if (thread_data) {
+            thread_data->AppendUnRspMsg(dto.client_message_id, txt_msg);
+        }
+    }
+    else if (dto.message_type == static_cast<int>(ChatMsgType::PIC)) {
+        auto file_info = _pending_img_infos.take(dto.client_message_id);
+        if (!file_info) {
+            delete pChatItem;
+            return;
+        }
+        auto pic_bubble = new PictureBubble(QPixmap(dto.local_path), role, file_info->_total_size);
+        pic_bubble->setMsgInfo(file_info);
+        pBubble = pic_bubble;
+        auto img_msg = std::make_shared<ImgChatData>(file_info, dto.client_message_id,
+            dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::PIC, user_info->_uid, 0);
+        //将未回复的消息加入到未回复列表中，以便后续处理
+        if (thread_data) {
+            thread_data->AppendUnRspMsg(dto.client_message_id, img_msg);
+        }
+        //文件信息加入管理（1036 后 Dispatcher 复用同一 MsgInfo 启动上传）
+        UserMgr::GetInstance()->AddTransFile(dto.content, file_info);
+        //链接暂停信号
+        connect(dynamic_cast<PictureBubble*>(pBubble), &PictureBubble::pauseRequested,
+            this, &ChatPage::on_clicked_paused);
+        //链接恢复信号
+        connect(dynamic_cast<PictureBubble*>(pBubble), &PictureBubble::resumeRequested,
+            this, &ChatPage::on_clicked_resume);
+    }
+
+    //发送消息上屏（仅当前打开的会话）
+    if (pBubble != nullptr) {
+        pChatItem->setWidget(pBubble);
+        pChatItem->setStatus(0);
+        if (_chat_data && _chat_data->GetThreadId() == dto.thread_id) {
+            ui->chat_data_list->appendChatItem(pChatItem);
+            _unrsp_item_map[dto.client_message_id] = pChatItem;
+        }
+        else {
+            delete pChatItem;
+        }
+    }
+
+    //通知 Dispatcher 立即派发 outbox 条目
+    OutboxDispatcher::GetInstance()->notifySendEnqueued(dto);
 }
 
 

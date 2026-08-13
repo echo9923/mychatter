@@ -84,8 +84,8 @@ enum MSG_TYPES {
 	// 1043-1048 被 ResourceServer 占用，不在此声明
 	ID_CHAT_DELIVERY_ACK_REQ = 1049,  ///< 应用层投递 ACK 请求（receiver 确认已收到 message_ids）
 	ID_CHAT_DELIVERY_ACK_RSP = 1050,  ///< 应用层投递 ACK 响应
-	ID_PULL_OFFLINE_MSG_REQ = 1051,   ///< 离线消息拉取请求（按 cursor 分页取 pending）
-	ID_PULL_OFFLINE_MSG_RSP = 1052    ///< 离线消息拉取响应
+	ID_SYNC_MESSAGE_REQ = 1051,   ///< 增量消息同步请求（按 sync_seq 游标分页，含 bootstrap 变体）
+	ID_SYNC_MESSAGE_RSP = 1052    ///< 增量消息同步响应
 };
 
 /**
@@ -112,7 +112,7 @@ inline short ReqToRspId(short req_id) {
 	case ID_IMG_CHAT_MSG_REQ:          return ID_IMG_CHAT_MSG_RSP;         // 1035 -> 1036
 	case ID_FILE_INFO_SYNC_REQ:        return ID_FILE_INFO_SYNC_RSP;       // 1041 -> 1042
 	case ID_CHAT_DELIVERY_ACK_REQ:    return ID_CHAT_DELIVERY_ACK_RSP;    // 1049 -> 1050
-	case ID_PULL_OFFLINE_MSG_REQ:     return ID_PULL_OFFLINE_MSG_RSP;     // 1051 -> 1052
+	case ID_SYNC_MESSAGE_REQ:         return ID_SYNC_MESSAGE_RSP;         // 1051 -> 1052
 	default:                           return 0;
 	}
 }
@@ -131,8 +131,6 @@ inline short ReqToRspId(short req_id) {
 #define USER_SESSION_PREFIX "usession_"
 /// Redis中存储分布式锁计数器的键名
 #define LOCK_COUNT "lockcount"
-/// Redis中离线消息待投递有序集合的键前缀，完整键为 "offline_msg:" + recv_uid，ZSET member/score 均为十进制 message_id
-#define OFFLINE_MSG_PREFIX "offline_msg:"
 /// Redis中存储用户访问令牌的键前缀，完整键为 "utoken_" + uid（由 StatusServer 密码登录后 SetEx 86400s 写入，底层使用 SET ... EX，ChatServer 登录时 Get 校验）
 #define USERTOKENPREFIX "utoken_"
 

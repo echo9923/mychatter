@@ -151,7 +151,7 @@ public:
 		int      pageSize,
 		std::vector<std::shared_ptr<ChatThreadInfo>>& threads,
 		bool& loadMore,
-		int& nextLastId);
+		int64_t& nextLastId);
 
 	/**
 	 * @brief 创建私聊会话（若已存在则返回已有会话ID）
@@ -160,7 +160,7 @@ public:
 	 * @param thread_id [out] 输出的会话ID
 	 * @return 是否成功
 	 */
-	bool CreatePrivateChat(int user1_id, int user2_id, int& thread_id);
+	bool CreatePrivateChat(int user1_id, int user2_id, std::int64_t& thread_id);
 
 	/**
 	 * @brief 分页加载指定会话的历史聊天消息
@@ -169,7 +169,7 @@ public:
 	 * @param pageSize 每页数量
 	 * @return 分页结果智能指针
 	 */
-	std::shared_ptr<PageResult> LoadChatMsg(int threadId, int lastId, int pageSize);
+	std::shared_ptr<PageResult> LoadChatMsg(std::int64_t threadId, std::int64_t lastId, int pageSize);
 
 	/**
 	 * @brief 插入单条聊天消息到数据库（幂等）
@@ -179,17 +179,27 @@ public:
 	SaveMessageResult AddChatMsg(std::shared_ptr<ChatMessage> chat_data);
 
 	/**
-	 * @brief 拉取接收者的待投递消息（delivery_status=0），排除尚未上传完成的图片
+	 * @brief 拉取用户在指定同步序号之后的消息（增量同步）
 	 *
-	 * 按 message_id 升序返回，实际多取一条供调用方判断 has_more。
+	 * JOIN user_message_sync 与 chat_message，按 sync_seq 严格升序返回，
+	 * 实际多取一条（limit+1）供调用方判断 has_more。
 	 *
-	 * @param recv_uid 接收者用户ID
-	 * @param after_message_id 游标（仅返回 message_id 大于该值的消息，0 表示从头）
+	 * @param uid 用户ID
+	 * @param after_sync_seq 同步游标（仅返回 sync_seq 大于该值的消息，0 表示从头）
 	 * @param limit 期望条数上限（实际最多返回 limit+1 条）
-	 * @return 待投递消息列表（升序）
+	 * @param messages [out] 输出的同步消息列表（升序）
+	 * @return 是否执行成功（false 时调用方应回错误，不得当作空页）
 	 */
-	std::vector<std::shared_ptr<ChatMessage>> GetPendingMessages(int recv_uid,
-		int after_message_id, int limit);
+	bool GetMessagesAfterSyncSeq(int uid, std::uint64_t after_sync_seq, int limit,
+		std::vector<SyncedMessage>& messages);
+
+	/**
+	 * @brief 取用户当前最大同步序号（bootstrap checkpoint）
+	 * @param uid 用户ID
+	 * @param max_seq [out] 最大 sync_seq；无同步行时为 0
+	 * @return 是否执行成功
+	 */
+	bool GetMaxSyncSeq(int uid, std::uint64_t& max_seq);
 
 	/**
 	 * @brief 按消息ID批量取回指定接收者的消息
@@ -199,7 +209,7 @@ public:
 	 * @return 命中且属于该接收者的消息列表
 	 */
 	std::vector<std::shared_ptr<ChatMessage>> GetMessagesByIds(int recv_uid,
-		const std::vector<int>& ids);
+		const std::vector<std::int64_t>& ids);
 
 	/**
 	 * @brief 将指定接收者的一批消息标记为已投递（ACK）
@@ -210,7 +220,7 @@ public:
 	 * @param ids 消息ID列表
 	 * @return 是否执行成功（无行受影响也返回 true）
 	 */
-	bool MarkMessagesDelivered(int recv_uid, const std::vector<int>& ids);
+	bool MarkMessagesDelivered(int recv_uid, const std::vector<std::int64_t>& ids);
 
 private:
 	/// MySQL连接池实例，管理数据库连接的复用和保活
@@ -222,6 +232,9 @@ private:
 	 * 执行 INSERT ... ON DUPLICATE KEY UPDATE message_id=LAST_INSERT_ID(message_id)，
 	 * 随后按 canonical message_id 回读并核对 thread_id/recv_id/content/msg_type/content_size：
 	 * 完全一致返回 Duplicate（同一 message_id），不一致返回 Conflict（不覆盖原消息）。
+	 * Stored/Duplicate 且非图片元数据（msg_type!=1）时，同事务 INSERT IGNORE
+	 * user_message_sync 双方同步行（增量同步数据源；Conflict 不写，避免把 canonical
+	 * 消息推给非其接收者的用户）。
 	 *
 	 * @param conn 已处于事务中的连接（调用方管理 commit/rollback）
 	 * @param msg 待写入消息；成功/重复时回写 canonical message_id

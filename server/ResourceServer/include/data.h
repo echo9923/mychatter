@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <string>
 #include <vector>
 struct UserInfo {
@@ -30,7 +30,7 @@ struct ApplyInfo {
 
 //聊天线程信息
 struct ChatThreadInfo {
-	int _thread_id;
+	long long _thread_id;  // 64 位：thread_id 全链路 >32 位不截断
 	std::string _type;     // "private" or "group"
 	int _user1_id;    // 私聊时对应 private_chat.user1_id；群聊时设为 0
 	int _user2_id;    // 私聊时对应 private_chat.user2_id；群聊时设为 0
@@ -38,8 +38,8 @@ struct ChatThreadInfo {
 
 //聊天消息信息
 struct ChatMessage {
-	int message_id;
-	int thread_id;
+	long long message_id;  // 64 位：chat_message.message_id 为 BIGINT UNSIGNED
+	long long thread_id;
 	int sender_id;
 	int recv_id;
 	std::string unique_id;
@@ -53,6 +53,6 @@ struct ChatMessage {
 struct PageResult {
 	std::vector<ChatMessage> messages;
 	bool load_more;
-	int next_cursor;  // 本页最后一条message_id，用于下次查询
+	long long next_cursor;  // 本页最后一条message_id，用于下次查询
 };
 
