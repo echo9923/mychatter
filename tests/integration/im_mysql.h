@@ -24,8 +24,10 @@ struct ChatMessageRow {
 	std::string unique_id;
 	std::string content;
 	std::string chat_time;
-	int         status          = 0;   // MsgStatus (UN_READ=0 ...)
-	int         msg_type        = 0;   // ChatMsgType (TEXT=0, PIC=1 ...)
+	int         status          = 0;   // MsgStatus 纯阅读态 (UN_READ=0 ...)
+	int         msg_type        = 0;   // ChatMsgType (TEXT=0, PIC=1, FILE=3 ...)
+	int         resource_status = 0;   // 0=Uploading 1=Ready 2=Expired
+	std::string content_hash;          // 整文件 SHA-256（资源消息）
 	std::uint64_t content_size  = 0;
 	int         delivery_status = 0;   // 0=Pending, 1=Acked
 };
@@ -94,6 +96,10 @@ public:
 
 	// ALTER TABLE chat_message AUTO_INCREMENT = value。
 	bool SetChatMessageAutoIncrement(std::int64_t value);
+
+	// 将指定消息的 updated_at 回拨到 days_ago 天前（resource-expiry 场景伪造
+	// 超时未完成的资源行，供 ResourceServer 清理任务捞取）。
+	bool BackdateMessageUpdatedAt(std::int64_t message_id, int days_ago);
 
 private:
 	sql::Connection* con_ = nullptr;  // owned, freed in Close()

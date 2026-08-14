@@ -33,6 +33,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -43,6 +44,8 @@
 #include <vector>
 
 #include <boost/asio.hpp>
+#include <boost/filesystem.hpp>
+#include <ctime>
 
 #include "im_common.h"
 #include "im_frame.h"
@@ -52,6 +55,9 @@
 #include "im_redis.h"
 #include "im_status_client.h"
 #include "im_tcp_client.h"
+
+// 资源消息分片/整文件 SHA-256 校验（生产实现，见 tests/CMakeLists.txt）
+#include "Sha256.h"
 
 namespace imt {
 
@@ -791,44 +797,61 @@ bool ScenarioDedup() {
 
 // ---------------------------------------------------------------------------
 // Shared helpers for Verification.6 second half (offline / lost-ack / pull-
-// bytes / cross-server / image-offline)
+// bytes / cross-server / resource-offline)
 // ---------------------------------------------------------------------------
 
-// Build a 1035 image-chat-metadata body.
-// （1035 不在协议字符串化清单内，thread_id 维持数字）
-static std::string BuildImgMetaReq(int fromuid, int touid, int thread_id,
-                                   const std::string& md5, const std::string& name,
-                                   const std::string& unique_id,
-                                   long long content_size) {
+// Build a 1035 create-resource-message body (图片/文件统一协议)。
+// thread_id/content_size/message_id 按协议字符串化；msg_type 1=图片 3=文件。
+static std::string BuildResourceCreateReq(int fromuid, int touid, std::int64_t thread_id,
+	                                  const std::string& unique_id, int msg_type,
+	                                  const std::string& file_name, long long content_size,
+	                                  const std::string& content_hash,
+	                                  const std::string& mime_type) {
 	json j;
 	j["fromuid"] = fromuid;
 	j["touid"]   = touid;
-	j["thread_id"] = thread_id;
-	j["md5"]   = md5;
-	j["name"]  = name;
+	j["thread_id"] = ToIdStr(thread_id);
 	j["unique_id"] = unique_id;
+	j["msg_type"]  = msg_type;
+	j["file_name"] = file_name;
 	j["content_size"] = std::to_string(content_size);
+	j["content_hash"] = content_hash;
+	j["mime_type"] = mime_type;
 	return j.dump();
 }
 
-// Build a 1037 image-upload-chunk body (single-chunk).
-// （1037 不在协议字符串化清单内，message_id 维持数字）
-static std::string BuildImgUploadReq(int uid, int sender, int receiver, std::int64_t message_id,
-                                     const std::string& md5, const std::string& name,
-                                     long long total_size, long long trans_size,
-                                     int last, const std::string& data_b64) {
+// Build a 1037 resource-chunk-upload body: {message_id, offset, chunk_sha256, data}
+// （message_id/offset 十进制字符串；data 为 <=32KiB 分片的 Base64）
+static std::string BuildChunkUploadReq(std::int64_t message_id, long long offset,
+	                               const std::string& chunk_sha256,
+	                               const std::string& data_b64) {
 	json j;
-	j["uid"]         = uid;
-	j["sender"]      = sender;
-	j["receiver"]    = receiver;
-	j["message_id"]  = message_id;
-	j["md5"]   = md5;
-	j["name"]  = name;
-	j["seq"]   = 1;
-	j["total_size"] = std::to_string(total_size);
-	j["trans_size"] = std::to_string(trans_size);
-	j["last"]  = last;
-	j["data"]  = data_b64;
+	j["message_id"] = ToIdStr(message_id);
+	j["offset"] = std::to_string(offset);
+	j["chunk_sha256"] = chunk_sha256;
+	j["data"] = data_b64;
+	return j.dump();
+}
+
+// Build a 1041 upload-progress query body: {message_id}
+static std::string BuildUploadProgressReq(std::int64_t message_id) {
+	json j;
+	j["message_id"] = ToIdStr(message_id);
+	return j.dump();
+}
+
+// Build a 1045 download-info query body: {message_id}
+static std::string BuildDownInfoReq(std::int64_t message_id) {
+	json j;
+	j["message_id"] = ToIdStr(message_id);
+	return j.dump();
+}
+
+// Build a 1047 chunk-download body: {message_id, offset}
+static std::string BuildChunkDownReq(std::int64_t message_id, long long offset) {
+	json j;
+	j["message_id"] = ToIdStr(message_id);
+	j["offset"] = std::to_string(offset);
 	return j.dump();
 }
 
@@ -849,6 +872,41 @@ static std::string Base64Encode(const std::string& in) {
 	if (valb > -6) out.push_back(kB64[((val << 8) >> (valb + 8)) & 0x3F]);
 	while (out.size() % 4) out.push_back('=');
 	return out;
+}
+
+// Minimal base64 decoder（下载校验用；忽略填充）。
+static std::string Base64Decode(const std::string& in) {
+	auto val_of = [](char c) -> int {
+		if (c >= 'A' && c <= 'Z') return c - 'A';
+		if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+		if (c >= '0' && c <= '9') return c - '0' + 52;
+		if (c == '+') return 62;
+		if (c == '/') return 63;
+		return -1;
+	};
+	std::string out;
+	int val = 0, valb = -8;
+	for (char c : in) {
+		const int d = val_of(c);
+		if (d < 0) break;
+		val = (val << 6) + d;
+		valb += 6;
+		if (valb >= 0) {
+			out.push_back(static_cast<char>((val >> valb) & 0xFF));
+			valb -= 8;
+		}
+	}
+	return out;
+}
+
+// 生成确定性测试载荷（n 字节），逐字节可与下载结果比对
+static std::string MakeBlob(long long n) {
+	std::string s;
+	s.reserve(static_cast<std::size_t>(n));
+	for (long long i = 0; i < n; ++i) {
+		s.push_back(static_cast<char>((i * 31 + (i >> 8)) & 0xFF));
+	}
+	return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -1606,13 +1664,14 @@ bool ScenarioCrossServer() {
 }
 
 // ---------------------------------------------------------------------------
-// image-offline (Verification.6)
+// resource-offline（原 image-offline，统一资源协议改造）
 //
-// 走 ResourceServer 分片上传，完成前 UN_UPLOAD 行绝不出现在增量同步流；完成后
-// sync 行写入，同步流出现 msg_type=PIC/content_size 的消息，ACK 后清理。
+// 走 ResourceServer 分片上传：创建（1035）后 resource_status=Uploading 的行绝不
+// 出现在增量同步流；分片收齐且整文件 SHA-256 校验通过后（1038 resource_status=1），
+// sync 行写入，同步流出现 msg_type=PIC/content_hash 正确的消息，ACK 后清理。
 // ---------------------------------------------------------------------------
-bool ScenarioImageOffline() {
-	std::printf("\n=== scenario: image-offline ===\n");
+bool ScenarioResourceOffline() {
+	std::printf("\n=== scenario: resource-offline ===\n");
 	ProcessManager pm;
 	Redis redis; Mysql mysql;
 	std::string tag = RunTag();
@@ -1621,68 +1680,76 @@ bool ScenarioImageOffline() {
 	auto cleanup = [&] { CleanupFootprint(redis, mysql); };
 
 	if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)) {
-		Fail("image-offline: connect Redis", "failed"); return false;
+		Fail("resource-offline: connect Redis", "failed"); return false;
 	}
 	if (!mysql.Connect(MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWD, MYSQL_SCHEMA)) {
-		Fail("image-offline: connect MySQL", "failed"); return false;
+		Fail("resource-offline: connect MySQL", "failed"); return false;
 	}
 	cleanup();
 
 	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
 		MakeStatusIni(), STATUS_GRPC_PORT }, 15000)) {
-		Fail("image-offline: start StatusServer", "ready timeout"); cleanup(); return false;
+		Fail("resource-offline: start StatusServer", "ready timeout"); cleanup(); return false;
 	}
 	if (!pm.Start({ "GateServer", { "GateServer", "GateServer.exe" },
 		MakeGateIni(), GATE_HTTP_PORT }, 15000)) {
-		Fail("image-offline: start GateServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+		Fail("resource-offline: start GateServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 	if (!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
 		MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
 		CHAT1_TCP_PORT }, 15000)) {
-		Fail("image-offline: start ChatServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+		Fail("resource-offline: start ChatServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 	if (!pm.Start({ "ResourceServer", { "ResourceServer", "ResourceServer.exe" },
 		MakeResourceIni(), RESOURCE_HTTP_PORT }, 15000)) {
-		Fail("image-offline: start ResourceServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
+		Fail("resource-offline: start ResourceServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 
 	// Login sender (receiver stays offline).
 	TcpClient cS;
 	auto li = LoginUser(cS, SENDER_UID);
 	if (!li.ok) {
-		Fail("image-offline: login sender", "gate/chat login failed"); cleanup(); pm.StopAll(); return false;
+		Fail("resource-offline: login sender", "gate/chat login failed"); cleanup(); pm.StopAll(); return false;
 	}
 
-	// Step 1: send 1035 image metadata to ChatServer.
-	const std::string uid_str = "imtest-img-" + tag;
-	const std::string img_name = "test_img_" + tag + ".png";
-	const std::string md5 = "d41d8cd98f00b204e9800998ecf8427e";  // md5 of empty
-	const long long file_size = 1024;
+	// Step 1: send 1035 resource metadata to ChatServer.
+	const std::string uid_str = "imtest-res-" + tag;
+	const std::string file_name = "test_img_" + tag + ".png";
+	const long long file_size = 70000;  // >2 片（32KiB），覆盖多分片路径
+	const std::string blob = MakeBlob(file_size);
+	const std::string content_hash = llfc::Sha256Hex(blob);
 	// 同步起点：元数据写入前 receiver 的最大 sync_seq。
 	const std::uint64_t checkpoint = mysql.MaxSyncSeq(RECEIVER_UID);
-	std::string meta_body = BuildImgMetaReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
-		md5, img_name, uid_str, file_size);
-	cS.Send(ID_IMG_CHAT_MSG_REQ, meta_body);
-	Frame mrs; bool got_1036 = cS.Wait(ID_IMG_CHAT_MSG_RSP, 10000, &mrs);
+	std::string meta_body = BuildResourceCreateReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+		uid_str, MSG_TYPE_PIC, file_name, file_size, content_hash, "image/png");
+	cS.Send(ID_CREATE_RESOURCE_MSG_REQ, meta_body);
+	Frame mrs; bool got_1036 = cS.Wait(ID_CREATE_RESOURCE_MSG_RSP, 10000, &mrs);
 	std::int64_t msg_id = -1;
+	int create_err = -1;
 	if (got_1036) {
 		auto j = ParseJson(mrs.body);
-		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS)
+		create_err = j.is_object() ? j.value("error", -1) : -1;
+		if (create_err == ERR_SUCCESS)
 			msg_id = JsonIdStr(j, "message_id", -1);
 	}
-	Check(got_1036 && msg_id > 0, "image-offline: 1035/1036 metadata persisted",
-		("msg_id=" + std::to_string(msg_id)).c_str());
-	if (!(got_1036 && msg_id > 0)) { cS.Close(); cleanup(); pm.StopAll(); return false; }
+	Check(got_1036 && create_err == ERR_SUCCESS && msg_id > 0,
+		"resource-offline: 1035/1036 metadata persisted",
+		("err=" + std::to_string(create_err) + " msg_id=" + std::to_string(msg_id)).c_str());
+	if (!(got_1036 && create_err == ERR_SUCCESS && msg_id > 0)) {
+		cS.Close(); cleanup(); pm.StopAll(); return false;
+	}
 
-	// Step 2: verify UN_UPLOAD row is NOT in the sync stream / user_message_sync.
+	// Step 2: verify Uploading row is NOT in the sync stream / user_message_sync.
 	{
 		auto rows = mysql.QueryByMessageId(msg_id);
-		bool is_un_upload = !rows.empty() &&
-			rows[0].status == MSG_STATUS_UN_UPLOAD &&
-			rows[0].msg_type == MSG_TYPE_PIC;
-		Check(is_un_upload, "image-offline: row is UN_UPLOAD/PIC before upload",
-			rows.empty() ? "no row" : ("status=" + std::to_string(rows[0].status)).c_str());
-		if (!is_un_upload) all_ok = false;
+		bool is_uploading = !rows.empty() &&
+			rows[0].resource_status == RESOURCE_UPLOADING &&
+			rows[0].msg_type == MSG_TYPE_PIC &&
+			rows[0].content_hash == content_hash;
+		Check(is_uploading, "resource-offline: row is Uploading/PIC with hash before upload",
+			rows.empty() ? "no row"
+				: ("rs=" + std::to_string(rows[0].resource_status)).c_str());
+		if (!is_uploading) all_ok = false;
 	}
 	// user_message_sync 必须还没有该 message_id（元数据阶段不写同步行）。
 	{
@@ -1691,7 +1758,7 @@ bool ScenarioImageOffline() {
 		for (const auto& r : sync_rows) {
 			if (r.message_id == (std::uint64_t)msg_id) { absent = false; break; }
 		}
-		Check(absent, "image-offline: UN_UPLOAD msg_id absent from user_message_sync",
+		Check(absent, "resource-offline: Uploading msg_id absent from user_message_sync",
 			absent ? "ok" : "present before upload!");
 		if (!absent) all_ok = false;
 	}
@@ -1699,7 +1766,7 @@ bool ScenarioImageOffline() {
 	// Login receiver：上传完成前同步流不含该 message_id；保持在线到上传后再同步。
 	TcpClient cR;
 	if (!LoginUser(cR, RECEIVER_UID).ok) {
-		Fail("image-offline: login receiver", "gate/chat login failed");
+		Fail("resource-offline: login receiver", "gate/chat login failed");
 		cS.Close(); cleanup(); pm.StopAll(); return false;
 	}
 	std::uint64_t cursor = checkpoint;
@@ -1710,51 +1777,56 @@ bool ScenarioImageOffline() {
 		bool synced = DoSyncPage(cR, RECEIVER_UID, cursor, 100, msgs, next_seq, has_more);
 		bool found = false;
 		for (const auto& m : msgs) if (m.message_id == msg_id) found = true;
-		Check(synced && !found, "image-offline: sync stream excludes msg before upload",
+		Check(synced && !found, "resource-offline: sync stream excludes msg before upload",
 			("synced=" + std::to_string(synced) + " found=" + std::to_string(found)).c_str());
 		if (!(synced && !found)) all_ok = false;
 		cursor = next_seq;
 	}
 
-	// Step 3: connect to ResourceServer, authenticate (1053) with the sender's
-	// session token, then upload a single chunk (last=1). Under the v2 auth model
-	// every non-login Resource frame is rejected before auth, so the upload must
-	// follow a successful ResourceLogin on the same connection.
+	// Step 3: connect to ResourceServer, authenticate (1053), then upload all chunks
+	// via 1037（offset/chunk_sha256/data）。最后一片收齐后服务端做整文件 SHA-256
+	// 校验并通过 CompleteResourceUploadWithSync 置 Ready。
 	ResClient res;
 	if (!res.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
-		Fail("image-offline: connect ResourceServer", "connect failed"); all_ok = false;
+		Fail("resource-offline: connect ResourceServer", "connect failed"); all_ok = false;
 	} else {
 		int ra = ResourceLogin(res, SENDER_UID, li.token);
-		Check(ra == ERR_SUCCESS, "image-offline: ResourceLogin (1053) success",
+		Check(ra == ERR_SUCCESS, "resource-offline: ResourceLogin (1053) success",
 			("err=" + std::to_string(ra)).c_str());
 		if (ra != ERR_SUCCESS) all_ok = false;
 	}
-	std::string raw_data(file_size, 'X');
-	std::string b64_data = Base64Encode(raw_data);
-	std::string up_body = BuildImgUploadReq(SENDER_UID, SENDER_UID, RECEIVER_UID,
-		msg_id, md5, img_name, file_size, file_size, 1, b64_data);
-	bool sent_up = res.Send(ID_IMG_CHAT_UPLOAD_REQ, up_body);
-	Frame uf;
-	bool got_1038 = sent_up && res.Wait(ID_IMG_CHAT_UPLOAD_RSP, 10000, &uf);
-	int up_err = -1;
-	if (got_1038) {
+	int final_rs = -1;
+	for (long long off = 0; off < file_size; ) {
+		const long long n = (std::min<long long>)(file_size - off, 32768);
+		const std::string chunk = blob.substr(static_cast<std::size_t>(off),
+			static_cast<std::size_t>(n));
+		res.Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
+			BuildChunkUploadReq(msg_id, off, llfc::Sha256Hex(chunk), Base64Encode(chunk)));
+		Frame uf;
+		if (!res.Wait(ID_RESOURCE_CHUNK_UPLOAD_RSP, 10000, &uf)) { final_rs = -2; break; }
 		auto j = ParseJson(uf.body);
-		up_err = j.is_object() ? j.value("error", -1) : -1;
+		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) {
+			final_rs = j.is_object() ? j.value("error", -1) : -3;
+			break;
+		}
+		final_rs = j.value("resource_status", -1);
+		off += n;
 	}
 	res.Close();
-	Check(got_1038 && up_err == ERR_SUCCESS, "image-offline: upload last chunk success",
-		("err=" + std::to_string(up_err)).c_str());
-	if (!(got_1038 && up_err == ERR_SUCCESS)) all_ok = false;
+	Check(final_rs == RESOURCE_READY,
+		"resource-offline: all chunks uploaded, last rsp resource_status=Ready",
+		("rs=" + std::to_string(final_rs)).c_str());
+	if (final_rs != RESOURCE_READY) all_ok = false;
 
 	// Step 4: after upload, verify sync activation.
-	// Give the server a brief moment to run CompleteChatImageUpload.
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	{
 		auto rows = mysql.QueryByMessageId(msg_id);
-		bool uploaded = !rows.empty() && rows[0].status != MSG_STATUS_UN_UPLOAD;
-		Check(uploaded, "image-offline: status migrated from UN_UPLOAD after upload",
-			rows.empty() ? "no row" : ("status=" + std::to_string(rows[0].status)).c_str());
-		if (!uploaded) all_ok = false;
+		bool ready = !rows.empty() && rows[0].resource_status == RESOURCE_READY;
+		Check(ready, "resource-offline: resource_status migrated to Ready after upload",
+			rows.empty() ? "no row"
+				: ("rs=" + std::to_string(rows[0].resource_status)).c_str());
+		if (!ready) all_ok = false;
 	}
 	// 上传完成后 user_message_sync 应写入该 message_id（轮询等事务提交）。
 	bool sync_row_present = false;
@@ -1765,7 +1837,7 @@ bool ScenarioImageOffline() {
 		}
 		if (!sync_row_present) std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
-	Check(sync_row_present, "image-offline: msg_id in user_message_sync after upload",
+	Check(sync_row_present, "resource-offline: msg_id in user_message_sync after upload",
 		sync_row_present ? "ok" : "absent after upload!");
 	if (!sync_row_present) all_ok = false;
 
@@ -1787,7 +1859,7 @@ bool ScenarioImageOffline() {
 		}
 	}
 	Check(got_pic && pulled_size == file_size,
-		"image-offline: receiver synced PIC msg with correct content_size",
+		"resource-offline: receiver synced PIC msg with correct content_size",
 		("got_pic=" + std::to_string(got_pic) + " size=" + std::to_string(pulled_size)).c_str());
 	if (!(got_pic && pulled_size == file_size)) all_ok = false;
 
@@ -1798,7 +1870,7 @@ bool ScenarioImageOffline() {
 		std::this_thread::sleep_for(std::chrono::milliseconds(300));
 		auto rows = mysql.QueryByMessageId(msg_id);
 		bool acked = !rows.empty() && rows[0].delivery_status == 1;
-		Check(acked, "image-offline: ACK cleans up (delivery_status=1)",
+		Check(acked, "resource-offline: ACK cleans up (delivery_status=1)",
 			rows.empty() ? "no row" : ("ds=" + std::to_string(rows[0].delivery_status)).c_str());
 		if (!acked) all_ok = false;
 	}
@@ -2440,12 +2512,10 @@ bool ScenarioSimpleAuth() {
 		if (!r0.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
 			Fail("simple-auth: connect resource (unauth)", "connect failed"); all_ok = false;
 		} else {
-			json b; b["md5"] = "x"; b["name"] = "x";
-			b["message_id"] = 0; b["sender"] = SENDER_UID;
-			b["receiver"] = RECEIVER_UID;
-			r0.Send(ID_FILE_INFO_SYNC_REQ, b.dump());
+			json b; b["message_id"] = "1";
+			r0.Send(ID_RESOURCE_UPLOAD_PROGRESS_REQ, b.dump());
 			Frame f;
-			bool got = r0.Wait(ID_FILE_INFO_SYNC_RSP, 5000, &f);
+			bool got = r0.Wait(ID_RESOURCE_UPLOAD_PROGRESS_RSP, 5000, &f);
 			int e = -1;
 			if (got) { auto j = ParseJson(f.body); e = j.value("error", -1); }
 			// Either an explicit TokenInvalid response or the connection was
@@ -2837,6 +2907,794 @@ bool ScenarioBigIds() {
 	cS.Close(); cR.Close();
 	cleanup();
 	pm.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// 资源消息场景群（统一传输改造）：共享的服务栈搭建 + 资源链路辅助
+// ---------------------------------------------------------------------------
+namespace {
+
+struct ResStack {
+	ProcessManager pm;
+	Redis redis;
+	Mysql mysql;
+
+	//启动 Status/Gate/Chat/Resource 全栈；任一失败返回 false
+	bool StartAll(const char* scenario) {
+		if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)) {
+			Fail(std::string(scenario) + ": connect Redis", "failed"); return false;
+		}
+		if (!mysql.Connect(MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWD, MYSQL_SCHEMA)) {
+			Fail(std::string(scenario) + ": connect MySQL", "failed"); return false;
+		}
+		CleanupFootprint(redis, mysql);
+		if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
+			MakeStatusIni(), STATUS_GRPC_PORT }, 15000)) {
+			Fail(std::string(scenario) + ": start StatusServer", "timeout"); return false;
+		}
+		if (!pm.Start({ "GateServer", { "GateServer", "GateServer.exe" },
+			MakeGateIni(), GATE_HTTP_PORT }, 15000)) {
+			Fail(std::string(scenario) + ": start GateServer", "timeout"); return false;
+		}
+		if (!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
+			MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
+			CHAT1_TCP_PORT }, 15000)) {
+			Fail(std::string(scenario) + ": start ChatServer", "timeout"); return false;
+		}
+		if (!pm.Start({ "ResourceServer", { "ResourceServer", "ResourceServer.exe" },
+			MakeResourceIni(), RESOURCE_HTTP_PORT }, 15000)) {
+			Fail(std::string(scenario) + ": start ResourceServer", "timeout"); return false;
+		}
+		return true;
+	}
+
+	void StopAll() {
+		CleanupFootprint(redis, mysql);
+		pm.StopAll();
+	}
+};
+
+//登录 ResourceServer 并返回已鉴权连接（失败返回空指针）
+std::shared_ptr<ResClient> ResLogin(const std::string& token, int uid, const char* scenario) {
+	auto res = std::make_shared<ResClient>();
+	if (!res->Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
+		Fail(std::string(scenario) + ": connect ResourceServer", "connect failed");
+		return nullptr;
+	}
+	int ra = ResourceLogin(*res, uid, token);
+	if (ra != ERR_SUCCESS) {
+		Fail(std::string(scenario) + ": ResourceLogin", "err=" + std::to_string(ra));
+		return nullptr;
+	}
+	return res;
+}
+
+//发 1035 创建资源消息并回 message_id；失败返回 -1（err_out 带出服务端错误码）
+std::int64_t CreateResource(TcpClient& chat, int fromuid, int touid,
+	const std::string& unique_id, int msg_type, const std::string& file_name,
+	long long size, const std::string& content_hash, const std::string& mime,
+	int* err_out) {
+	chat.Send(ID_CREATE_RESOURCE_MSG_REQ,
+		BuildResourceCreateReq(fromuid, touid, THREAD_ID, unique_id, msg_type,
+			file_name, size, content_hash, mime));
+	Frame rsp;
+	if (!chat.Wait(ID_CREATE_RESOURCE_MSG_RSP, 10000, &rsp)) {
+		if (err_out) *err_out = -2;
+		return -1;
+	}
+	auto j = ParseJson(rsp.body);
+	const int err = j.is_object() ? j.value("error", -3) : -3;
+	if (err_out) *err_out = err;
+	if (err != ERR_SUCCESS) return -1;
+	return JsonIdStr(j, "message_id", -1);
+}
+
+//上传 [from_offset, total) 区间全部分片；返回最后一片 1038 的 error（ready_out
+//带回 resource_status）。遇到非 0 error 即停。
+int UploadChunks(ResClient& res, std::int64_t msg_id, const std::string& blob,
+	long long from_offset, int* ready_out) {
+	const long long total = static_cast<long long>(blob.size());
+	int err = ERR_SUCCESS;
+	int rs = RESOURCE_UPLOADING;
+	for (long long off = from_offset; off < total; ) {
+		const long long n = (std::min<long long>)(total - off, 32768);
+		const std::string chunk = blob.substr(static_cast<std::size_t>(off),
+			static_cast<std::size_t>(n));
+		if (!res.Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
+			BuildChunkUploadReq(msg_id, off, llfc::Sha256Hex(chunk),
+				Base64Encode(chunk)))) {
+			return -4;
+		}
+		Frame uf;
+		if (!res.Wait(ID_RESOURCE_CHUNK_UPLOAD_RSP, 10000, &uf)) return -5;
+		auto j = ParseJson(uf.body);
+		err = j.is_object() ? j.value("error", -6) : -6;
+		rs = j.is_object() ? j.value("resource_status", -1) : -1;
+		if (err != ERR_SUCCESS) break;
+		off += n;
+	}
+	if (ready_out) *ready_out = rs;
+	return err;
+}
+
+//单片上传（供越界/篡改/重复片场景）；回包 error 与 server_offset 带出
+int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
+	const std::string& chunk, const std::string& chunk_sha, long long* server_offset) {
+	res.Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
+		BuildChunkUploadReq(msg_id, offset, chunk_sha, Base64Encode(chunk)));
+	Frame uf;
+	if (!res.Wait(ID_RESOURCE_CHUNK_UPLOAD_RSP, 10000, &uf)) return -4;
+	auto j = ParseJson(uf.body);
+	if (server_offset) {
+		*server_offset = j.is_object()
+			? static_cast<long long>(JsonIdStr(j, "server_offset", -1)) : -1;
+	}
+	return j.is_object() ? j.value("error", -6) : -6;
+}
+
+//1041 查询服务端偏移；失败返回 -1
+long long QueryServerOffset(ResClient& res, std::int64_t msg_id, int* status_out) {
+	res.Send(ID_RESOURCE_UPLOAD_PROGRESS_REQ, BuildUploadProgressReq(msg_id));
+	Frame f;
+	if (!res.Wait(ID_RESOURCE_UPLOAD_PROGRESS_RSP, 10000, &f)) return -1;
+	auto j = ParseJson(f.body);
+	if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return -1;
+	if (status_out) *status_out = j.value("resource_status", -1);
+	return static_cast<long long>(JsonIdStr(j, "server_offset", -1));
+}
+
+//按偏移逐片下载完整资源；返回拼装内容（失败返回空串；total 带出总大小）
+std::string DownloadWhole(ResClient& res, std::int64_t msg_id, long long total) {
+	std::string out;
+	for (long long off = 0; off < total; ) {
+		res.Send(ID_RESOURCE_CHUNK_DOWN_REQ, BuildChunkDownReq(msg_id, off));
+		Frame f;
+		if (!res.Wait(ID_RESOURCE_CHUNK_DOWN_RSP, 10000, &f)) return std::string();
+		auto j = ParseJson(f.body);
+		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return std::string();
+		const std::string chunk = Base64Decode(j.value("data", ""));
+		//逐片校验：服务端随片下发的 SHA-256 必须匹配
+		if (llfc::Sha256Hex(chunk) != j.value("chunk_sha256", "")) return std::string();
+		out += chunk;
+		off += static_cast<long long>(chunk.size());
+	}
+	return out;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// resource-create：1035 校验链 —— 合法创建 / 超限 1020 / 坏哈希 1019 /
+// 重复 unique_id 幂等同 id / 内容冲突 1017 / 伪造 fromuid 拒绝 / 非成员会话拒绝
+// ---------------------------------------------------------------------------
+bool ScenarioResourceCreate() {
+	std::printf("\n=== scenario: resource-create ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-create")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-create: login sender", "failed"); stack.StopAll(); return false;
+	}
+
+	const std::string tag = RunTag();
+	const std::string blob = MakeBlob(40000);
+	const std::string good_hash = llfc::Sha256Hex(blob);
+	const std::string name = "create_" + tag + ".png";
+
+	//1) 合法创建
+	int err = -1;
+	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		"imtest-ok-" + tag, MSG_TYPE_PIC, name, (long long)blob.size(),
+		good_hash, "image/png", &err);
+	Check(err == ERR_SUCCESS && mid > 0, "resource-create: valid create succeeds",
+		("err=" + std::to_string(err)).c_str());
+	if (mid <= 0) all_ok = false;
+
+	//2) 重复 unique_id 同内容 → 幂等返回同一 message_id
+	{
+		int err2 = -1;
+		const std::int64_t mid2 = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+			"imtest-ok-" + tag, MSG_TYPE_PIC, name, (long long)blob.size(),
+			good_hash, "image/png", &err2);
+		Check(err2 == ERR_SUCCESS && mid2 == mid,
+			"resource-create: duplicate unique_id is idempotent (same message_id)",
+			("err=" + std::to_string(err2) + " mid2=" + std::to_string(mid2)).c_str());
+		if (mid2 != mid) all_ok = false;
+	}
+
+	//3) 重复 unique_id 不同内容 → MESSAGE_CONFLICT
+	{
+		int err3 = -1;
+		const std::int64_t mid3 = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+			"imtest-ok-" + tag, MSG_TYPE_PIC, "other_" + name, 1234,
+			good_hash, "image/png", &err3);
+		Check(err3 == ERR_MESSAGE_CONFLICT && mid3 < 0,
+			"resource-create: same unique_id different content -> 1017 conflict",
+			("err=" + std::to_string(err3)).c_str());
+		if (err3 != ERR_MESSAGE_CONFLICT) all_ok = false;
+	}
+
+	//4) 坏哈希（非 64 位 hex）→ ResourceInvalid(1019)
+	{
+		int err4 = -1;
+		CreateResource(cS, SENDER_UID, RECEIVER_UID, "imtest-badhash-" + tag,
+			MSG_TYPE_PIC, name, (long long)blob.size(), "not-a-sha256", "image/png", &err4);
+		Check(err4 == ERR_RESOURCE_INVALID, "resource-create: bad hash -> 1019",
+			("err=" + std::to_string(err4)).c_str());
+		if (err4 != ERR_RESOURCE_INVALID) all_ok = false;
+	}
+
+	//5) 超限（图片 20MB+1）→ ResourceSizeExceeded(1020)
+	{
+		int err5 = -1;
+		CreateResource(cS, SENDER_UID, RECEIVER_UID, "imtest-oversize-" + tag,
+			MSG_TYPE_PIC, name, 20LL * 1024 * 1024 + 1, good_hash, "image/png", &err5);
+		Check(err5 == ERR_RESOURCE_SIZE_EXCEEDED, "resource-create: oversize -> 1020",
+			("err=" + std::to_string(err5)).c_str());
+		if (err5 != ERR_RESOURCE_SIZE_EXCEEDED) all_ok = false;
+	}
+
+	//6) 伪造 fromuid（session 是 SENDER，JSON 里写 RECEIVER）→ 拒绝
+	{
+		int err6 = -1;
+		CreateResource(cS, RECEIVER_UID, SENDER_UID, "imtest-forge-" + tag,
+			MSG_TYPE_PIC, name, (long long)blob.size(), good_hash, "image/png", &err6);
+		Check(err6 == ERR_UID_INVALID, "resource-create: forged fromuid -> 1011",
+			("err=" + std::to_string(err6)).c_str());
+		if (err6 != ERR_UID_INVALID) all_ok = false;
+	}
+
+	//7) 非成员会话（fixture 中不存在的 thread）→ CREATE_CHAT_FAILED
+	{
+		const std::int64_t bogus_thread = 99999999;
+		cS.Send(ID_CREATE_RESOURCE_MSG_REQ,
+			BuildResourceCreateReq(SENDER_UID, RECEIVER_UID, bogus_thread,
+				"imtest-badthread-" + tag, MSG_TYPE_PIC, name,
+				(long long)blob.size(), good_hash, "image/png"));
+		Frame rsp;
+		bool got = cS.Wait(ID_CREATE_RESOURCE_MSG_RSP, 10000, &rsp);
+		int err7 = got ? ParseJson(rsp.body).value("error", -3) : -2;
+		Check(got && err7 == 1012, "resource-create: non-member thread -> 1012",
+			("err=" + std::to_string(err7)).c_str());
+		if (err7 != 1012) all_ok = false;
+	}
+
+	cS.Close();
+	stack.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// resource-upload：多分片上传 → 1041 查询进度 → 1045 下载信息 → 逐片下载
+// 逐字节一致（覆盖整文件 SHA-256 校验通过路径）
+// ---------------------------------------------------------------------------
+bool ScenarioResourceUpload() {
+	std::printf("\n=== scenario: resource-upload ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-upload")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-upload: login sender", "failed"); stack.StopAll(); return false;
+	}
+
+	const std::string tag = RunTag();
+	const std::string blob = MakeBlob(100000);  // 4 片（3×32KiB + 2176B）
+	const std::string hash = llfc::Sha256Hex(blob);
+	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		"imtest-up-" + tag, MSG_TYPE_FILE, "upload_" + tag + ".bin",
+		(long long)blob.size(), hash, "application/octet-stream", nullptr);
+	Check(mid > 0, "resource-upload: create resource msg", ("mid=" + std::to_string(mid)).c_str());
+	if (mid <= 0) { cS.Close(); stack.StopAll(); return false; }
+
+	auto res = ResLogin(li.token, SENDER_UID, "resource-upload");
+	if (!res) { cS.Close(); stack.StopAll(); return false; }
+
+	int rs = -1;
+	const int up_err = UploadChunks(*res, mid, blob, 0, &rs);
+	Check(up_err == ERR_SUCCESS && rs == RESOURCE_READY,
+		"resource-upload: all chunks uploaded -> Ready",
+		("err=" + std::to_string(up_err) + " rs=" + std::to_string(rs)).c_str());
+	if (rs != RESOURCE_READY) all_ok = false;
+
+	//1041：就绪后 server_offset == total
+	{
+		int st = -1;
+		const long long off = QueryServerOffset(*res, mid, &st);
+		Check(off == (long long)blob.size() && st == RESOURCE_READY,
+			"resource-upload: 1041 reports total_size & Ready",
+			("off=" + std::to_string(off) + " st=" + std::to_string(st)).c_str());
+		if (off != (long long)blob.size()) all_ok = false;
+	}
+
+	//1045（下载信息）：发送者与接收者都可查（接收方需先取得自己的 token，
+	//ResourceLogin 校验 utoken_<uid>）
+	TcpClient cR;
+	auto lr = LoginUser(cR, RECEIVER_UID);
+	std::shared_ptr<ResClient> res_recv;
+	if (lr.ok) {
+		res_recv = ResLogin(lr.token, RECEIVER_UID, "resource-upload");
+	}
+	for (ResClient* rc : { res.get(), res_recv.get() }) {
+		if (!rc) continue;
+		rc->Send(ID_RESOURCE_DOWN_INFO_REQ, BuildDownInfoReq(mid));
+		Frame f;
+		bool ok = rc->Wait(ID_RESOURCE_DOWN_INFO_RSP, 10000, &f);
+		auto j = ok ? ParseJson(f.body) : json();
+		bool good = ok && j.is_object() && j.value("error", -1) == ERR_SUCCESS
+			&& j.value("content_hash", "") == hash
+			&& j.value("file_name", "") == "upload_" + tag + ".bin";
+		Check(good, "resource-upload: 1045 down info (name/hash match)",
+			ok ? j.dump() : "no rsp");
+		if (!good) all_ok = false;
+	}
+
+	//1047：逐片下载并与源逐字节比对
+	if (res_recv) {
+		const std::string got = DownloadWhole(*res_recv, mid, (long long)blob.size());
+		Check(got == blob, "resource-upload: downloaded bytes identical",
+			("got=" + std::to_string(got.size()) + " want="
+				+ std::to_string(blob.size())).c_str());
+		if (got != blob) all_ok = false;
+	}
+
+	if (res_recv) res_recv->Close();
+	res->Close();
+	cS.Close(); cR.Close();
+	stack.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// resource-resume：上传中途 kill ResourceServer 重启 → .part 保留 →
+// 1041 返回非零偏移 → 从该偏移续传成功，已确认内容不重传
+// ---------------------------------------------------------------------------
+bool ScenarioResourceResume() {
+	std::printf("\n=== scenario: resource-resume ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-resume")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-resume: login sender", "failed"); stack.StopAll(); return false;
+	}
+
+	const std::string tag = RunTag();
+	const std::string blob = MakeBlob(100000);
+	const std::string hash = llfc::Sha256Hex(blob);
+	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		"imtest-resume-" + tag, MSG_TYPE_FILE, "resume_" + tag + ".bin",
+		(long long)blob.size(), hash, "application/octet-stream", nullptr);
+	Check(mid > 0, "resource-resume: create resource msg", ("mid=" + std::to_string(mid)).c_str());
+	if (mid <= 0) { cS.Close(); stack.StopAll(); return false; }
+
+	//上传前 2 片（65536 字节）
+	auto res = ResLogin(li.token, SENDER_UID, "resource-resume");
+	if (!res) { cS.Close(); stack.StopAll(); return false; }
+	{
+		int rs = -1;
+		const int err = UploadChunks(*res, mid, blob.substr(0, 65536), 0, &rs);
+		Check(err == ERR_SUCCESS, "resource-resume: first 2 chunks uploaded",
+			("err=" + std::to_string(err)).c_str());
+		if (err != ERR_SUCCESS) all_ok = false;
+	}
+	res->Close();
+
+	//杀掉 ResourceServer 再拉起（同一持久化输出目录：harness 固定 cwd 复用）
+	stack.pm.StopOne("ResourceServer");
+	if (!stack.pm.Start({ "ResourceServer", { "ResourceServer", "ResourceServer.exe" },
+		MakeResourceIni(), RESOURCE_HTTP_PORT }, 15000)) {
+		Fail("resource-resume: restart ResourceServer", "timeout");
+		cS.Close(); stack.StopAll(); return false;
+	}
+
+	//1041：重启后服务端按 .part 实际长度回 65536
+	auto res2 = ResLogin(li.token, SENDER_UID, "resource-resume");
+	if (!res2) { cS.Close(); stack.StopAll(); return false; }
+	const long long offset = QueryServerOffset(*res2, mid, nullptr);
+	Check(offset == 65536, "resource-resume: 1041 after restart reports 65536",
+		("offset=" + std::to_string(offset)).c_str());
+	if (offset != 65536) all_ok = false;
+
+	//从服务端偏移续传剩余分片（不重传前 2 片）
+	int rs = -1;
+	const int err = UploadChunks(*res2, mid, blob, offset > 0 ? offset : 0, &rs);
+	Check(err == ERR_SUCCESS && rs == RESOURCE_READY,
+		"resource-resume: resume from server offset completes",
+		("err=" + std::to_string(err) + " rs=" + std::to_string(rs)).c_str());
+	if (rs != RESOURCE_READY) all_ok = false;
+
+	//整文件内容一致性（1047 全量下载比对）
+	const std::string got = DownloadWhole(*res2, mid, (long long)blob.size());
+	Check(got == blob, "resource-resume: resumed upload is byte-identical",
+		("got=" + std::to_string(got.size())).c_str());
+	if (got != blob) all_ok = false;
+
+	res2->Close();
+	cS.Close();
+	stack.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// resource-idempotent：模拟 1038 响应丢失后客户端重发已确认分片，
+// 服务端幂等确认且不追加第二次（.part 长度不翻倍）
+// ---------------------------------------------------------------------------
+bool ScenarioResourceIdempotent() {
+	std::printf("\n=== scenario: resource-idempotent ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-idempotent")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-idempotent: login sender", "failed"); stack.StopAll(); return false;
+	}
+
+	const std::string tag = RunTag();
+	const std::string blob = MakeBlob(65536);  // 恰 2 片
+	const std::string hash = llfc::Sha256Hex(blob);
+	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		"imtest-idem-" + tag, MSG_TYPE_FILE, "idem_" + tag + ".bin",
+		(long long)blob.size(), hash, "application/octet-stream", nullptr);
+	Check(mid > 0, "resource-idempotent: create", ("mid=" + std::to_string(mid)).c_str());
+	if (mid <= 0) { cS.Close(); stack.StopAll(); return false; }
+
+	auto res = ResLogin(li.token, SENDER_UID, "resource-idempotent");
+	if (!res) { cS.Close(); stack.StopAll(); return false; }
+
+	const std::string chunk0 = blob.substr(0, 32768);
+	const std::string sha0 = llfc::Sha256Hex(chunk0);
+
+	//第一片正常上传
+	long long so = -1;
+	int err = UploadOneChunk(*res, mid, 0, chunk0, sha0, &so);
+	Check(err == ERR_SUCCESS && so == 32768, "resource-idempotent: chunk0 accepted",
+		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
+
+	//模拟响应丢失：原样重发同一片（同 offset 同哈希）→ 幂等成功，server_offset 不翻倍
+	err = UploadOneChunk(*res, mid, 0, chunk0, sha0, &so);
+	Check(err == ERR_SUCCESS && so == 32768,
+		"resource-idempotent: duplicate chunk0 acked without re-append",
+		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
+	if (so != 32768) all_ok = false;
+
+	//1041 交叉验证磁盘真值
+	const long long disk_off = QueryServerOffset(*res, mid, nullptr);
+	Check(disk_off == 32768, "resource-idempotent: 1041 agrees (no double write)",
+		("offset=" + std::to_string(disk_off)).c_str());
+
+	//第二片完成后整文件就绪
+	int rs = -1;
+	err = UploadChunks(*res, mid, blob, 32768, &rs);
+	Check(err == ERR_SUCCESS && rs == RESOURCE_READY,
+		"resource-idempotent: completes after duplicate chunk",
+		("err=" + std::to_string(err) + " rs=" + std::to_string(rs)).c_str());
+	if (rs != RESOURCE_READY) all_ok = false;
+
+	res->Close();
+	cS.Close();
+	stack.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// resource-corrupt：错误分片哈希被拒（1023，偏移不前进）；整文件哈希不符时
+// 服务端删 .part 并要求从 0 重传（响应 server_offset=0）
+// ---------------------------------------------------------------------------
+bool ScenarioResourceCorrupt() {
+	std::printf("\n=== scenario: resource-corrupt ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-corrupt")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-corrupt: login sender", "failed"); stack.StopAll(); return false;
+	}
+
+	const std::string tag = RunTag();
+	const std::string blob = MakeBlob(65536);
+	//content_hash 故意写成另一份数据的哈希：分片校验全对、整文件校验必败
+	const std::string wrong_whole_hash = llfc::Sha256Hex(MakeBlob(1));
+	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		"imtest-corrupt-" + tag, MSG_TYPE_FILE, "corrupt_" + tag + ".bin",
+		(long long)blob.size(), wrong_whole_hash, "application/octet-stream", nullptr);
+	Check(mid > 0, "resource-corrupt: create", ("mid=" + std::to_string(mid)).c_str());
+	if (mid <= 0) { cS.Close(); stack.StopAll(); return false; }
+
+	auto res = ResLogin(li.token, SENDER_UID, "resource-corrupt");
+	if (!res) { cS.Close(); stack.StopAll(); return false; }
+
+	//1) 分片哈希错误（数据与声明哈希不符）→ 1023 且 server_offset 不前进
+	long long so = -1;
+	int err = UploadOneChunk(*res, mid, 0, blob.substr(0, 32768),
+		llfc::Sha256Hex(MakeBlob(2)), &so);
+	Check(err == ERR_RS_HASH_MISMATCH && so == 0,
+		"resource-corrupt: bad chunk hash -> 1023, offset stays 0",
+		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
+	if (err != ERR_RS_HASH_MISMATCH) all_ok = false;
+
+	//2) 正确分片全部传完 → 完成点整文件 SHA-256 与 content_hash 不符 →
+	//   1023 且服务端清掉 .part（server_offset=0，客户端从 0 重传）
+	err = UploadChunks(*res, mid, blob, 0, nullptr);
+	Check(err == ERR_RS_HASH_MISMATCH,
+		"resource-corrupt: whole-file mismatch -> 1023",
+		("err=" + std::to_string(err)).c_str());
+	const long long after = QueryServerOffset(*res, mid, nullptr);
+	Check(after == 0, "resource-corrupt: server_offset reset to 0 after whole-file mismatch",
+		("offset=" + std::to_string(after)).c_str());
+	if (err != ERR_RS_HASH_MISMATCH || after != 0) all_ok = false;
+
+	res->Close();
+	cS.Close();
+	stack.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// resource-perm：非 sender 会话上传被拒（1026）；越界偏移下载被拒（1018）。
+// 1045/1047 的会话成员校验由 ResourceServer 统一执行（sender/recv 之外的
+// session uid 一律 ResourceForbidden）。注：fixture 只有 2 个用户，发送方/
+// 接收方之外的“纯第三方”下载拒绝由同一校验逻辑覆盖（上传侧 1026 已验证）。
+// ---------------------------------------------------------------------------
+bool ScenarioResourcePerm() {
+	std::printf("\n=== scenario: resource-perm ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-perm")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-perm: login sender", "failed"); stack.StopAll(); return false;
+	}
+
+	const std::string tag = RunTag();
+	const std::string blob = MakeBlob(32768);
+	const std::string hash = llfc::Sha256Hex(blob);
+	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		"imtest-perm-" + tag, MSG_TYPE_FILE, "perm_" + tag + ".bin",
+		(long long)blob.size(), hash, "application/octet-stream", nullptr);
+	Check(mid > 0, "resource-perm: create", ("mid=" + std::to_string(mid)).c_str());
+	if (mid <= 0) { cS.Close(); stack.StopAll(); return false; }
+
+	//发送者完成上传（资源就绪）
+	auto res = ResLogin(li.token, SENDER_UID, "resource-perm");
+	if (!res) { cS.Close(); stack.StopAll(); return false; }
+	int rs = -1;
+	UploadChunks(*res, mid, blob, 0, &rs);
+	Check(rs == RESOURCE_READY, "resource-perm: upload completes",
+		("rs=" + std::to_string(rs)).c_str());
+	res->Close();
+
+	//权限校验覆盖：接收者 1045 允许（正向）；越界偏移 1047 → 1018；
+	//非 sender 会话向他人消息上传分片 → 1026（ResourceForbidden）。
+	TcpClient cR;
+	auto lr = LoginUser(cR, RECEIVER_UID);
+	if (!lr.ok) {
+		Fail("resource-perm: login receiver", "failed"); cS.Close(); stack.StopAll(); return false;
+	}
+	auto res_r = ResLogin(lr.token, RECEIVER_UID, "resource-perm");
+	if (res_r) {
+		//合法接收者 1045 成功
+		res_r->Send(ID_RESOURCE_DOWN_INFO_REQ, BuildDownInfoReq(mid));
+		Frame f;
+		bool ok = res_r->Wait(ID_RESOURCE_DOWN_INFO_RSP, 10000, &f);
+		const int err = ok ? ParseJson(f.body).value("error", -3) : -2;
+		Check(ok && err == ERR_SUCCESS, "resource-perm: receiver 1045 allowed",
+			("err=" + std::to_string(err)).c_str());
+
+		//越界偏移 1047（total 只有 32768，offset=65536）→ 1018
+		res_r->Send(ID_RESOURCE_CHUNK_DOWN_REQ, BuildChunkDownReq(mid, 65536));
+		ok = res_r->Wait(ID_RESOURCE_CHUNK_DOWN_RSP, 10000, &f);
+		const int err2 = ok ? ParseJson(f.body).value("error", -3) : -2;
+		Check(ok && err2 == ERR_RS_OFFSET_INVALID,
+			"resource-perm: out-of-range offset -> 1018",
+			("err=" + std::to_string(err2)).c_str());
+		if (err2 != ERR_RS_OFFSET_INVALID) all_ok = false;
+		res_r->Close();
+	}
+
+	//接收者会话尝试向「发送者创建的消息」上传分片（session uid=RECEIVER != sender）
+	{
+		//先建一条 receiver 自己的未完成消息，再让 sender 会话来上传 → 1026
+		TcpClient cS2;
+		auto li2 = LoginUser(cS2, RECEIVER_UID);
+		std::int64_t mid2 = -1;
+		if (li2.ok) {
+			const std::string blob2 = MakeBlob(32768);
+			mid2 = CreateResource(cS2, RECEIVER_UID, SENDER_UID,
+				"imtest-perm2-" + tag, MSG_TYPE_FILE, "perm2_" + tag + ".bin",
+				(long long)blob2.size(), llfc::Sha256Hex(blob2),
+				"application/octet-stream", nullptr);
+		}
+		Check(mid2 > 0, "resource-perm: second message created",
+			("mid2=" + std::to_string(mid2)).c_str());
+		if (mid2 > 0) {
+			auto res_s = ResLogin(li.token, SENDER_UID, "resource-perm");
+			if (res_s) {
+				const std::string chunk = MakeBlob(32768);
+				long long so = -1;
+				const int err3 = UploadOneChunk(*res_s, mid2, 0, chunk,
+					llfc::Sha256Hex(chunk), &so);
+				Check(err3 == ERR_RS_FORBIDDEN,
+					"resource-perm: non-sender upload -> 1026",
+					("err=" + std::to_string(err3)).c_str());
+				if (err3 != ERR_RS_FORBIDDEN) all_ok = false;
+				res_s->Close();
+			}
+		}
+		cS2.Close();
+	}
+
+	cS.Close(); cR.Close();
+	stack.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// resource-offset：跳过中间分片直接发靠后 offset → 1018 且响应携带服务端
+// 真实 server_offset，客户端据此对齐后续传成功
+// ---------------------------------------------------------------------------
+bool ScenarioResourceOffset() {
+	std::printf("\n=== scenario: resource-offset ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-offset")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-offset: login sender", "failed"); stack.StopAll(); return false;
+	}
+
+	const std::string tag = RunTag();
+	const std::string blob = MakeBlob(98304);  // 3 片
+	const std::string hash = llfc::Sha256Hex(blob);
+	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		"imtest-off-" + tag, MSG_TYPE_FILE, "off_" + tag + ".bin",
+		(long long)blob.size(), hash, "application/octet-stream", nullptr);
+	Check(mid > 0, "resource-offset: create", ("mid=" + std::to_string(mid)).c_str());
+	if (mid <= 0) { cS.Close(); stack.StopAll(); return false; }
+
+	auto res = ResLogin(li.token, SENDER_UID, "resource-offset");
+	if (!res) { cS.Close(); stack.StopAll(); return false; }
+
+	//跳片：第一片直接发 offset=32768 → 1018 + server_offset=0
+	long long so = -1;
+	int err = UploadOneChunk(*res, mid, 32768, blob.substr(32768, 32768),
+		llfc::Sha256Hex(blob.substr(32768, 32768)), &so);
+	Check(err == ERR_RS_OFFSET_INVALID && so == 0,
+		"resource-offset: skip-ahead chunk -> 1018 with server_offset=0",
+		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
+	if (err != ERR_RS_OFFSET_INVALID) all_ok = false;
+
+	//按 server_offset 对齐后从 0 顺序上传 → 完成
+	int rs = -1;
+	err = UploadChunks(*res, mid, blob, 0, &rs);
+	Check(err == ERR_SUCCESS && rs == RESOURCE_READY,
+		"resource-offset: aligned re-upload completes",
+		("err=" + std::to_string(err) + " rs=" + std::to_string(rs)).c_str());
+	if (rs != RESOURCE_READY) all_ok = false;
+
+	res->Close();
+	cS.Close();
+	stack.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
+// resource-expiry：创建后只传一片，回拨 updated_at 到 8 天前并 touch .part
+// mtime 为 8 天前，重启 ResourceServer 触发启动清理 → resource_status=2、
+// 双方 sync 行补齐、.part 被删除
+// ---------------------------------------------------------------------------
+bool ScenarioResourceExpiry() {
+	std::printf("\n=== scenario: resource-expiry ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-expiry")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-expiry: login sender", "failed"); stack.StopAll(); return false;
+	}
+
+	const std::string tag = RunTag();
+	const std::string blob = MakeBlob(98304);
+	const std::string hash = llfc::Sha256Hex(blob);
+	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		"imtest-expiry-" + tag, MSG_TYPE_FILE, "expiry_" + tag + ".bin",
+		(long long)blob.size(), hash, "application/octet-stream", nullptr);
+	Check(mid > 0, "resource-expiry: create", ("mid=" + std::to_string(mid)).c_str());
+	if (mid <= 0) { cS.Close(); stack.StopAll(); return false; }
+
+	//只传第一片（产生 .part 但不完成）
+	auto res = ResLogin(li.token, SENDER_UID, "resource-expiry");
+	if (!res) { cS.Close(); stack.StopAll(); return false; }
+	{
+		int rs = -1;
+		UploadChunks(*res, mid, blob.substr(0, 32768), 0, &rs);
+	}
+	res->Close();
+
+	//.part 实际路径（harness cwd = 工作目录，ConfigMgr 在其下建 bin/resource）
+	namespace fs = boost::filesystem;
+	const fs::path part_path = fs::path(stack.pm.base_dir()) / "ResourceServer"
+		/ "bin" / "resource" / std::to_string(SENDER_UID)
+		/ (std::to_string(mid) + ".part");
+	boost::system::error_code fs_ec;
+	const bool part_exists = fs::exists(part_path, fs_ec);
+	Check(part_exists, "resource-expiry: .part exists before cleanup",
+		part_path.string().c_str());
+
+	//回拨 DB updated_at 与文件 mtime 到 8 天前（7 天保留期之外）
+	stack.mysql.BackdateMessageUpdatedAt(mid, 8);
+	fs::last_write_time(part_path, std::time(nullptr) - 8LL * 24 * 3600, fs_ec);
+
+	//重启 ResourceServer → 启动清理立即执行
+	stack.pm.StopOne("ResourceServer");
+	if (!stack.pm.Start({ "ResourceServer", { "ResourceServer", "ResourceServer.exe" },
+		MakeResourceIni(), RESOURCE_HTTP_PORT }, 15000)) {
+		Fail("resource-expiry: restart ResourceServer", "timeout");
+		cS.Close(); stack.StopAll(); return false;
+	}
+
+	//清理是启动回调里的同步逻辑，等服务完全起来后稍等即可断言
+	std::this_thread::sleep_for(std::chrono::milliseconds(800));
+	bool expired = false;
+	for (int poll = 0; poll < 30 && !expired; ++poll) {
+		auto rows = stack.mysql.QueryByMessageId(mid);
+		if (!rows.empty() && rows[0].resource_status == RESOURCE_EXPIRED) expired = true;
+		else std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	}
+	Check(expired, "resource-expiry: stale message marked Expired(2)",
+		"resource_status != 2 after cleanup");
+	if (!expired) all_ok = false;
+
+	const bool part_gone = !fs::exists(part_path, fs_ec);
+	Check(part_gone, "resource-expiry: stale .part removed", part_path.string().c_str());
+	if (!part_gone) all_ok = false;
+
+	//失败终态也进同步流：双方 user_message_sync 行存在（客户端据此展示已过期）
+	{
+		const auto sync_rows = stack.mysql.QuerySyncRows(RECEIVER_UID, 0, 0);
+		bool present = false;
+		for (const auto& r : sync_rows) {
+			if (r.message_id == (std::uint64_t)mid) { present = true; break; }
+		}
+		Check(present, "resource-expiry: sync row written for expired resource",
+			present ? "ok" : "absent");
+		if (!present) all_ok = false;
+	}
+
+	//过期资源继续上传被拒（1027）
+	auto res2 = ResLogin(li.token, SENDER_UID, "resource-expiry");
+	if (res2 && expired) {
+		const std::string chunk = blob.substr(0, 32768);
+		long long so = -1;
+		const int err = UploadOneChunk(*res2, mid, 32768, chunk,
+			llfc::Sha256Hex(chunk), &so);
+		Check(err == ERR_RS_STATE_INVALID,
+			"resource-expiry: upload to expired resource -> 1027",
+			("err=" + std::to_string(err)).c_str());
+		if (err != ERR_RS_STATE_INVALID) all_ok = false;
+		res2->Close();
+	}
+
+	cS.Close();
+	stack.StopAll();
 	return all_ok;
 }
 

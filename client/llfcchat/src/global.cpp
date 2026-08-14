@@ -3,6 +3,8 @@
 #include <QTimer>
 #include <QUuid>
 #include <QPainter>
+#include <QFileInfo>
+#include <QVector>
 
 std::function<void(QWidget*)> repolish =[](QWidget *w){
     w->style()->unpolish(w);
@@ -36,13 +38,13 @@ QString generateUniqueIconName(){
     return uuid + ".png";
 }
 
-QString calculateFileHash(const QString& filePath)
+QString calculateFileSha256Only(const QString& filePath)
 {
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly))
         return QString();
 
-    QCryptographicHash hash(QCryptographicHash::Md5);
+    QCryptographicHash hash(QCryptographicHash::Sha256);
 
     // 分块计算哈希，避免大文件占用过多内存
     const qint64 chunkSize = 1024 * 1024; // 1MB
@@ -52,7 +54,74 @@ QString calculateFileHash(const QString& filePath)
     }
     file.close();
 
-    return hash.result().toHex();
+    return QString::fromLatin1(hash.result().toHex().toLower());
+}
+
+bool calculateFileSha256(const QString& filePath, QString& content_hash,
+    QVector<QString>& chunk_hashes)
+{
+    content_hash.clear();
+    chunk_hashes.clear();
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    //一次 32KiB 遍历同时产出整文件哈希与每片哈希：
+    //整文件用一个持续 addData 的对象；每片另起临时对象，与上传分片粒度一致
+    QCryptographicHash whole(QCryptographicHash::Sha256);
+    while (!file.atEnd())
+    {
+        const QByteArray chunk = file.read(MAX_FILE_LEN);
+        if (chunk.isEmpty()) {
+            break;
+        }
+        whole.addData(chunk);
+        QCryptographicHash chunkHash(QCryptographicHash::Sha256);
+        chunkHash.addData(chunk);
+        chunk_hashes.push_back(QString::fromLatin1(chunkHash.result().toHex().toLower()));
+    }
+    file.close();
+
+    content_hash = QString::fromLatin1(whole.result().toHex().toLower());
+    return !content_hash.isEmpty();
+}
+
+QString guessMimeType(const QString& fileName)
+{
+    //常见扩展名到 MIME 的映射；未命中回退 application/octet-stream
+    static const struct { const char* ext; const char* mime; } kMap[] = {
+        { "png",  "image/png" },
+        { "jpg",  "image/jpeg" },
+        { "jpeg", "image/jpeg" },
+        { "gif",  "image/gif" },
+        { "bmp",  "image/bmp" },
+        { "webp", "image/webp" },
+        { "svg",  "image/svg+xml" },
+        { "pdf",  "application/pdf" },
+        { "zip",  "application/zip" },
+        { "rar",  "application/vnd.rar" },
+        { "7z",   "application/x-7z-compressed" },
+        { "txt",  "text/plain" },
+        { "md",   "text/markdown" },
+        { "doc",  "application/msword" },
+        { "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+        { "xls",  "application/vnd.ms-excel" },
+        { "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+        { "ppt",  "application/vnd.ms-powerpoint" },
+        { "pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+        { "mp3",  "audio/mpeg" },
+        { "mp4",  "video/mp4" },
+        { "csv",  "text/csv" },
+    };
+    const QString ext = QFileInfo(fileName).suffix().toLower();
+    for (const auto& item : kMap) {
+        if (ext == QLatin1String(item.ext)) {
+            return QLatin1String(item.mime);
+        }
+    }
+    return QStringLiteral("application/octet-stream");
 }
 
 QPixmap CreateLoadingPlaceholder(int width, int height ) {

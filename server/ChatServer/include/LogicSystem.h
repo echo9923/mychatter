@@ -212,7 +212,7 @@ private:
 	/**
 	 * @brief 处理图片聊天消息（存储记录、通知ResourceServer上传、转发给接收者）
 	 */
-	void DealChatImgMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
+	void DealCreateResourceMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
 	 * @brief 应用层投递 ACK 处理器（计划4.3/5.2）

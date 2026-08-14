@@ -40,6 +40,7 @@ set(LLFCCHAT_SOURCES
   src/ClickableLabel.cpp
   src/MessageTextEdit.cpp
   src/PictureBubble.cpp
+  src/FileBubble.cpp
   src/TextBubble.cpp
   src/adduseritem.cpp
   src/applyfriend.cpp
@@ -97,6 +98,7 @@ set(LLFCCHAT_HEADERS
   include/MessageTextEdit.h
   include/ClickableLabel.h
   include/PictureBubble.h
+  include/FileBubble.h
   include/TextBubble.h
   include/adduseritem.h
   include/applyfriend.h

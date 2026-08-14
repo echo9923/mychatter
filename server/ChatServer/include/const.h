@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <cstdint>
 #include "Defer.h"
 
 /**
@@ -28,6 +29,8 @@ enum ErrorCodes {
 	SERVER_BUSY = 1016,          ///< 服务端停机/队列拒绝，消息未入队未持久化
 	MESSAGE_CONFLICT = 1017,     ///< unique-id 相同但内容冲突，原消息不变
 	NoAvailableChatServer = 1018, ///< 无可用 ChatServer 节点（所有 lease 缺失或过期）
+	ResourceInvalid = 1019,      ///< 资源元数据非法（文件名/SHA-256 格式/MIME 类型不合规）
+	ResourceSizeExceeded = 1020, ///< 资源超过类型上限（图片 20MB / 文件 100MB）
 };
 
 
@@ -76,12 +79,10 @@ enum MSG_TYPES {
 	ID_CREATE_PRIVATE_CHAT_RSP = 1028, ///< 创建私聊会话响应
 	ID_LOAD_CHAT_MSG_REQ = 1029,    ///< 加载历史聊天消息请求（分页）
 	ID_LOAD_CHAT_MSG_RSP = 1030,    ///< 加载历史聊天消息响应
-	ID_IMG_CHAT_MSG_REQ = 1035,     ///< 发送图片聊天消息请求
-	ID_IMG_CHAT_MSG_RSP = 1036,     ///< 图片聊天消息发送响应
-	ID_NOTIFY_IMG_CHAT_MSG_REQ = 1039, ///< 服务端通知接收者收到图片消息
-	ID_FILE_INFO_SYNC_REQ = 1041,   ///< 文件信息同步请求（断点续传）
-	ID_FILE_INFO_SYNC_RSP = 1042,   ///< 文件信息同步响应
-	// 1043-1048 被 ResourceServer 占用，不在此声明
+	ID_CREATE_RESOURCE_MSG_REQ = 1035, ///< 创建资源消息请求（图片/文件统一，元数据先行）
+	ID_CREATE_RESOURCE_MSG_RSP = 1036, ///< 创建资源消息响应（返回 message_id，resource_status=0）
+	ID_NOTIFY_RESOURCE_MSG_REQ = 1039, ///< 服务端通知接收者收到资源消息（在线投递）
+	// 1041-1048 被 ResourceServer 占用（上传进度查询/分片上传/下载信息/分片下载），不在此声明
 	ID_CHAT_DELIVERY_ACK_REQ = 1049,  ///< 应用层投递 ACK 请求（receiver 确认已收到 message_ids）
 	ID_CHAT_DELIVERY_ACK_RSP = 1050,  ///< 应用层投递 ACK 响应
 	ID_SYNC_MESSAGE_REQ = 1051,   ///< 增量消息同步请求（按 sync_seq 游标分页，含 bootstrap 变体）
@@ -109,8 +110,7 @@ inline short ReqToRspId(short req_id) {
 	case ID_LOAD_CHAT_THREAD_REQ:      return ID_LOAD_CHAT_THREAD_RSP;     // 1025 -> 1026
 	case ID_CREATE_PRIVATE_CHAT_REQ:   return ID_CREATE_PRIVATE_CHAT_RSP;  // 1027 -> 1028
 	case ID_LOAD_CHAT_MSG_REQ:         return ID_LOAD_CHAT_MSG_RSP;        // 1029 -> 1030
-	case ID_IMG_CHAT_MSG_REQ:          return ID_IMG_CHAT_MSG_RSP;         // 1035 -> 1036
-	case ID_FILE_INFO_SYNC_REQ:        return ID_FILE_INFO_SYNC_RSP;       // 1041 -> 1042
+	case ID_CREATE_RESOURCE_MSG_REQ:   return ID_CREATE_RESOURCE_MSG_RSP;   // 1035 -> 1036
 	case ID_CHAT_DELIVERY_ACK_REQ:    return ID_CHAT_DELIVERY_ACK_RSP;    // 1049 -> 1050
 	case ID_SYNC_MESSAGE_REQ:         return ID_SYNC_MESSAGE_RSP;         // 1051 -> 1052
 	default:                           return 0;
@@ -141,14 +141,20 @@ inline short ReqToRspId(short req_id) {
 
 /**
  * @brief 聊天消息状态枚举
- * 
- * 表示一条聊天消息当前的发送/阅读状态。
+ *
+ * 表示一条聊天消息当前的阅读状态（纯阅读态）。
+ * 原 3=UN_UPLOAD 语义已废弃：资源生命周期一律读 chat_message.resource_status
+ * （对应 data.h 的 ResourceStatus 枚举）。
  */
 enum MsgStatus {
 	UN_READ = 0,     ///< 对方未读
 	SEND_FAILED = 1, ///< 发送失败
 	READED = 2,      ///< 对方已读
-	UN_UPLOAD = 3    ///< 资源未上传完成（如图片还在上传中）
 };
+
+/// 资源大小上限默认值（字节），可被 config.ini [Resource] 段覆盖：
+/// MaxImageSize / MaxFileSize
+constexpr std::uint64_t kDefaultMaxImageSize = 20ULL * 1024 * 1024;   // 20MB
+constexpr std::uint64_t kDefaultMaxFileSize = 100ULL * 1024 * 1024;   // 100MB
 
 

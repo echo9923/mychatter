@@ -52,18 +52,25 @@ std::string ConfigMgr::GetValue(const std::string& section, const std::string& k
 }
 
 boost::filesystem::path ConfigMgr::GetFileOutPath()
-{ 
+{
 	return _static_path;
+}
+
+boost::filesystem::path ConfigMgr::GetResourceRootPath()
+{
+	return _resource_root;
 }
 
 void ConfigMgr::InitPath()
 {
-	// 获取当前工作目录  
+	// 获取当前工作目录
 	boost::filesystem::path current_path = boost::filesystem::current_path();
 	std::string bindir = _config_map["Output"].GetValue("Path");
 	std::string staticdir = _config_map["Static"].GetValue("Path");
 	_static_path = current_path / bindir / staticdir;
 	_bin_path = current_path / bindir;
+	//资源消息根目录与头像目录隔离：清理任务只扫 resource/，不会误伤头像
+	_resource_root = current_path / bindir / "resource";
 
 
 	// 检查路径是否存在
@@ -78,5 +85,16 @@ void ConfigMgr::InitPath()
 	}
 	else {
 		std::cout << "路径已存在: " << _static_path.string() << std::endl;
+	}
+
+	if (!boost::filesystem::exists(_resource_root)) {
+		boost::system::error_code ec;
+		if (boost::filesystem::create_directories(_resource_root, ec)) {
+			std::cout << "资源目录已成功创建: " << _resource_root.string() << std::endl;
+		}
+		else {
+			std::cerr << "创建资源目录失败: " << _resource_root.string()
+				<< " ec=" << ec.message() << std::endl;
+		}
 	}
 }

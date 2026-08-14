@@ -37,12 +37,20 @@ ScenarioEntry kScenarios[] = {
 	{ "lost-ack",      imt::ScenarioLostAck      },
 	{ "pull-bytes",    imt::ScenarioPullBytes    },
 	{ "cross-server",  imt::ScenarioCrossServer  },
-	{ "image-offline", imt::ScenarioImageOffline },
+	{ "resource-offline", imt::ScenarioResourceOffline },
 	{ "status-discovery", imt::ScenarioStatusDiscovery },
 	{ "chat-failover", imt::ScenarioChatFailover },
 	{ "simple-auth",   imt::ScenarioSimpleAuth   },
 	{ "sync-bootstrap", imt::ScenarioSyncBootstrap },
 	{ "big-ids",       imt::ScenarioBigIds       },
+	{ "resource-create",     imt::ScenarioResourceCreate     },
+	{ "resource-upload",     imt::ScenarioResourceUpload     },
+	{ "resource-resume",     imt::ScenarioResourceResume     },
+	{ "resource-idempotent", imt::ScenarioResourceIdempotent },
+	{ "resource-corrupt",    imt::ScenarioResourceCorrupt    },
+	{ "resource-perm",       imt::ScenarioResourcePerm       },
+	{ "resource-offset",     imt::ScenarioResourceOffset     },
+	{ "resource-expiry",     imt::ScenarioResourceExpiry     },
 };
 
 } // namespace
@@ -55,7 +63,7 @@ int main(int argc, char** argv) {
 		const std::string a = argv[i];
 		if (a == "--scenario" && i + 1 < argc) { scenario = argv[++i]; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|image-offline|status-discovery|chat-failover|simple-auth|sync-bootstrap|big-ids>\n");
+			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|resource-offline|status-discovery|chat-failover|simple-auth|sync-bootstrap|big-ids|resource-create|resource-upload|resource-resume|resource-idempotent|resource-corrupt|resource-perm|resource-offset|resource-expiry>\n");
 			return 0;
 		}
 	}

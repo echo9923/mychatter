@@ -9,6 +9,7 @@
 #include "CServer.h"
 #include "ConfigMgr.h"
 #include "utils.h"
+#include "Sha256.h"
 #include <vector>
 #include <set>
 #include <algorithm>
@@ -58,6 +59,67 @@ bool ParseJsonId(const json& v, std::int64_t& out) {
 		}
 	}
 	return false;
+}
+
+/// 资源文件名清洗：剥除路径分隔符/控制字符，压缩空白；结果为 UTF-8 且不超过 255 字节
+///（在多字节字符边界上截断）。清洗后为空返回 false。
+bool SanitizeFileName(const std::string& in, std::string& out) {
+	out.clear();
+	out.reserve(in.size());
+	for (const unsigned char c : in) {
+		if (c == '/' || c == '\\' || c < 0x20 || c == 0x7F) {
+			continue; // 路径分隔符与控制字符：根除路径穿越
+		}
+		out.push_back(static_cast<char>(c));
+	}
+	//UTF-8 边界截断到 255 字节（后继字节 0b10xxxxxx 不可作首字节）
+	if (out.size() > 255) {
+		std::size_t cut = 255;
+		while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) {
+			--cut;
+		}
+		out.resize(cut);
+	}
+	return !out.empty();
+}
+
+/// MIME 类型格式校验：type/subtype，各段非空、仅 [A-Za-z0-9.+-]、总长 <=128
+bool IsValidMimeType(const std::string& mime) {
+	if (mime.empty() || mime.size() > 128) {
+		return false;
+	}
+	const std::size_t slash = mime.find('/');
+	if (slash == std::string::npos || mime.find('/', slash + 1) != std::string::npos) {
+		return false; // 恰好一个 '/'
+	}
+	const auto seg_ok = [](const std::string& seg) {
+		if (seg.empty()) return false;
+		for (const char c : seg) {
+			const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+				(c >= '0' && c <= '9') || c == '.' || c == '+' || c == '-';
+			if (!ok) return false;
+		}
+		return true;
+	};
+	return seg_ok(mime.substr(0, slash)) && seg_ok(mime.substr(slash + 1));
+}
+
+/// 从 [Resource] 读取资源大小上限（字节）；缺失/非法回退默认值
+std::uint64_t ReadResourceLimit(const std::string& key, std::uint64_t fallback) {
+	try {
+		auto val = ConfigMgr::Inst().GetValue("Resource", key);
+		if (!val.empty()) {
+			std::size_t pos = 0;
+			unsigned long long n = std::stoull(val, &pos);
+			if (pos == val.size()) {
+				return static_cast<std::uint64_t>(n);
+			}
+		}
+	}
+	catch (...) {
+		//配置缺失/非数字，回退默认值
+	}
+	return fallback;
 }
 } // namespace
 
@@ -217,9 +279,9 @@ void LogicSystem::RegisterCallBacks() {
 			LoadChatMsg(session, msg_type, msg_data);
 		};
 
-	_fun_callbacks[ID_IMG_CHAT_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+	_fun_callbacks[ID_CREATE_RESOURCE_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
-			DealChatImgMsg(session, msg_type, msg_data);
+			DealCreateResourceMsg(session, msg_type, msg_data);
 		};
 
 	_fun_callbacks[ID_CHAT_DELIVERY_ACK_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
@@ -1053,31 +1115,66 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 		chat_data["status"] = chat.status;
 		chat_data["msg_type"] = chat.msg_type;
 		chat_data["receiver"] = chat.recv_id;
+		//资源消息三件套（与统一 envelope 对齐；文本消息为空/0）
+		chat_data["resource_status"] = static_cast<int>(chat.resource_status);
+		chat_data["content_hash"] = chat.content_hash;
+		chat_data["mime_type"] = chat.mime_type;
 		rtvalue["chat_datas"].push_back(chat_data);
 	}
 
 }
 
-void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
+void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 	const short& msg_type, const string& msg_data) {
+	//1035 创建资源消息（图片/文件统一）：只登记元数据，不含文件体。
+	//请求：{fromuid, touid, thread_id:"<str>", unique_id, msg_type:1|3,
+	//       file_name, content_size:"<str>", content_hash:"<64hex>", mime_type}
+	//响应：{error, message_id:"<str>", unique_id, thread_id, chat_time,
+	//       content_size:"<str>", resource_status:0}
 	auto root = json::parse(msg_data, nullptr, false);
 
-	auto uid = root["fromuid"].get<int>();
-	auto touid = root["touid"].get<int>();
-	//thread_id 按 64 位解析：协议字符串化后兼容十进制字符串与数字
-	std::int64_t thread_id = 0;
-	if (!ParseJsonId(root["thread_id"], thread_id)) {
-		json err;
-		err["error"] = ErrorCodes::Error_Json;
-		session->Send(err.dump(4), ID_IMG_CHAT_MSG_RSP);
+	json rtvalue;
+	rtvalue["error"] = ErrorCodes::Success;
+	auto reject = [&rtvalue, &session](ErrorCodes code) {
+		rtvalue["error"] = code;
+		session->Send(rtvalue.dump(4), ID_CREATE_RESOURCE_MSG_RSP);
+	};
+
+	if (root.is_discarded() || !root.is_object()) {
+		reject(ErrorCodes::Error_Json);
 		return;
 	}
 
-	auto md5 = root["md5"].get<std::string>();
-	auto unique_name = root["name"].get<std::string>();
-	auto unique_id = root["unique_id"].get<std::string>();
+	//---- 字段抽取（类型严格校验，缺一即 Error_Json）----
+	auto get_int = [&root](const char* k, int& out) -> bool {
+		if (!root.contains(k) || !root[k].is_number_integer()) return false;
+		out = root[k].get<int>();
+		return true;
+	};
+	auto get_str = [&root](const char* k, std::string& out) -> bool {
+		if (!root.contains(k) || !root[k].is_string()) return false;
+		out = root[k].get<std::string>();
+		return true;
+	};
 
-	//content_size：JSON 十进制字符串（兼容当前整数）；非法一律 0（计划5.4/6.3）
+	int uid = 0, touid = 0, msg_type_value = 0;
+	std::int64_t thread_id = 0;
+	std::string unique_id, file_name, content_hash, mime_type;
+	if (!get_int("fromuid", uid) || !get_int("touid", touid) ||
+		!get_int("msg_type", msg_type_value) ||
+		!root.contains("thread_id") || !ParseJsonId(root["thread_id"], thread_id) ||
+		!get_str("unique_id", unique_id) || !get_str("file_name", file_name) ||
+		!get_str("content_hash", content_hash) || !get_str("mime_type", mime_type)) {
+		reject(ErrorCodes::Error_Json);
+		return;
+	}
+
+	rtvalue["fromuid"] = uid;
+	rtvalue["touid"] = touid;
+	rtvalue["thread_id"] = std::to_string(thread_id);
+	rtvalue["unique_id"] = unique_id;
+
+	//content_size：JSON 十进制字符串（兼容整数）；非法一律 0
 	std::uint64_t content_size = 0;
 	if (root.contains("content_size")) {
 		const auto& cs = root["content_size"];
@@ -1090,55 +1187,97 @@ void LogicSystem::DealChatImgMsg(std::shared_ptr<CSession> session,
 		}
 	}
 
-	json  rtvalue;
-	rtvalue["error"] = ErrorCodes::Success;
-	rtvalue["fromuid"] = uid;
-	rtvalue["touid"] = touid;
-	rtvalue["thread_id"] = std::to_string(thread_id);
-	rtvalue["md5"] = md5;
-	rtvalue["unique_name"] = unique_name;
-	rtvalue["unique_id"] = unique_id;
+	//---- 校验链 ----
+	//1. 会话身份：不信任 JSON 里的 fromuid（沿用 ResourceServer“sender 取 session”惯例）
+	if (uid <= 0 || touid <= 0 || uid != session->GetUserId()) {
+		reject(ErrorCodes::UidInvalid);
+		return;
+	}
 
-	//服务端生成 chat_time/status=UN_UPLOAD，不读取 client 的 chat_time/status（计划5.4/6.3）
+	//2. 会话归属：fromuid/touid 必须都是该私聊会话成员（防跨会话发消息）
+	int member1 = 0, member2 = 0;
+	if (!MysqlMgr::GetInstance()->GetPrivateChatMembers(thread_id, member1, member2) ||
+		!((uid == member1 && touid == member2) || (uid == member2 && touid == member1))) {
+		reject(ErrorCodes::CREATE_CHAT_FAILED);
+		return;
+	}
+
+	//3. 类型：仅图片(1)/文件(3)；视频(2)本期拒绝
+	const bool is_pic = msg_type_value == static_cast<int>(ChatMsgType::PIC);
+	const bool is_file = msg_type_value == static_cast<int>(ChatMsgType::FILE);
+	if (!is_pic && !is_file) {
+		reject(ErrorCodes::ResourceInvalid);
+		return;
+	}
+
+	//4. 大小：>0 且不超过类型上限（图片 20MB / 文件 100MB，可由 [Resource] 配置覆盖）
+	const std::uint64_t size_limit = is_pic
+		? ReadResourceLimit("MaxImageSize", kDefaultMaxImageSize)
+		: ReadResourceLimit("MaxFileSize", kDefaultMaxFileSize);
+	if (content_size == 0 || content_size > size_limit) {
+		reject(ErrorCodes::ResourceSizeExceeded);
+		return;
+	}
+
+	//5. 文件名：清洗后作为 content 存储（磁盘文件以 message_id 命名，content 仅展示用）
+	if (!SanitizeFileName(file_name, file_name)) {
+		reject(ErrorCodes::ResourceInvalid);
+		return;
+	}
+
+	//6. 整文件哈希：64 位小写 hex（ResourceServer 收齐分片后据此校验）
+	if (!llfc::IsValidSha256Hex(content_hash)) {
+		reject(ErrorCodes::ResourceInvalid);
+		return;
+	}
+
+	//7. MIME 类型：type/subtype 格式
+	if (!IsValidMimeType(mime_type)) {
+		reject(ErrorCodes::ResourceInvalid);
+		return;
+	}
+
+	//---- 落库（幂等 UPSERT：duplicate 回同一 canonical message_id，不建第二行）----
+	//服务端生成 chat_time，不读取客户端时间；status 纯阅读态、resource_status=Uploading
 	auto timestamp = getCurrentTimestamp();
-	rtvalue["chat_time"] = timestamp;
-	rtvalue["status"] = MsgStatus::UN_UPLOAD;
-
 	auto chat_msg = std::make_shared<ChatMessage>();
 	chat_msg->chat_time = timestamp;
 	chat_msg->sender_id = uid;
 	chat_msg->recv_id = touid;
 	chat_msg->unique_id = unique_id;
 	chat_msg->thread_id = thread_id;
-	chat_msg->content = unique_name;
-	chat_msg->status = MsgStatus::UN_UPLOAD;
-	chat_msg->msg_type = static_cast<int>(ChatMsgType::PIC);
+	chat_msg->content = file_name;
+	chat_msg->status = MsgStatus::UN_READ;
+	chat_msg->msg_type = msg_type_value;
+	chat_msg->resource_status = ResourceStatus::Uploading;
 	chat_msg->content_size = content_size;
+	chat_msg->content_hash = content_hash;
+	chat_msg->mime_type = mime_type;
 
-	//插入数据库：duplicate 回同一 canonical message_id/unique_id，不建第二行（计划5.4）
 	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_msg);
 	if (save_res == SaveMessageResult::Failed) {
 		//持久化失败：不 ACK、不转发，sender 按 transient 重传
-		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
-		session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
+		reject(ErrorCodes::MESSAGE_STORE_FAILED);
 		return;
 	}
 	if (save_res == SaveMessageResult::Conflict) {
 		//永久冲突：原消息不变，不创建第二行（unique_id 已在 rtvalue 顶层）
-		rtvalue["error"] = ErrorCodes::MESSAGE_CONFLICT;
-		session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
+		reject(ErrorCodes::MESSAGE_CONFLICT);
 		return;
 	}
 
-	//canonical：message_id 十进制字符串；content_size 十进制字符串（计划5.4/6.3）
+	//canonical：message_id/content_size 十进制字符串；resource_status 十进制
 	rtvalue["message_id"] = std::to_string(chat_msg->message_id);
+	rtvalue["chat_time"] = timestamp;
 	rtvalue["content_size"] = std::to_string(chat_msg->content_size);
+	rtvalue["resource_status"] = static_cast<int>(chat_msg->resource_status);
 
-	//【关键顺序】事务已提交 → 发 1036 sender response（语义固定为“服务端已持久化”）（计划5.4）
-	session->Send(rtvalue.dump(4), ID_IMG_CHAT_MSG_RSP);
+	//【关键顺序】事务已提交 → 发 1036 sender response（语义固定为“服务端已持久化”）
+	session->Send(rtvalue.dump(4), ID_CREATE_RESOURCE_MSG_RSP);
 
-	//UN_UPLOAD 图片不写同步行、不实时通知，待 §5.7 上传完成点（UpdateUploadStatusWithSync
-	//成功后同事务补同步行）才对增量同步可见，避免同步到尚不可下载的图片（计划5.4/4.2）
+	//Uploading 资源不写同步行、不实时通知，待 ResourceServer 上传完成点
+	//（CompleteResourceUploadWithSync 同事务置 Ready 并补同步行）才对增量同步可见，
+	//避免同步到尚不可下载的资源。
 }
 
 json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) {
@@ -1155,6 +1294,10 @@ json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) 
 	env["content_size"] = std::to_string(msg->content_size);
 	env["chat_time"] = msg->chat_time;
 	env["status"] = msg->status;
+	//资源消息三件套（1019/1030/1039/1052 共用；文本消息 hash/mime 为空串）
+	env["resource_status"] = static_cast<int>(msg->resource_status);
+	env["content_hash"] = msg->content_hash;
+	env["mime_type"] = msg->mime_type;
 	return env;
 }
 

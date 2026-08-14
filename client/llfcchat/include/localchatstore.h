@@ -19,8 +19,8 @@ public slots:
     void slot_close_db();
     void slot_enqueue_send(LocalMessageDTO dto);
     void slot_confirm_text_sent(QString clientMessageId, qint64 serverMessageId, QString chatTime);
-    void slot_update_image_stage(QString clientMessageId, qint64 serverMessageId, QString stage);
-    void slot_confirm_image_sent(QString clientMessageId);
+    void slot_update_resource_stage(QString clientMessageId, qint64 serverMessageId, QString stage);
+    void slot_confirm_resource_sent(QString clientMessageId);
     void slot_mark_send_failed(QString clientMessageId);
     void slot_get_message_by_client_id(QString clientMessageId);
     void slot_insert_incoming(QList<LocalMessageDTO> msgs);
@@ -40,8 +40,8 @@ signals:
     void sig_db_closed();
     void sig_send_enqueued(bool ok, LocalMessageDTO dto);
     void sig_send_confirmed(bool ok, LocalMessageDTO dto);
-    void sig_image_stage_updated(bool ok, LocalMessageDTO dto);
-    void sig_image_confirmed(bool ok, LocalMessageDTO dto);
+    void sig_resource_stage_updated(bool ok, LocalMessageDTO dto);
+    void sig_resource_confirmed(bool ok, LocalMessageDTO dto);
     void sig_send_failed_marked(bool ok, LocalMessageDTO dto);
     void sig_message_loaded(bool ok, LocalMessageDTO dto);
     void sig_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs, QList<qint64> insertedIds);
@@ -79,9 +79,9 @@ public:
     void enqueueSend(LocalMessageDTO dto);
     void confirmTextSent(const QString& clientMessageId, qint64 serverMessageId,
         const QString& chatTime);
-    void updateImageStage(const QString& clientMessageId, qint64 serverMessageId,
+    void updateResourceStage(const QString& clientMessageId, qint64 serverMessageId,
         const QString& stage);
-    void confirmImageSent(const QString& clientMessageId);
+    void confirmResourceSent(const QString& clientMessageId);
     void markSendFailed(const QString& clientMessageId);
     void getMessageByClientId(const QString& clientMessageId);
     void insertIncoming(const QList<LocalMessageDTO>& msgs);
@@ -103,8 +103,8 @@ signals:
     void sig_close_db();
     void sig_enqueue_send(LocalMessageDTO dto);
     void sig_confirm_text_sent(QString clientMessageId, qint64 serverMessageId, QString chatTime);
-    void sig_update_image_stage(QString clientMessageId, qint64 serverMessageId, QString stage);
-    void sig_confirm_image_sent(QString clientMessageId);
+    void sig_update_resource_stage(QString clientMessageId, qint64 serverMessageId, QString stage);
+    void sig_confirm_resource_sent(QString clientMessageId);
     void sig_mark_send_failed(QString clientMessageId);
     void sig_get_message_by_client_id(QString clientMessageId);
     void sig_insert_incoming(QList<LocalMessageDTO> msgs);
@@ -124,8 +124,8 @@ signals:
     void sig_db_closed();
     void sig_send_enqueued(bool ok, LocalMessageDTO dto);
     void sig_send_confirmed(bool ok, LocalMessageDTO dto);
-    void sig_image_stage_updated(bool ok, LocalMessageDTO dto);
-    void sig_image_confirmed(bool ok, LocalMessageDTO dto);
+    void sig_resource_stage_updated(bool ok, LocalMessageDTO dto);
+    void sig_resource_confirmed(bool ok, LocalMessageDTO dto);
     void sig_send_failed_marked(bool ok, LocalMessageDTO dto);
     void sig_message_loaded(bool ok, LocalMessageDTO dto);
     void sig_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs, QList<qint64> insertedIds);

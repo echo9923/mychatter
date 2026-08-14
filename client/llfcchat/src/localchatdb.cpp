@@ -12,7 +12,8 @@
 //messages 表列清单（readMessageRow 与各 SELECT 共用）
 static const char* MSG_COLUMNS =
     "local_id, server_message_id, client_message_id, thread_id, sender_id, receiver_id,"
-    " message_type, content, local_path, content_size, send_state, created_at";
+    " message_type, content, local_path, content_size, resource_status, content_hash,"
+    " mime_type, send_state, created_at";
 
 LocalChatDb::LocalChatDb(const QString& conn_name)
     : _conn_name(conn_name.isEmpty() ? QUuid::createUuid().toString() : conn_name)
@@ -78,9 +79,33 @@ bool LocalChatDb::initSchema()
         " content TEXT,"
         " local_path TEXT,"
         " content_size TEXT,"
+        " resource_status INTEGER NOT NULL DEFAULT 0,"
+        " content_hash TEXT,"
+        " mime_type TEXT,"
         " send_state TEXT NOT NULL DEFAULT 'sending',"
         " created_at TEXT)")) {
         qWarning() << "[LocalChatDb] create messages failed:" << query.lastError().text();
+        return false;
+    }
+    //旧库升级：缺列则补（默认值与建表一致，存量行不动）
+    static const char* kUpgrades[] = {
+        "ALTER TABLE messages ADD COLUMN resource_status INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN content_hash TEXT",
+        "ALTER TABLE messages ADD COLUMN mime_type TEXT",
+    };
+    for (const char* sql : kUpgrades) {
+        if (!query.exec(sql)) {
+            //duplicate column（已存在）不算失败
+            const QString err = query.lastError().text();
+            if (!err.contains("duplicate column", Qt::CaseInsensitive)) {
+                qWarning() << "[LocalChatDb] upgrade messages failed:" << err;
+                return false;
+            }
+        }
+    }
+    //一次性作废旧协议的 SEND_IMAGE 条目（三端同批发布，旧 stage 语义不复存在）
+    if (!query.exec("DELETE FROM outbox WHERE operation_type = 'SEND_IMAGE'")) {
+        qWarning() << "[LocalChatDb] purge legacy outbox failed:" << query.lastError().text();
         return false;
     }
     if (!query.exec(
@@ -146,8 +171,11 @@ LocalMessageDTO LocalChatDb::readMessageRow(QSqlQuery& query)
     dto.content = query.value(7).toString();
     dto.local_path = query.value(8).toString();
     dto.content_size = query.value(9).toString();
-    dto.send_state = query.value(10).toString();
-    dto.created_at = query.value(11).toString();
+    dto.resource_status = query.value(10).toInt();
+    dto.content_hash = query.value(11).toString();
+    dto.mime_type = query.value(12).toString();
+    dto.send_state = query.value(13).toString();
+    dto.created_at = query.value(14).toString();
     return dto;
 }
 
@@ -173,8 +201,10 @@ bool LocalChatDb::insertMessageIgnore(const LocalMessageDTO& dto, bool* inserted
     query.prepare(
         "INSERT OR IGNORE INTO messages"
         " (server_message_id, client_message_id, thread_id, sender_id, receiver_id,"
-        "  message_type, content, local_path, content_size, send_state, created_at)"
-        " VALUES(:sid, :cid, :tid, :sender, :recv, :mtype, :content, :lpath, :csize, :state, :ctime)");
+        "  message_type, content, local_path, content_size, resource_status, content_hash,"
+        "  mime_type, send_state, created_at)"
+        " VALUES(:sid, :cid, :tid, :sender, :recv, :mtype, :content, :lpath, :csize,"
+        "  :rstatus, :chash, :mime, :state, :ctime)");
     //0=未确认语义落盘为 NULL，避免唯一索引把多条 0 判重
     if (dto.server_message_id > 0) {
         query.bindValue(":sid", QVariant::fromValue<qint64>(dto.server_message_id));
@@ -189,6 +219,9 @@ bool LocalChatDb::insertMessageIgnore(const LocalMessageDTO& dto, bool* inserted
     query.bindValue(":content", dto.content);
     query.bindValue(":lpath", dto.local_path);
     query.bindValue(":csize", dto.content_size);
+    query.bindValue(":rstatus", dto.resource_status);
+    query.bindValue(":chash", dto.content_hash);
+    query.bindValue(":mime", dto.mime_type);
     query.bindValue(":state", dto.send_state.isEmpty() ? SEND_STATE_SENT : dto.send_state);
     query.bindValue(":ctime", dto.created_at);
     if (!query.exec()) {
@@ -204,7 +237,14 @@ bool LocalChatDb::insertMessageIgnore(const LocalMessageDTO& dto, bool* inserted
 bool LocalChatDb::upsertConversationOnMessage(const LocalMessageDTO& dto, bool incoming)
 {
     qint64 peer_uid = (dto.sender_id == _self_uid) ? dto.receiver_id : dto.sender_id;
-    QString preview = (dto.message_type == 1) ? QStringLiteral("[图片]") : dto.content;
+    QString preview;
+    if (dto.message_type == static_cast<int>(ChatMsgType::PIC)) {
+        preview = QStringLiteral("[图片]");
+    } else if (dto.message_type == static_cast<int>(ChatMsgType::FILE)) {
+        preview = QStringLiteral("[文件]");
+    } else {
+        preview = dto.content;
+    }
     int unread_inc = (incoming && dto.sender_id != _self_uid) ? 1 : 0;
     QString ts = QDateTime::currentDateTime().toString(Qt::ISODate);
 
@@ -243,16 +283,20 @@ bool LocalChatDb::enqueueSend(LocalMessageDTO& dto)
     dto.send_state = SEND_STATE_SENDING;
 
     //组装重发所需原始请求 payload（与 ChatPage 既有 1017/1035 格式一致）
-    bool is_image = dto.message_type == 1;
+    //资源消息（图片/文件）要求 content_hash/mime_type 已由后台哈希填好（磁盘可能变化，落库时定格）
+    const bool is_resource = dto.message_type == static_cast<int>(ChatMsgType::PIC)
+        || dto.message_type == static_cast<int>(ChatMsgType::FILE);
     QJsonObject payload;
     payload["fromuid"] = dto.sender_id;
     payload["touid"] = dto.receiver_id;
     //thread_id/content_size 按字符串化协议输出十进制字符串（dispatcher 续传也按字符串回读）
     payload["thread_id"] = QString::number(dto.thread_id);
     payload["unique_id"] = dto.client_message_id;
-    if (is_image) {
-        payload["md5"] = calculateFileHash(dto.local_path);
-        payload["name"] = dto.content;
+    if (is_resource) {
+        payload["msg_type"] = dto.message_type;
+        payload["file_name"] = dto.content;
+        payload["content_hash"] = dto.content_hash;
+        payload["mime_type"] = dto.mime_type;
         payload["text_or_url"] = dto.local_path;
         payload["content_size"] = dto.content_size;
     } else {
@@ -269,8 +313,10 @@ bool LocalChatDb::enqueueSend(LocalMessageDTO& dto)
     query.prepare(
         "INSERT INTO messages"
         " (server_message_id, client_message_id, thread_id, sender_id, receiver_id,"
-        "  message_type, content, local_path, content_size, send_state, created_at)"
-        " VALUES(NULL, :cid, :tid, :sender, :recv, :mtype, :content, :lpath, :csize, :state, :ctime)");
+        "  message_type, content, local_path, content_size, resource_status, content_hash,"
+        "  mime_type, send_state, created_at)"
+        " VALUES(NULL, :cid, :tid, :sender, :recv, :mtype, :content, :lpath, :csize,"
+        "  :rstatus, :chash, :mime, :state, :ctime)");
     query.bindValue(":cid", dto.client_message_id);
     query.bindValue(":tid", QVariant::fromValue<qint64>(dto.thread_id));
     query.bindValue(":sender", QVariant::fromValue<qint64>(dto.sender_id));
@@ -279,6 +325,9 @@ bool LocalChatDb::enqueueSend(LocalMessageDTO& dto)
     query.bindValue(":content", dto.content);
     query.bindValue(":lpath", dto.local_path);
     query.bindValue(":csize", dto.content_size);
+    query.bindValue(":rstatus", dto.resource_status);
+    query.bindValue(":chash", dto.content_hash);
+    query.bindValue(":mime", dto.mime_type);
     query.bindValue(":state", dto.send_state);
     query.bindValue(":ctime", dto.created_at);
     if (!query.exec()) {
@@ -292,12 +341,12 @@ bool LocalChatDb::enqueueSend(LocalMessageDTO& dto)
     ob.prepare(
         "INSERT INTO outbox (operation_type, dedup_key, request_id, payload, stage)"
         " VALUES(:op, :dedup, :req, :payload, :stage)");
-    ob.bindValue(":op", is_image ? OUTBOX_OP_SEND_IMAGE : OUTBOX_OP_SEND_TEXT);
+    ob.bindValue(":op", is_resource ? OUTBOX_OP_SEND_RESOURCE : OUTBOX_OP_SEND_TEXT);
     ob.bindValue(":dedup", dto.client_message_id);
     ob.bindValue(":req", dto.client_message_id);
     ob.bindValue(":payload", payload_str);
-    //图片初始阶段 metadata（等待 1036），文本不需要阶段
-    ob.bindValue(":stage", is_image ? IMG_STAGE_METADATA : QString());
+    //资源初始阶段 metadata（等待 1036），文本不需要阶段
+    ob.bindValue(":stage", is_resource ? RESOURCE_STAGE_METADATA : QString());
     if (!ob.exec()) {
         qWarning() << "[LocalChatDb] enqueue outbox failed:" << ob.lastError().text();
         _db.rollback();
@@ -346,7 +395,7 @@ bool LocalChatDb::confirmTextSent(const QString& clientMessageId, qint64 serverM
     return fillMessageByClientId(clientMessageId, out);
 }
 
-bool LocalChatDb::updateImageStage(const QString& clientMessageId, qint64 serverMessageId,
+bool LocalChatDb::updateResourceStage(const QString& clientMessageId, qint64 serverMessageId,
     const QString& stage, LocalMessageDTO* out)
 {
     if (!isOpen()) {
@@ -379,7 +428,7 @@ bool LocalChatDb::updateImageStage(const QString& clientMessageId, qint64 server
     return fillMessageByClientId(clientMessageId, out);
 }
 
-bool LocalChatDb::confirmImageSent(const QString& clientMessageId, LocalMessageDTO* out)
+bool LocalChatDb::confirmResourceSent(const QString& clientMessageId, LocalMessageDTO* out)
 {
     if (!isOpen()) {
         return false;
@@ -527,6 +576,24 @@ bool LocalChatDb::applySyncPage(const QList<LocalMessageDTO>& msgs, qint64 newSy
         if (!upsertConversationOnMessage(dto, true)) {
             _db.rollback();
             return false;
+        }
+        //同步落库同样生成 DELIVERY_ACK outbox（与 insertIncoming 对齐，补齐离线
+        //资源消息的 ACK 闭环；幂等：重复同步 INSERT OR IGNORE 无操作）
+        if (dto.server_message_id > 0 && dto.sender_id != _self_uid) {
+            QJsonObject ack_payload;
+            ack_payload["message_id"] = QString::number(dto.server_message_id);
+            QSqlQuery ob(_db);
+            ob.prepare(
+                "INSERT OR IGNORE INTO outbox (operation_type, dedup_key, payload)"
+                " VALUES(:op, :dedup, :payload)");
+            ob.bindValue(":op", OUTBOX_OP_DELIVERY_ACK);
+            ob.bindValue(":dedup", "ack_" + QString::number(dto.server_message_id));
+            ob.bindValue(":payload", QString::fromUtf8(
+                QJsonDocument(ack_payload).toJson(QJsonDocument::Compact)));
+            if (!ob.exec()) {
+                _db.rollback();
+                return false;
+            }
         }
     }
     //整页写完后推进游标（同事务，失败整体回滚游标不动）

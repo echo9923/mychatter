@@ -37,14 +37,18 @@ private:
     void initHandlers();
     void handleMsg(ReqId id, int len, QByteArray data);
     void finishReconnectFailure();
-    void CreatePlaceholderImgMsgL(QString img_path_str, QString msg_content,
+    void CreatePlaceholderResourceMsgL(QString cache_dir, QString msg_content,
         qint64 msg_id, qint64 thread_id, int send_uid, int recv_id, int status, QString chat_time,
-        std::vector<std::shared_ptr<ChatDataBase>>& chat_datas);
-    //统一 envelope 分发（1019/1039 共用）：文本走 sig_text_chat_msg，图片走 sig_img_chat_msg+下载
+        ChatMsgType msg_type, std::vector<std::shared_ptr<ChatDataBase>>& chat_datas);
+    //统一 envelope 分发（1019/1039 共用）：文本走 sig_text_chat_msg，图片走
+    //sig_img_chat_msg+自动下载，文件走 sig_file_chat_msg（不自动下载）。
+    //资源三件套（resource_status/content_hash/mime_type）仅 1039/1052 资源消息携带
     void dispatchIncomingMessage(qint64 message_id, const QString& unique_id,
         qint64 thread_id, int fromuid, int touid, int msg_type,
         const QString& content, qint64 content_size,
-        const QString& chat_time, int status);
+        const QString& chat_time, int status,
+        int resource_status = 0, const QString& content_hash = QString(),
+        const QString& mime_type = QString());
     QTcpSocket _socket;
     QString _host;
     uint16_t _port;
@@ -96,12 +100,14 @@ signals:
     void sig_load_chat_msg(qint64 thread_id, qint64 message_id, bool load_more,
         std::vector<std::shared_ptr<ChatDataBase>> msg_list);
     void sig_img_chat_msg(std::shared_ptr<ImgChatData> msg_list);
+    //文件消息（复用 ImgChatData 载荷；不自动下载，等用户点击）
+    void sig_file_chat_msg(std::shared_ptr<ImgChatData> msg_list);
     //—— 领域转发信号：1018/1036/1050 → OutboxDispatcher，1052 → ChatSyncManager ——
     //1018 文本回包（含 MESSAGE_CONFLICT/transient，由 Dispatcher 判定）
     void sig_text_msg_rsp_forward(int error, QString unique_id, qint64 message_id,
         QString chat_time);
-    //1036 图片元数据回包（含 MESSAGE_CONFLICT/transient，由 Dispatcher 判定）
-    void sig_img_msg_meta_rsp_forward(int error, QString unique_id, QString unique_name,
+    //1036 资源消息创建回包（含 MESSAGE_CONFLICT/RESOURCE_*/transient，由 Dispatcher 判定）
+    void sig_resource_msg_meta_rsp_forward(int error, QString unique_id, QString file_name,
         qint64 message_id, qint64 thread_id, qint64 fromuid, qint64 touid);
     //1050 ACK 回包（message_ids 按字符串解析转 qint64）
     void sig_delivery_ack_rsp_forward(int error, QList<qint64> message_ids);

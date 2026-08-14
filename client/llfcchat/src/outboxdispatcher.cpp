@@ -28,13 +28,17 @@ OutboxDispatcher::OutboxDispatcher()
         this, &OutboxDispatcher::slot_connection_closed);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_msg_rsp_forward,
         this, &OutboxDispatcher::slot_text_msg_rsp);
-    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_img_msg_meta_rsp_forward,
-        this, &OutboxDispatcher::slot_img_msg_meta_rsp);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_resource_msg_meta_rsp_forward,
+        this, &OutboxDispatcher::slot_resource_msg_meta_rsp);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_delivery_ack_rsp_forward,
         this, &OutboxDispatcher::slot_delivery_ack_rsp);
-    //FileTcpMgr 上传完成（File 线程 → queued 到 TCP 线程）
-    connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_chat_img_upload_done,
-        this, &OutboxDispatcher::slot_img_upload_done);
+    //FileTcpMgr 上传事件（File 线程 → queued 到 TCP 线程）
+    connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_upload_done,
+        this, &OutboxDispatcher::slot_resource_upload_done);
+    connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_upload_failed,
+        this, &OutboxDispatcher::slot_resource_upload_failed);
+    connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_upload_progress_rsp,
+        this, &OutboxDispatcher::slot_upload_progress_rsp);
     //本地库结果信号（worker 线程 → queued 到 TCP 线程）
     auto store = LocalChatStore::GetInstance();
     connect(store.get(), &LocalChatStore::sig_outbox_loaded,
@@ -112,14 +116,14 @@ void OutboxDispatcher::slot_outbox_loaded(bool ok, QList<OutboxEntryDTO> entries
     for (const OutboxEntryDTO& entry : entries) {
         _entries.insert(entry.dedup_key, entry);
     }
-    //重启恢复：uploading 阶段条目回查 server_message_id 后走 1043 续传
+    //重启恢复：uploading 阶段条目回查 server_message_id 后统一走 1041 对齐续传
     for (const OutboxEntryDTO& entry : entries) {
-        if (entry.operation_type != OUTBOX_OP_SEND_IMAGE
-            || entry.stage != IMG_STAGE_UPLOADING) {
+        if (entry.operation_type != OUTBOX_OP_SEND_RESOURCE
+            || entry.stage != RESOURCE_STAGE_UPLOADING) {
             continue;
         }
         QJsonObject payload = QJsonDocument::fromJson(entry.payload.toUtf8()).object();
-        QString name = payload["name"].toString();
+        QString name = payload["file_name"].toString();
         if (_uploading.contains(name) || _resume_pending.contains(entry.request_id)) {
             continue;
         }
@@ -146,7 +150,7 @@ void OutboxDispatcher::slot_message_loaded(bool ok, LocalMessageDTO dto)
     if (iter == _entries.end()) {
         return;
     }
-    startImageUpload(iter.value(), dto.server_message_id, true);
+    startResourceUpload(iter.value(), dto.server_message_id);
 }
 
 void OutboxDispatcher::dispatchDueEntries()
@@ -191,100 +195,108 @@ void OutboxDispatcher::dispatchDueEntries()
             scheduleRetry(entry);
             continue;
         }
-        if (entry.operation_type == OUTBOX_OP_SEND_IMAGE) {
-            dispatchImageEntry(entry);
+        if (entry.operation_type == OUTBOX_OP_SEND_RESOURCE) {
+            dispatchResourceEntry(entry);
             continue;
         }
     }
 }
 
-void OutboxDispatcher::dispatchImageEntry(const OutboxEntryDTO& entry)
+void OutboxDispatcher::dispatchResourceEntry(const OutboxEntryDTO& entry)
 {
-    //uploading 阶段由上传完成事件推进（或重启恢复续传），扫描不重发 1035
-    if (entry.stage != IMG_STAGE_METADATA) {
+    //uploading 阶段由 1042/1038 事件推进（或重启恢复续传），扫描不重发 1035
+    if (entry.stage != RESOURCE_STAGE_METADATA) {
         return;
     }
     QJsonObject payload = QJsonDocument::fromJson(entry.payload.toUtf8()).object();
     QString local_path = payload["text_or_url"].toString();
     if (!QFile::exists(local_path)) {
         //源文件丢失：标 failed 并停止重试
-        qWarning() << "[Outbox] image source missing, mark failed:" << local_path;
+        qWarning() << "[Outbox] resource source missing, mark failed:" << local_path;
         LocalChatStore::GetInstance()->markSendFailed(entry.request_id);
         removeEntry(entry.dedup_key);
         return;
     }
-    emit TcpMgr::GetInstance()->sig_send_data(ID_IMG_CHAT_MSG_REQ, entry.payload.toUtf8());
+    emit TcpMgr::GetInstance()->sig_send_data(ID_CREATE_RESOURCE_MSG_REQ,
+        entry.payload.toUtf8());
     scheduleRetry(_entries[entry.dedup_key]);
 }
 
-void OutboxDispatcher::startImageUpload(const OutboxEntryDTO& entry, qint64 server_message_id,
-    bool resume)
+void OutboxDispatcher::startResourceUpload(const OutboxEntryDTO& entry, qint64 server_message_id)
 {
     QJsonObject payload = QJsonDocument::fromJson(entry.payload.toUtf8()).object();
     QString local_path = payload["text_or_url"].toString();
-    QString name = payload["name"].toString();
+    QString name = payload["file_name"].toString();
     if (!QFile::exists(local_path)) {
         //源文件丢失：标 failed 并停止重试
-        qWarning() << "[Outbox] image source missing, mark failed:" << local_path;
+        qWarning() << "[Outbox] resource source missing, mark failed:" << local_path;
         LocalChatStore::GetInstance()->markSendFailed(entry.request_id);
         removeEntry(entry.dedup_key);
         return;
     }
 
+    const int msg_type = payload["msg_type"].toInt(static_cast<int>(ChatMsgType::PIC));
     qint64 total_size = payload["content_size"].toString().toLongLong();
-    QString md5 = payload["md5"].toString();
+    QString content_hash = payload["content_hash"].toString();
     auto file_info = UserMgr::GetInstance()->GetTransFileByName(name);
     if (!file_info) {
-        //重启恢复路径：GUI 未持有 MsgInfo，按 payload 重建
-        file_info = std::make_shared<MsgInfo>(MsgType::IMG_MSG, local_path,
-            QPixmap(local_path), name, total_size, md5);
+        //重启恢复路径：GUI 未持有 MsgInfo，按 payload 重建（片哈希丢失时由
+        //FileTcpMgr::BatchSend 读源文件重算）
+        file_info = std::make_shared<MsgInfo>(
+            msg_type == static_cast<int>(ChatMsgType::FILE) ? MsgType::FILE_MSG : MsgType::IMG_MSG,
+            local_path, QPixmap(local_path), name, total_size, content_hash);
         UserMgr::GetInstance()->AddTransFile(name, file_info);
     }
     file_info->_msg_id = server_message_id;
+    file_info->_total_size = total_size;
+    file_info->_content_hash = content_hash;
+    file_info->_max_seq = (total_size + MAX_FILE_LEN - 1) / MAX_FILE_LEN;
     file_info->_thread_id = payload["thread_id"].toVariant().toLongLong();
     file_info->_sender = payload["fromuid"].toInt();
     file_info->_receiver = payload["touid"].toInt();
-    file_info->_md5 = md5;
     file_info->_transfer_type = TransferType::Upload;
     file_info->_transfer_state = TransferState::Uploading;
     _uploading.insert(name, entry.request_id);
 
-    if (resume) {
-        //1043 续传：基于已确认序列号继续（slot_continue_upload_file 内部处理）
-        FileTcpMgr::GetInstance()->ContinueUploadFile(name);
+    //首传/续传统一入口：1041 查服务端真实偏移（.part 长度），1042 回包对齐后窗口续发
+    QJsonObject req;
+    req["message_id"] = QString::number(server_message_id);
+    FileTcpMgr::GetInstance()->SendData(ID_RESOURCE_UPLOAD_PROGRESS_REQ,
+        QJsonDocument(req).toJson(QJsonDocument::Compact));
+}
+
+void OutboxDispatcher::resumeUploadByProgress(qint64 message_id, qint64 server_offset,
+    int resource_status)
+{
+    auto file_info = UserMgr::GetInstance()->GetTransFileByMsgId(message_id);
+    if (!file_info) {
+        return;
+    }
+    const QString name = file_info->_unique_name;
+    if (!_uploading.contains(name)) {
         return;
     }
 
-    //1036 后首传：沿用原 TcpMgr 逻辑，首块走 1041 FILE_INFO_SYNC
-    file_info->_flighting_seqs.insert(file_info->_seq);
-    QFile file(local_path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "[Outbox] Could not open file:" << file.errorString();
-        LocalChatStore::GetInstance()->markSendFailed(entry.request_id);
-        removeEntry(entry.dedup_key);
+    if (resource_status == RESOURCE_READY
+        || (file_info->_total_size > 0 && server_offset >= file_info->_total_size)) {
+        //服务端已收齐（重试路径幂等）：直接按完成收尾
+        LocalChatStore::GetInstance()->confirmResourceSent(_uploading.value(name));
+        removeEntry(_uploading.value(name));
+        _uploading.remove(name);
         return;
     }
-    file.seek(file_info->_current_size);
-    auto buffer = file.read(MAX_FILE_LEN);
-    QString base64Data = buffer.toBase64();
-    QJsonObject file_obj;
-    file_obj["name"] = file_info->_unique_name;
-    file_obj["unique_id"] = entry.request_id;
-    file_obj["seq"] = file_info->_seq;
-    file_info->_current_size = buffer.size() + (file_info->_seq - 1) * MAX_FILE_LEN;
-    file_obj["trans_size"] = QString::number(file_info->_current_size);
-    file_obj["total_size"] = QString::number(file_info->_total_size);
-    file_obj["md5"] = file_info->_md5;
-    file_obj["data"] = base64Data;
-    file_obj["message_id"] = server_message_id;
-    file_obj["receiver"] = file_info->_receiver;
-    if (buffer.size() + (file_info->_seq - 1) * MAX_FILE_LEN >= file_info->_total_size) {
-        file_obj["last"] = 1;
-    } else {
-        file_obj["last"] = 0;
-    }
-    FileTcpMgr::GetInstance()->SendData(ReqId::ID_FILE_INFO_SYNC_REQ,
-        QJsonDocument(file_obj).toJson(QJsonDocument::Compact));
+
+    //按服务端真值对齐确认偏移，从下一片续发
+    qint64 confirmed = (file_info->_total_size > 0 && server_offset >= file_info->_total_size)
+        ? file_info->_max_seq : server_offset / MAX_FILE_LEN;
+    file_info->_rsp_seqs.clear();
+    file_info->_flighting_seqs.clear();
+    file_info->_last_confirmed_seq = confirmed;
+    file_info->_seq = confirmed + 1;
+    file_info->_rsp_size = qMin(server_offset, file_info->_total_size);
+    file_info->_transfer_state = TransferState::Uploading;
+    //BatchSend 读写 _cwnd_size（File 线程状态），跨线程统一投递
+    FileTcpMgr::GetInstance()->PostBatchSend(file_info);
 }
 
 void OutboxDispatcher::scheduleRetry(OutboxEntryDTO& entry)
@@ -303,6 +315,18 @@ void OutboxDispatcher::scheduleRetry(OutboxEntryDTO& entry)
 void OutboxDispatcher::removeEntry(const QString& dedup_key)
 {
     _entries.remove(dedup_key);
+}
+
+void OutboxDispatcher::failResourceByName(const QString& unique_name)
+{
+    auto iter = _uploading.find(unique_name);
+    if (iter == _uploading.end()) {
+        return;
+    }
+    const QString client_message_id = iter.value();
+    _uploading.erase(iter);
+    LocalChatStore::GetInstance()->markSendFailed(client_message_id);
+    removeEntry(client_message_id);
 }
 
 void OutboxDispatcher::slot_scan_timeout()
@@ -336,20 +360,22 @@ void OutboxDispatcher::slot_text_msg_rsp(int error, QString unique_id, qint64 me
     }
 }
 
-void OutboxDispatcher::slot_img_msg_meta_rsp(int error, QString unique_id, QString unique_name,
+void OutboxDispatcher::slot_resource_msg_meta_rsp(int error, QString unique_id, QString file_name,
     qint64 message_id, qint64 thread_id, qint64 fromuid, qint64 touid)
 {
-    Q_UNUSED(unique_name);
+    Q_UNUSED(file_name);
     Q_UNUSED(thread_id);
     Q_UNUSED(fromuid);
     Q_UNUSED(touid);
-    if (error == ErrorCodes::MESSAGE_CONFLICT) {
-        //永久冲突：标 SEND_FAILED 停止重传
+    auto iter = _entries.find(unique_id);
+    //permanent：冲突/资源元数据非法/超限，标 SEND_FAILED 停止重传
+    if (error == ErrorCodes::MESSAGE_CONFLICT
+        || error == ErrorCodes::RESOURCE_INVALID
+        || error == ErrorCodes::RESOURCE_SIZE_EXCEEDED) {
         LocalChatStore::GetInstance()->markSendFailed(unique_id);
         removeEntry(unique_id);
         return;
     }
-    auto iter = _entries.find(unique_id);
     if (error != ErrorCodes::SUCCESS) {
         //transient（1014/1016）：更新退避等待扫描重试
         if (iter != _entries.end()) {
@@ -360,14 +386,15 @@ void OutboxDispatcher::slot_img_msg_meta_rsp(int error, QString unique_id, QStri
     if (iter == _entries.end()) {
         return;
     }
-    //1036 成功：推进 outbox 阶段 uploading（不删条目）并启动上传
-    LocalChatStore::GetInstance()->updateImageStage(unique_id, message_id, IMG_STAGE_UPLOADING);
-    iter.value().stage = IMG_STAGE_UPLOADING;
+    //1036 成功：推进 outbox 阶段 uploading（不删条目）并启动上传（1041 对齐）
+    LocalChatStore::GetInstance()->updateResourceStage(unique_id, message_id,
+        RESOURCE_STAGE_UPLOADING);
+    iter.value().stage = RESOURCE_STAGE_UPLOADING;
     iter.value().next_retry_at = 0;
-    startImageUpload(iter.value(), message_id, false);
+    startResourceUpload(iter.value(), message_id);
 }
 
-void OutboxDispatcher::slot_img_upload_done(QString unique_name)
+void OutboxDispatcher::slot_resource_upload_done(QString unique_name)
 {
     auto iter = _uploading.find(unique_name);
     if (iter == _uploading.end()) {
@@ -375,9 +402,31 @@ void OutboxDispatcher::slot_img_upload_done(QString unique_name)
     }
     QString client_message_id = iter.value();
     _uploading.erase(iter);
-    //1038 收全：send_state=sent + 删 outbox
-    LocalChatStore::GetInstance()->confirmImageSent(client_message_id);
+    //1038 resource_status=Ready：send_state=sent + 删 outbox
+    LocalChatStore::GetInstance()->confirmResourceSent(client_message_id);
     removeEntry(client_message_id);
+}
+
+void OutboxDispatcher::slot_resource_upload_failed(QString unique_name, int error)
+{
+    qWarning() << "[Outbox] resource upload permanent failed:" << unique_name << "err=" << error;
+    failResourceByName(unique_name);
+}
+
+void OutboxDispatcher::slot_upload_progress_rsp(qint64 message_id, int error,
+    qint64 server_offset, int resource_status)
+{
+    if (error != ErrorCodes::SUCCESS) {
+        //1022 消息不存在（DB 行缺失）等：按失败收尾；transient 错误交由重连恢复兜底
+        if (error == ErrorCodes::MSG_ID_ERR) {
+            auto file_info = UserMgr::GetInstance()->GetTransFileByMsgId(message_id);
+            if (file_info) {
+                failResourceByName(file_info->_unique_name);
+            }
+        }
+        return;
+    }
+    resumeUploadByProgress(message_id, server_offset, resource_status);
 }
 
 void OutboxDispatcher::slot_delivery_ack_rsp(int error, QList<qint64> message_ids)

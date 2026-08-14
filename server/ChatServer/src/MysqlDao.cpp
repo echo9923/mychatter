@@ -862,6 +862,39 @@ bool MysqlDao::CreatePrivateChat(int user1_id, int user2_id, std::int64_t& threa
 	return false;
 }
 
+bool MysqlDao::GetPrivateChatMembers(std::int64_t thread_id, int& user1, int& user2) {
+	user1 = 0;
+	user2 = 0;
+	auto con = pool_->getConnection();
+	if (!con) {
+		return false;
+	}
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+		});
+	auto& conn = con->_con;
+
+	try {
+		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
+			conn->prepareStatement(
+				"SELECT user1_id, user2_id FROM private_chat WHERE thread_id = ?"
+			)
+		);
+		pstmt->setInt64(1, thread_id);
+		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
+		if (!rs->next()) {
+			return false;
+		}
+		user1 = static_cast<int>(rs->getUInt64("user1_id"));
+		user2 = static_cast<int>(rs->getUInt64("user2_id"));
+		return true;
+	}
+	catch (sql::SQLException& e) {
+		std::cerr << "GetPrivateChatMembers SQLException: " << e.what() << std::endl;
+		return false;
+	}
+}
+
 std::shared_ptr<PageResult> MysqlDao::LoadChatMsg(std::int64_t thread_id, std::int64_t last_message_id, int page_size)
 {
 	auto con = pool_->getConnection();
@@ -880,8 +913,8 @@ std::shared_ptr<PageResult> MysqlDao::LoadChatMsg(std::int64_t thread_id, std::i
 		// SQL：多取一条，用于判断是否还有更多
 		const std::string sql = R"(
         SELECT message_id, thread_id, sender_id, recv_id, content,
-               created_at, updated_at, status, msg_type,
-               unique_id, content_size, delivery_status
+               created_at, updated_at, status, msg_type, resource_status,
+               unique_id, content_size, content_hash, mime_type, delivery_status
         FROM chat_message
         WHERE thread_id = ?
           AND message_id > ?
@@ -910,8 +943,11 @@ std::shared_ptr<PageResult> MysqlDao::LoadChatMsg(std::int64_t thread_id, std::i
 			msg.chat_time = rs->getString("created_at");
 			msg.status = rs->getInt("status");
 			msg.msg_type = rs->getInt("msg_type");
+			msg.resource_status = static_cast<ResourceStatus>(rs->getInt("resource_status"));
 			msg.unique_id = rs->getString("unique_id");
 			msg.content_size = rs->getUInt64("content_size");
+			msg.content_hash = rs->isNull("content_hash") ? "" : rs->getString("content_hash");
+			msg.mime_type = rs->isNull("mime_type") ? "" : rs->getString("mime_type");
 			msg.delivery_status = static_cast<DeliveryStatus>(rs->getInt("delivery_status"));
 			page_res->messages.push_back(std::move(msg));
 		}
@@ -945,8 +981,9 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 		conn->prepareStatement(
 			"INSERT INTO chat_message "
 			"(thread_id, sender_id, recv_id, content, created_at, updated_at, "
-			" status, msg_type, unique_id, content_size, delivery_status) "
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+			" status, msg_type, resource_status, unique_id, content_size, "
+			" content_hash, mime_type, delivery_status) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
 			"ON DUPLICATE KEY UPDATE message_id = LAST_INSERT_ID(message_id)"
 		)
 	);
@@ -958,15 +995,29 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 	pstmt->setString(6, msg->chat_time);   // updated_at
 	pstmt->setInt(7, msg->status);
 	pstmt->setInt(8, msg->msg_type);
+	pstmt->setInt(9, static_cast<int>(msg->resource_status));
 	// 客户端消息 unique_id 非空；空串时写 NULL，避免同一 sender 的空串互相撞唯一键
 	if (msg->unique_id.empty()) {
-		pstmt->setNull(9, sql::DataType::VARCHAR);
+		pstmt->setNull(10, sql::DataType::VARCHAR);
 	}
 	else {
-		pstmt->setString(9, msg->unique_id);
+		pstmt->setString(10, msg->unique_id);
 	}
-	pstmt->setUInt64(10, msg->content_size);
-	pstmt->setInt(11, static_cast<int>(msg->delivery_status));
+	pstmt->setUInt64(11, msg->content_size);
+	// content_hash/mime_type：资源消息必填，文本为空串时写 NULL
+	if (msg->content_hash.empty()) {
+		pstmt->setNull(12, sql::DataType::CHAR);
+	}
+	else {
+		pstmt->setString(12, msg->content_hash);
+	}
+	if (msg->mime_type.empty()) {
+		pstmt->setNull(13, sql::DataType::VARCHAR);
+	}
+	else {
+		pstmt->setString(13, msg->mime_type);
+	}
+	pstmt->setInt(14, static_cast<int>(msg->delivery_status));
 
 	int affected = pstmt->executeUpdate();
 
@@ -979,11 +1030,11 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 	msg->message_id = static_cast<std::int64_t>(rs->getUInt64(1));
 
 	// 无条件按 canonical message_id 回读核对冲突字段，并恢复持久化状态。
-	// 行不存在→Failed；五个业务字段全等才是同一消息；否则→Conflict。
+	// 行不存在→Failed；业务字段全等才是同一消息；否则→Conflict。
 	auto readStmt = std::unique_ptr<sql::PreparedStatement>(
 		conn->prepareStatement(
 			"SELECT thread_id, recv_id, content, msg_type, content_size, "
-			"status, created_at, delivery_status "
+			"status, resource_status, content_hash, mime_type, created_at, delivery_status "
 			"FROM chat_message WHERE message_id = ?"
 		)
 	);
@@ -993,22 +1044,34 @@ SaveMessageResult MysqlDao::UpsertChatMessage(sql::Connection* conn,
 		return SaveMessageResult::Failed;
 	}
 
+	//资源消息（msg_type 1/3）比对 content_hash/mime_type；文本两列为 NULL 视为空串
+	const std::string stored_hash = rr->isNull("content_hash") ? "" : rr->getString("content_hash");
+	const std::string stored_mime = rr->isNull("mime_type") ? "" : rr->getString("mime_type");
+
 	bool same =
 		static_cast<std::int64_t>(rr->getUInt64("thread_id")) == msg->thread_id &&
 		static_cast<int>(rr->getUInt64("recv_id")) == msg->recv_id &&
 		rr->getString("content") == msg->content &&
 		rr->getInt("msg_type") == msg->msg_type &&
-		rr->getUInt64("content_size") == msg->content_size;
+		rr->getUInt64("content_size") == msg->content_size &&
+		stored_hash == msg->content_hash &&
+		stored_mime == msg->mime_type;
 
 	if (same) {
-		// Duplicate 必须带回数据库真值：已 ACK 的消息不能因默认 Pending 被重新激活。
+		// Duplicate 必须带回数据库真值：已 ACK 的消息不能因默认 Pending 被重新激活；
+		// 已就绪/过期的资源不能因默认 Uploading 被重新激活。
 		msg->status = rr->getInt("status");
+		msg->resource_status = static_cast<ResourceStatus>(rr->getInt("resource_status"));
+		msg->content_hash = stored_hash;
+		msg->mime_type = stored_mime;
 		msg->chat_time = rr->getString("created_at");
 		msg->delivery_status = static_cast<DeliveryStatus>(rr->getInt("delivery_status"));
-		// 非图片元数据（msg_type!=1）同事务补双方同步行；INSERT IGNORE 使 Duplicate 天然
-		// 无操作。图片同步行由 ResourceServer 上传完成点（UpdateUploadStatusWithSync）补写。
+		// 非资源消息（文本）同事务补双方同步行；INSERT IGNORE 使 Duplicate 天然
+		// 无操作。资源消息（图片/文件）同步行由 ResourceServer 上传完成点
+		// （CompleteResourceUploadWithSync）补写，避免同步到尚不可下载的资源。
 		// Conflict 不写：canonical 行属于另一消息，避免把它推给非其接收者的用户。
-		if (msg->msg_type != static_cast<int>(ChatMsgType::PIC)) {
+		if (msg->msg_type != static_cast<int>(ChatMsgType::PIC) &&
+			msg->msg_type != static_cast<int>(ChatMsgType::FILE)) {
 			InsertSyncRowsIgnore(conn, msg->message_id, msg->sender_id, msg->recv_id);
 		}
 		return affected == 1 ? SaveMessageResult::Stored : SaveMessageResult::Duplicate;
@@ -1064,8 +1127,8 @@ bool MysqlDao::GetMessagesAfterSyncSeq(int uid, std::uint64_t after_sync_seq, in
 		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
 			conn->prepareStatement(
 				"SELECT s.sync_seq, m.message_id, m.thread_id, m.sender_id, m.recv_id, m.content, "
-				"m.created_at, m.updated_at, m.status, m.msg_type, m.unique_id, "
-				"m.content_size, m.delivery_status "
+				"m.created_at, m.updated_at, m.status, m.msg_type, m.resource_status, m.unique_id, "
+				"m.content_size, m.content_hash, m.mime_type, m.delivery_status "
 				"FROM user_message_sync s "
 				"JOIN chat_message m ON m.message_id = s.message_id "
 				"WHERE s.uid = ? AND s.sync_seq > ? "
@@ -1089,8 +1152,11 @@ bool MysqlDao::GetMessagesAfterSyncSeq(int uid, std::uint64_t after_sync_seq, in
 			msg->chat_time = rs->getString("created_at");
 			msg->status = rs->getInt("status");
 			msg->msg_type = rs->getInt("msg_type");
+			msg->resource_status = static_cast<ResourceStatus>(rs->getInt("resource_status"));
 			msg->unique_id = rs->getString("unique_id");
 			msg->content_size = rs->getUInt64("content_size");
+			msg->content_hash = rs->isNull("content_hash") ? "" : rs->getString("content_hash");
+			msg->mime_type = rs->isNull("mime_type") ? "" : rs->getString("mime_type");
 			msg->delivery_status = static_cast<DeliveryStatus>(rs->getInt("delivery_status"));
 			row.msg = msg;
 			messages.push_back(row);
@@ -1153,8 +1219,8 @@ std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetMessagesByIds(int recv_ui
 	try {
 		// 按 recv_uid 过滤防越权；message_id 主键命中。
 		std::string sql = "SELECT message_id, thread_id, sender_id, recv_id, content, "
-			"created_at, updated_at, status, msg_type, unique_id, "
-			"content_size, delivery_status "
+			"created_at, updated_at, status, msg_type, resource_status, unique_id, "
+			"content_size, content_hash, mime_type, delivery_status "
 			"FROM chat_message WHERE recv_id = ? AND message_id IN (";
 		for (std::size_t i = 0; i < ids.size(); ++i) {
 			sql += (i == 0 ? "?" : ",?");
@@ -1178,8 +1244,11 @@ std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetMessagesByIds(int recv_ui
 			msg->chat_time = rs->getString("created_at");
 			msg->status = rs->getInt("status");
 			msg->msg_type = rs->getInt("msg_type");
+			msg->resource_status = static_cast<ResourceStatus>(rs->getInt("resource_status"));
 			msg->unique_id = rs->getString("unique_id");
 			msg->content_size = rs->getUInt64("content_size");
+			msg->content_hash = rs->isNull("content_hash") ? "" : rs->getString("content_hash");
+			msg->mime_type = rs->isNull("mime_type") ? "" : rs->getString("mime_type");
 			msg->delivery_status = static_cast<DeliveryStatus>(rs->getInt("delivery_status"));
 			result.push_back(msg);
 		}
@@ -1189,6 +1258,53 @@ std::vector<std::shared_ptr<ChatMessage>> MysqlDao::GetMessagesByIds(int recv_ui
 		result.clear();
 	}
 	return result;
+}
+
+std::shared_ptr<ChatMessage> MysqlDao::GetChatMsgById(std::int64_t message_id) {
+	auto con = pool_->getConnection();
+	if (!con) {
+		return nullptr;
+	}
+	Defer defer([this, &con]() {
+		pool_->returnConnection(std::move(con));
+		});
+	auto& conn = con->_con;
+
+	try {
+		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
+			conn->prepareStatement(
+				"SELECT message_id, thread_id, sender_id, recv_id, content, "
+				"created_at, updated_at, status, msg_type, resource_status, unique_id, "
+				"content_size, content_hash, mime_type, delivery_status "
+				"FROM chat_message WHERE message_id = ?"
+			)
+		);
+		pstmt->setInt64(1, message_id);
+		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
+		if (!rs->next()) {
+			return nullptr;
+		}
+		auto msg = std::make_shared<ChatMessage>();
+		msg->message_id = rs->getUInt64("message_id");
+		msg->thread_id = rs->getUInt64("thread_id");
+		msg->sender_id = rs->getUInt64("sender_id");
+		msg->recv_id = rs->getUInt64("recv_id");
+		msg->content = rs->getString("content");
+		msg->chat_time = rs->getString("created_at");
+		msg->status = rs->getInt("status");
+		msg->msg_type = rs->getInt("msg_type");
+		msg->resource_status = static_cast<ResourceStatus>(rs->getInt("resource_status"));
+		msg->unique_id = rs->getString("unique_id");
+		msg->content_size = rs->getUInt64("content_size");
+		msg->content_hash = rs->isNull("content_hash") ? "" : rs->getString("content_hash");
+		msg->mime_type = rs->isNull("mime_type") ? "" : rs->getString("mime_type");
+		msg->delivery_status = static_cast<DeliveryStatus>(rs->getInt("delivery_status"));
+		return msg;
+	}
+	catch (sql::SQLException& e) {
+		std::cerr << "GetChatMsgById SQLException: " << e.what() << std::endl;
+		return nullptr;
+	}
 }
 
 bool MysqlDao::MarkMessagesDelivered(int recv_uid, const std::vector<std::int64_t>& ids) {

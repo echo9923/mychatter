@@ -60,6 +60,8 @@ public:
     void ResetLabelIcon(QString path);
     void AddTransFile(QString name, std::shared_ptr<MsgInfo> msg_info);
     std::shared_ptr<MsgInfo> GetTransFileByName(QString name);
+    //资源通道按 message_id 查找传输上下文（1038/1046/1048 回包定位用）
+    std::shared_ptr<MsgInfo> GetTransFileByMsgId(qint64 message_id);
     void RmvTransFileByName(QString name);
     std::shared_ptr<MsgInfo> GetFreeUploadFile();
     std::shared_ptr<MsgInfo> GetFreeDownloadFile();

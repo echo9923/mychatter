@@ -25,9 +25,15 @@ public:
 	~MysqlDao();
 	std::shared_ptr<UserInfo> GetUser(int uid);
 	bool UpdateHeadInfo(int uid, const std::string& icon);
-	/// 图片上传完成点：单事务 UPDATE chat_message.status=2 + INSERT IGNORE user_message_sync 双方同步行
-	bool UpdateUploadStatusWithSync(long long chat_message_id, int sender_id, int recv_id);
+	/// 资源上传完成点：单事务 UPDATE chat_message.resource_status=1（0→1 条件更新，
+	/// affected=0 回读，已为 1 视为幂等成功）+ INSERT IGNORE user_message_sync 双方同步行
+	bool CompleteResourceUploadWithSync(long long chat_message_id, int sender_id, int recv_id);
 	std::shared_ptr<ChatMessage> GetChatMsgById(long long message_id);
+	/// 清理任务：捞取 updated_at 早于 before_time 且 resource_status=0 的资源消息
+	bool GetExpiredResourceIds(const std::string& before_time, int limit,
+		std::vector<ExpiredResource>& out);
+	/// 清理任务：事务内 resource_status 0→2 + 逐条补双方同步行（失败也必须进同步流）
+	bool MarkResourceExpired(const std::vector<ExpiredResource>& items);
 
 private:
 	std::unique_ptr<MySqlPool> pool_;

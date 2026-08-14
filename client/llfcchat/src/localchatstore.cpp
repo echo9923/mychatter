@@ -52,19 +52,19 @@ void LocalChatWorker::slot_confirm_text_sent(QString clientMessageId, qint64 ser
     emit sig_send_confirmed(ok, dto);
 }
 
-void LocalChatWorker::slot_update_image_stage(QString clientMessageId, qint64 serverMessageId,
+void LocalChatWorker::slot_update_resource_stage(QString clientMessageId, qint64 serverMessageId,
     QString stage)
 {
     LocalMessageDTO dto;
-    bool ok = _db.updateImageStage(clientMessageId, serverMessageId, stage, &dto);
-    emit sig_image_stage_updated(ok, dto);
+    bool ok = _db.updateResourceStage(clientMessageId, serverMessageId, stage, &dto);
+    emit sig_resource_stage_updated(ok, dto);
 }
 
-void LocalChatWorker::slot_confirm_image_sent(QString clientMessageId)
+void LocalChatWorker::slot_confirm_resource_sent(QString clientMessageId)
 {
     LocalMessageDTO dto;
-    bool ok = _db.confirmImageSent(clientMessageId, &dto);
-    emit sig_image_confirmed(ok, dto);
+    bool ok = _db.confirmResourceSent(clientMessageId, &dto);
+    emit sig_resource_confirmed(ok, dto);
 }
 
 void LocalChatWorker::slot_mark_send_failed(QString clientMessageId)
@@ -199,8 +199,8 @@ LocalChatStore::LocalChatStore()
     connect(this, &LocalChatStore::sig_close_db, &_worker, &LocalChatWorker::slot_close_db);
     connect(this, &LocalChatStore::sig_enqueue_send, &_worker, &LocalChatWorker::slot_enqueue_send);
     connect(this, &LocalChatStore::sig_confirm_text_sent, &_worker, &LocalChatWorker::slot_confirm_text_sent);
-    connect(this, &LocalChatStore::sig_update_image_stage, &_worker, &LocalChatWorker::slot_update_image_stage);
-    connect(this, &LocalChatStore::sig_confirm_image_sent, &_worker, &LocalChatWorker::slot_confirm_image_sent);
+    connect(this, &LocalChatStore::sig_update_resource_stage, &_worker, &LocalChatWorker::slot_update_resource_stage);
+    connect(this, &LocalChatStore::sig_confirm_resource_sent, &_worker, &LocalChatWorker::slot_confirm_resource_sent);
     connect(this, &LocalChatStore::sig_mark_send_failed, &_worker, &LocalChatWorker::slot_mark_send_failed);
     connect(this, &LocalChatStore::sig_get_message_by_client_id, &_worker, &LocalChatWorker::slot_get_message_by_client_id);
     connect(this, &LocalChatStore::sig_insert_incoming, &_worker, &LocalChatWorker::slot_insert_incoming);
@@ -220,8 +220,8 @@ LocalChatStore::LocalChatStore()
     connect(&_worker, &LocalChatWorker::sig_db_closed, this, &LocalChatStore::sig_db_closed);
     connect(&_worker, &LocalChatWorker::sig_send_enqueued, this, &LocalChatStore::sig_send_enqueued);
     connect(&_worker, &LocalChatWorker::sig_send_confirmed, this, &LocalChatStore::sig_send_confirmed);
-    connect(&_worker, &LocalChatWorker::sig_image_stage_updated, this, &LocalChatStore::sig_image_stage_updated);
-    connect(&_worker, &LocalChatWorker::sig_image_confirmed, this, &LocalChatStore::sig_image_confirmed);
+    connect(&_worker, &LocalChatWorker::sig_resource_stage_updated, this, &LocalChatStore::sig_resource_stage_updated);
+    connect(&_worker, &LocalChatWorker::sig_resource_confirmed, this, &LocalChatStore::sig_resource_confirmed);
     connect(&_worker, &LocalChatWorker::sig_send_failed_marked, this, &LocalChatStore::sig_send_failed_marked);
     connect(&_worker, &LocalChatWorker::sig_message_loaded, this, &LocalChatStore::sig_message_loaded);
     connect(&_worker, &LocalChatWorker::sig_incoming_inserted, this, &LocalChatStore::sig_incoming_inserted);
@@ -260,14 +260,14 @@ void LocalChatStore::confirmTextSent(const QString& clientMessageId, qint64 serv
 {
     emit sig_confirm_text_sent(clientMessageId, serverMessageId, chatTime);
 }
-void LocalChatStore::updateImageStage(const QString& clientMessageId, qint64 serverMessageId,
+void LocalChatStore::updateResourceStage(const QString& clientMessageId, qint64 serverMessageId,
     const QString& stage)
 {
-    emit sig_update_image_stage(clientMessageId, serverMessageId, stage);
+    emit sig_update_resource_stage(clientMessageId, serverMessageId, stage);
 }
-void LocalChatStore::confirmImageSent(const QString& clientMessageId)
+void LocalChatStore::confirmResourceSent(const QString& clientMessageId)
 {
-    emit sig_confirm_image_sent(clientMessageId);
+    emit sig_confirm_resource_sent(clientMessageId);
 }
 void LocalChatStore::markSendFailed(const QString& clientMessageId)
 {

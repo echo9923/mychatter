@@ -8,7 +8,7 @@ service ChatService {
   rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {}
   rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
   rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
-  rpc NotifyChatImgMsg (NotifyChatImgReq) returns (NotifyChatImgRsp) {}
+  rpc NotifyChatResourceMsg (NotifyResourceReq) returns (NotifyResourceRsp) {}
 }
 
 // ========== 好友申请 ==========
@@ -84,22 +84,22 @@ message KickUserRsp {
   int64 uid = 2;
 }
 
-// ========== 图片消息通知 ==========
-message NotifyChatImgReq {
+// ========== 资源消息通知（图片/文件统一） ==========
+// 触发点：ResourceServer 收齐分片并置 resource_status=Ready 后调用。
+// 只传定位字段：ChatServer 按 message_id 回读 DB 组统一 envelope（含
+// resource_status/content_hash/mime_type/msg_type），避免展示字段在
+// gRPC 层与 DB 真值分叉。
+message NotifyResourceReq {
   int64 from_uid = 1;
   int64 to_uid = 2;
   int64 message_id = 3;
-  string file_name = 4;
-  int64 total_size = 5;
-  int64 thread_id = 6;
+  int64 thread_id = 4;
 }
 
-message NotifyChatImgRsp {
+message NotifyResourceRsp {
   int32 error = 1;
   int64 from_uid = 2;
   int64 to_uid = 3;
   int64 message_id = 4;
-  string file_name = 5;
-  int64 total_size = 6;
-  int64 thread_id = 7;
+  int64 thread_id = 5;
 }

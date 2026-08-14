@@ -43,10 +43,21 @@ struct ChatMessage {
 	int sender_id;
 	int recv_id;
 	std::string unique_id;
-	std::string content;
+	std::string content;      // 资源消息为原始文件名（仅展示；磁盘文件以 message_id 命名）
 	std::string chat_time;
-	int status;
-	int msg_type;
+	int status;               // 纯阅读态（0未读/1发送失败/2已读；3已废弃）
+	int msg_type;             // 0文本 1图片 2视频 3文件
+	int resource_status;      // 资源生命周期（0待上传/1就绪/2失败过期，仅 msg_type 1/3 有意义）
+	unsigned long long content_size; // 内容字节大小（资源为字节数）
+	std::string content_hash; // 整文件 SHA-256 小写 hex（资源消息）
+	std::string mime_type;    // 资源 MIME 类型（如 image/png）
+};
+
+//过期资源查询结果行：清理任务用
+struct ExpiredResource {
+	long long message_id;
+	int sender_id;
+	int recv_id;
 };
 
 // 查询结果结构，增加next_cursor字段

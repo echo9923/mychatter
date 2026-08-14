@@ -41,7 +41,8 @@ std::vector<ChatMessageRow> Mysql::QueryByUniqueId(int sender_id, const std::str
 	try {
 		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
 			"SELECT message_id, thread_id, sender_id, recv_id, unique_id, content, "
-			"created_at AS chat_time, status, msg_type, content_size, delivery_status "
+			"created_at AS chat_time, status, msg_type, resource_status, content_hash, "
+			"content_size, delivery_status "
 			"FROM chat_message WHERE sender_id = ? AND unique_id = ?"));
 		pstmt->setInt(1, sender_id);
 		pstmt->setString(2, unique_id);
@@ -57,6 +58,8 @@ std::vector<ChatMessageRow> Mysql::QueryByUniqueId(int sender_id, const std::str
 			r.chat_time  = res->getString("chat_time");
 			r.status     = res->getInt("status");
 			r.msg_type   = res->getInt("msg_type");
+			r.resource_status = res->getInt("resource_status");
+			r.content_hash = res->isNull("content_hash") ? "" : res->getString("content_hash");
 			r.content_size = static_cast<std::uint64_t>(res->getInt64("content_size"));
 			r.delivery_status = res->getInt("delivery_status");
 			out.push_back(std::move(r));
@@ -120,7 +123,8 @@ std::vector<ChatMessageRow> Mysql::QueryByMessageId(std::int64_t message_id) {
 	try {
 		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
 			"SELECT message_id, thread_id, sender_id, recv_id, unique_id, content, "
-			"created_at AS chat_time, status, msg_type, content_size, delivery_status "
+			"created_at AS chat_time, status, msg_type, resource_status, content_hash, "
+			"content_size, delivery_status "
 			"FROM chat_message WHERE message_id = ?"));
 		pstmt->setInt64(1, message_id);
 		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
@@ -135,6 +139,8 @@ std::vector<ChatMessageRow> Mysql::QueryByMessageId(std::int64_t message_id) {
 			r.chat_time  = res->getString("chat_time");
 			r.status     = res->getInt("status");
 			r.msg_type   = res->getInt("msg_type");
+			r.resource_status = res->getInt("resource_status");
+			r.content_hash = res->isNull("content_hash") ? "" : res->getString("content_hash");
 			r.content_size = static_cast<std::uint64_t>(res->getInt64("content_size"));
 			r.delivery_status = res->getInt("delivery_status");
 			out.push_back(std::move(r));
@@ -289,6 +295,22 @@ bool Mysql::SetChatMessageAutoIncrement(std::int64_t value) {
 		return true;
 	} catch (sql::SQLException& e) {
 		std::printf("[mysql] SetChatMessageAutoIncrement failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		return false;
+	}
+}
+
+bool Mysql::BackdateMessageUpdatedAt(std::int64_t message_id, int days_ago) {
+	if (!con_) return false;
+	try {
+		std::unique_ptr<sql::PreparedStatement> pstmt(con_->prepareStatement(
+			"UPDATE chat_message SET updated_at = "
+			"DATE_SUB(NOW(), INTERVAL ? DAY) WHERE message_id = ?"));
+		pstmt->setInt(1, days_ago);
+		pstmt->setInt64(2, message_id);
+		pstmt->executeUpdate();
+		return true;
+	} catch (sql::SQLException& e) {
+		std::printf("[mysql] BackdateMessageUpdatedAt failed: %s (code=%d)\n", e.what(), e.getErrorCode());
 		return false;
 	}
 }

@@ -23,7 +23,17 @@ bool ScenarioOffline();     // offline: 离线消息重连后经 1051/1052 增�
 bool ScenarioLostAck();    // lost-ack: 1050 丢失重发 1049，服务端幂等成功
 bool ScenarioPullBytes();  // pull-bytes: 多页同步，无遗漏无重复、sync_seq 严格递增
 bool ScenarioCrossServer();// cross-server: gRPC proxy break, retry bounded, restart sync
-bool ScenarioImageOffline();// image-offline: 上传完成前同步流不含该图，1038 后出现
+bool ScenarioResourceOffline(); // resource-offline: 上传完成前同步流不含该资源，1038 Ready 后出现
+
+// --- 统一资源传输（1035/1037/1041/1045/1047 新协议）---
+bool ScenarioResourceCreate();     // resource-create: 1035 校验链（超限/坏哈希/幂等/冲突/伪造/非成员）
+bool ScenarioResourceUpload();     // resource-upload: 多分片上传-下载逐字节一致
+bool ScenarioResourceResume();     // resource-resume: 杀 ResourceServer 重启后从非零偏移续传
+bool ScenarioResourceIdempotent(); // resource-idempotent: 重复分片幂等不双写
+bool ScenarioResourceCorrupt();    // resource-corrupt: 坏分片/整文件哈希 1023 与重置
+bool ScenarioResourcePerm();       // resource-perm: 非会话成员上传 1026、越界下载 1018
+bool ScenarioResourceOffset();     // resource-offset: 跳片 1018 + server_offset 对齐
+bool ScenarioResourceExpiry();     // resource-expiry: 7 天清理标记失败并回收磁盘
 
 // --- Plan 3.1: StatusServer lease-based least-loaded discovery ---
 bool ScenarioStatusDiscovery();// status-discovery: lease selection, rotation, NoAvailableChatServer

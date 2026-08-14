@@ -8,7 +8,7 @@
 
 //outbox 操作类型
 const QString OUTBOX_OP_SEND_TEXT = "SEND_TEXT";
-const QString OUTBOX_OP_SEND_IMAGE = "SEND_IMAGE";
+const QString OUTBOX_OP_SEND_RESOURCE = "SEND_RESOURCE";
 const QString OUTBOX_OP_DELIVERY_ACK = "DELIVERY_ACK";
 
 //消息发送状态
@@ -16,9 +16,9 @@ const QString SEND_STATE_SENDING = "sending";
 const QString SEND_STATE_SENT = "sent";
 const QString SEND_STATE_FAILED = "failed";
 
-//图片 outbox 阶段
-const QString IMG_STAGE_METADATA = "metadata";
-const QString IMG_STAGE_UPLOADING = "uploading";
+//资源 outbox 阶段（图片/文件统一）
+const QString RESOURCE_STAGE_METADATA = "metadata";
+const QString RESOURCE_STAGE_UPLOADING = "uploading";
 
 //本地聊天 SQLite 同步核心（非 QObject）。
 //供 LocalChatStore worker 线程与单元测试直接实例化；所有方法同步、线程归属由调用方保证。
@@ -34,17 +34,18 @@ public:
     bool isOpen() const;
 
     //—— 发送链路（单事务）——
-    //INSERT messages(sending) + INSERT outbox，回填 dto.local_id
+    //INSERT messages(sending) + INSERT outbox，回填 dto.local_id；
+    //资源消息（type 1/3）要求 content_hash/mime_type 已由后台哈希填好
     bool enqueueSend(LocalMessageDTO& dto);
     //1018 到达：UPDATE messages(server_message_id/sent/chat_time) + 删 outbox
     bool confirmTextSent(const QString& clientMessageId, qint64 serverMessageId,
         const QString& chatTime, LocalMessageDTO* out);
     //1036 到达：回写 server_message_id + outbox.stage=uploading（不删 outbox）
-    bool updateImageStage(const QString& clientMessageId, qint64 serverMessageId,
+    bool updateResourceStage(const QString& clientMessageId, qint64 serverMessageId,
         const QString& stage, LocalMessageDTO* out);
-    //1038 上传完成：send_state=sent + 删 outbox
-    bool confirmImageSent(const QString& clientMessageId, LocalMessageDTO* out);
-    //冲突/源文件丢失：send_state=failed + 删 outbox
+    //1038 上传完成（resource_status=Ready）：send_state=sent + 删 outbox
+    bool confirmResourceSent(const QString& clientMessageId, LocalMessageDTO* out);
+    //冲突/源文件丢失/资源终态：send_state=failed + 删 outbox
     bool markSendFailed(const QString& clientMessageId, LocalMessageDTO* out);
     bool getMessageByClientId(const QString& clientMessageId, LocalMessageDTO* out);
 

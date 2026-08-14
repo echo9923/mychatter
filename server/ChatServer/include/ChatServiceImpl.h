@@ -23,7 +23,7 @@ using message::TextChatMsgRsp;
 using message::TextChatData;
 using message::KickUserReq;
 using message::KickUserRsp;
-using message::NotifyChatImgReq;
+using message::NotifyResourceReq;
 
 
 /**
@@ -105,7 +105,7 @@ public:
 	 * @param response [out] 图片聊天通知响应
 	 * @return gRPC调用状态
 	 */
-	virtual ::grpc::Status NotifyChatImgMsg(::grpc::ServerContext* context, const ::message::NotifyChatImgReq* request, ::message::NotifyChatImgRsp* response) override;
+	virtual ::grpc::Status NotifyChatResourceMsg(::grpc::ServerContext* context, const ::message::NotifyResourceReq* request, ::message::NotifyResourceRsp* response) override;
 
 private:
 	/// CServer实例指针，用于访问在线会话、向客户端推送消息

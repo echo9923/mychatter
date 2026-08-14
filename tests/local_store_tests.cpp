@@ -248,17 +248,17 @@ void Group3_CrashRecovery()
 }
 
 // ---------------------------------------------------------------------------
-// Group 4 — 图片链路：updateImageStage(1036) 只推进 outbox.stage 不删条目，
-//           confirmImageSent(1038) 才置 sent 并删 outbox。
+// Group 4 — 资源链路：updateResourceStage(1036) 只推进 outbox.stage 不删条目，
+//           confirmResourceSent(1038 resource_status=Ready) 才置 sent 并删 outbox。
 // ---------------------------------------------------------------------------
 void Group4_ImageChain()
 {
-    std::printf("\n== Group 4: image send chain (1036/1038) ==\n");
+    std::printf("\n== Group 4: resource send chain (1036/1038) ==\n");
     QTemporaryDir dir;
     Check(dir.isValid(), "temporary dir created");
     const QString dbPath = dir.path() + "/chat.db";
 
-    //真实源文件，让 calculateFileHash 产出真实 md5
+    //真实源文件存在性由 dispatcher 侧校验；本地库只持久化路径与哈希
     const QString imagePath = dir.path() + "/pic.png";
     {
         QFile file(imagePath);
@@ -276,37 +276,47 @@ void Group4_ImageChain()
     dto.sender_id = kSelf;
     dto.receiver_id = kPeer;
     dto.message_type = 1;
-    dto.content = QStringLiteral("pic.png");
+    dto.content = QStringLiteral("pic.png");        //content = 原始文件名（仅展示）
     dto.local_path = imagePath;
     dto.content_size = QStringLiteral("15");
+    dto.resource_status = 0;                        //RESOURCE_UPLOADING
+    dto.content_hash = QStringLiteral("f32b67c7c2631af8f3c4b9d41c71ef0c3b8a4c6a1d2e3f4051627384950a1b2c");
+    dto.mime_type = QStringLiteral("image/png");
     const QString cid = dto.client_message_id;
 
-    Check(db.enqueueSend(dto), "enqueue image returns true");
+    Check(db.enqueueSend(dto), "enqueue resource returns true");
     QList<OutboxEntryDTO> outbox;
-    Check(db.loadOutbox(&outbox) && outbox.size() == 1, "image outbox entry created");
+    Check(db.loadOutbox(&outbox) && outbox.size() == 1, "resource outbox entry created");
     if (outbox.size() == 1) {
         const OutboxEntryDTO& e = outbox.first();
-        Check(e.operation_type == OUTBOX_OP_SEND_IMAGE, "outbox op is SEND_IMAGE");
-        Check(e.stage == IMG_STAGE_METADATA, "initial stage is metadata");
-        Check(e.payload.contains(QLatin1String("\"md5\"")), "image payload carries md5");
+        Check(e.operation_type == OUTBOX_OP_SEND_RESOURCE, "outbox op is SEND_RESOURCE");
+        Check(e.stage == RESOURCE_STAGE_METADATA, "initial stage is metadata");
+        Check(e.payload.contains(QLatin1String("\"file_name\"")),
+              "resource payload carries file_name");
+        Check(e.payload.contains(QLatin1String("\"content_hash\"")),
+              "resource payload carries content_hash");
+        Check(e.payload.contains(QLatin1String("image/png")),
+              "resource payload carries mime_type");
+        Check(!e.payload.contains(QLatin1String("\"md5\"")),
+              "legacy md5 field is gone");
     }
 
     const qint64 kSid = 70001;
     LocalMessageDTO staged;
-    Check(db.updateImageStage(cid, kSid, IMG_STAGE_UPLOADING, &staged),
-          "updateImageStage returns true");
+    Check(db.updateResourceStage(cid, kSid, RESOURCE_STAGE_UPLOADING, &staged),
+          "updateResourceStage returns true");
     Check(staged.server_message_id == kSid, "1036 writes server_message_id");
     Check(staged.send_state == SEND_STATE_SENDING, "still sending after 1036");
     Check(db.loadOutbox(&outbox) && outbox.size() == 1
-          && outbox.first().stage == IMG_STAGE_UPLOADING,
-          "updateImageStage advances stage without deleting outbox entry");
+          && outbox.first().stage == RESOURCE_STAGE_UPLOADING,
+          "updateResourceStage advances stage without deleting outbox entry");
 
     LocalMessageDTO done;
-    Check(db.confirmImageSent(cid, &done), "confirmImageSent returns true");
+    Check(db.confirmResourceSent(cid, &done), "confirmResourceSent returns true");
     Check(done.send_state == SEND_STATE_SENT, "send_state=sent after 1038");
     Check(done.server_message_id == kSid, "server_message_id kept after 1038");
     Check(db.loadOutbox(&outbox) && outbox.isEmpty(),
-          "confirmImageSent deletes the outbox entry");
+          "confirmResourceSent deletes the outbox entry");
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +541,115 @@ void Group9_PaginationOrdering()
           "older paging stops at the oldest row");
 }
 
+// ---------------------------------------------------------------------------
+// Group 10 — 同步页 ACK 闭环：applySyncPage 对实际新插入的“他人消息”在同一
+//           事务生成 DELIVERY_ACK（与 insertIncoming 对齐）；自己发的消息与
+//           重复页不产生 ACK。这是离线资源消息不再依赖服务端重推的关键。
+// ---------------------------------------------------------------------------
+void Group10_SyncPageAck()
+{
+    std::printf("\n== Group 10: applySyncPage DELIVERY_ACK closure ==\n");
+    QTemporaryDir dir;
+    Check(dir.isValid(), "temporary dir created");
+    const QString dbPath = dir.path() + "/chat.db";
+
+    LocalChatDb db;
+    Check(db.open(dbPath, kSelf), "open() succeeds");
+
+    //一页混合：他人消息 91001（产生 ACK）+ 自己消息 91002（不产生 ACK）
+    QList<LocalMessageDTO> page;
+    page.append(MakeIncoming(kThread, 91001));
+    {
+        LocalMessageDTO self_msg = MakeIncoming(kThread, 91002);
+        self_msg.sender_id = kSelf;
+        self_msg.receiver_id = kPeer;
+        page.append(self_msg);
+    }
+
+    QList<qint64> inserted;
+    Check(db.applySyncPage(page, 91002, &inserted), "applySyncPage returns true");
+    Check(inserted.size() == 2, "whole page inserted");
+
+    QList<OutboxEntryDTO> outbox;
+    Check(db.loadOutbox(&outbox) && outbox.size() == 1,
+          "exactly one DELIVERY_ACK created for the received message");
+    if (outbox.size() == 1) {
+        const OutboxEntryDTO& e = outbox.first();
+        Check(e.operation_type == OUTBOX_OP_DELIVERY_ACK, "outbox op is DELIVERY_ACK");
+        Check(e.dedup_key == QLatin1String("ack_91001"), "ack dedup_key is ack_91001");
+    }
+
+    //重复同步同一页：INSERT OR IGNORE 吞掉，不产生第二条 ACK
+    Check(db.applySyncPage(page, 91002, &inserted), "re-applying the same page returns true");
+    Check(inserted.isEmpty(), "duplicate page rows swallowed");
+    Check(db.loadOutbox(&outbox) && outbox.size() == 1,
+          "no duplicate ACK from duplicate sync page");
+}
+
+// ---------------------------------------------------------------------------
+// Group 11 — FILE_MSG（msg_type=3）发送链路：与图片同走 SEND_RESOURCE outbox
+//           状态机；payload 携带 file_name/content_hash/mime_type。
+// ---------------------------------------------------------------------------
+void Group11_FileMsgChain()
+{
+    std::printf("\n== Group 11: FILE_MSG resource chain ==\n");
+    QTemporaryDir dir;
+    Check(dir.isValid(), "temporary dir created");
+    const QString dbPath = dir.path() + "/chat.db";
+
+    const QString filePath = dir.path() + "/report.pdf";
+    {
+        QFile file(filePath);
+        Check(file.open(QIODevice::WriteOnly), "temp file created");
+        file.write("fake-pdf-bytes");
+        file.close();
+    }
+
+    LocalChatDb db;
+    Check(db.open(dbPath, kSelf), "open() succeeds");
+
+    LocalMessageDTO dto;
+    dto.client_message_id = NextClientId("file");
+    dto.thread_id = kThread;
+    dto.sender_id = kSelf;
+    dto.receiver_id = kPeer;
+    dto.message_type = 3;                            //ChatMsgType::FILE
+    dto.content = QStringLiteral("report.pdf");
+    dto.local_path = filePath;
+    dto.content_size = QStringLiteral("15");
+    dto.resource_status = 0;
+    dto.content_hash = QString(64, QLatin1Char('a'));
+    dto.mime_type = QStringLiteral("application/pdf");
+    const QString cid = dto.client_message_id;
+
+    Check(db.enqueueSend(dto), "enqueue file returns true");
+    QList<OutboxEntryDTO> outbox;
+    Check(db.loadOutbox(&outbox) && outbox.size() == 1, "file outbox entry created");
+    if (outbox.size() == 1) {
+        const OutboxEntryDTO& e = outbox.first();
+        Check(e.operation_type == OUTBOX_OP_SEND_RESOURCE, "file uses SEND_RESOURCE");
+        Check(e.stage == RESOURCE_STAGE_METADATA, "initial stage is metadata");
+        Check(e.payload.contains(QLatin1String("application/pdf")),
+              "file payload carries mime_type");
+    }
+
+    LocalMessageDTO staged;
+    Check(db.updateResourceStage(cid, 81001, RESOURCE_STAGE_UPLOADING, &staged),
+          "file updateResourceStage works");
+    LocalMessageDTO done;
+    Check(db.confirmResourceSent(cid, &done)
+          && done.send_state == SEND_STATE_SENT,
+          "file confirmResourceSent works");
+    Check(db.loadOutbox(&outbox) && outbox.isEmpty(), "file outbox cleaned");
+
+    //本地行保留资源字段（打开会话页时据此渲染 FileBubble）
+    LocalMessageDTO stored;
+    Check(db.getMessageByClientId(cid, &stored)
+          && stored.message_type == 3
+          && stored.mime_type == QLatin1String("application/pdf"),
+          "stored row keeps msg_type/mime_type");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -551,6 +670,8 @@ int main(int argc, char** argv)
     Group7_ApplySyncPage();
     Group8_BigIntRoundTrip();
     Group9_PaginationOrdering();
+    Group10_SyncPageAck();
+    Group11_FileMsgChain();
 
     std::printf("\n=== summary: %d failure(s) ===\n", g_failures);
     if (g_failures != 0) {

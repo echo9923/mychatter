@@ -76,14 +76,18 @@ public:
 
 	std::string GetValue(const std::string& section, const std::string & key);
 	boost::filesystem::path GetFileOutPath();
+	//资源消息存储根目录（与头像目录 static/ 隔离）：<bin>/resource/<sender_uid>/<message_id>
+	boost::filesystem::path GetResourceRootPath();
 	void InitPath();
 private:
 	ConfigMgr();
-	// 存储section和key-value对的map  
+	// 存储section和key-value对的map
 	std::map<std::string, SectionInfo> _config_map;
 	//static目录
 	boost::filesystem::path _static_path;
 	//bin输出目录
 	boost::filesystem::path _bin_path;
+	//资源消息根目录
+	boost::filesystem::path _resource_root;
 };
 

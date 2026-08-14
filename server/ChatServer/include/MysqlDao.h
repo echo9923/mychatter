@@ -163,6 +163,16 @@ public:
 	bool CreatePrivateChat(int user1_id, int user2_id, std::int64_t& thread_id);
 
 	/**
+	 * @brief 取私聊会话的两个成员（1035 资源消息创建的会话归属校验用）
+	 *
+	 * @param thread_id 会话ID
+	 * @param user1 [out] 成员一（表中存储顺序，非大小序）
+	 * @param user2 [out] 成员二
+	 * @return 会话存在返回 true；不存在/查询失败返回 false
+	 */
+	bool GetPrivateChatMembers(std::int64_t thread_id, int& user1, int& user2);
+
+	/**
 	 * @brief 分页加载指定会话的历史聊天消息
 	 * @param threadId 会话ID
 	 * @param lastId 游标（上一页最后一条消息ID）
@@ -210,6 +220,17 @@ public:
 	 */
 	std::vector<std::shared_ptr<ChatMessage>> GetMessagesByIds(int recv_uid,
 		const std::vector<std::int64_t>& ids);
+
+	/**
+	 * @brief 按 message_id 取单条消息（gRPC 资源通知回读 DB 组 envelope 用）
+	 *
+	 * 不带 uid 过滤：调用方为服务间 gRPC（ResourceServer 上传完成点触发），
+	 * 非客户端直连请求；客户端侧按收发双方过滤的读取走 GetMessagesByIds。
+	 *
+	 * @param message_id 消息ID
+	 * @return 消息；不存在/查询失败返回 nullptr
+	 */
+	std::shared_ptr<ChatMessage> GetChatMsgById(std::int64_t message_id);
 
 	/**
 	 * @brief 将指定接收者的一批消息标记为已投递（ACK）

@@ -16,6 +16,21 @@ void FileSystem::PostDownloadTaskToQue(std::shared_ptr<DownloadTask> msg, int in
 	_down_load_worker[index]->PostTask(msg);
 }
 
+void FileSystem::PostChunkToQue(std::shared_ptr<ResourceChunkTask> msg, int index)
+{
+	_file_workers[index]->PostChunkTask(msg);
+}
+
+void FileSystem::PostChunkDownToQue(std::shared_ptr<ResourceChunkDownTask> msg, int index)
+{
+	_down_load_worker[index]->PostChunkTask(msg);
+}
+
+void FileSystem::PostClosureToQue(std::function<void()> fn, int index)
+{
+	_file_workers[index]->PostClosure(std::move(fn));
+}
+
 FileSystem::FileSystem()
 {
 	for (int i = 0; i < FILE_WORKER_COUNT; i++) {

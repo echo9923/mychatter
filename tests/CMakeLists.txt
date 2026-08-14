@@ -59,6 +59,28 @@ llfc_apply_msvc_defaults(password_hash_tests)
 
 add_test(NAME password_hash_tests COMMAND password_hash_tests)
 
+# --- Generic SHA-256 helper tests ---------------------------------------------
+# Compiles the production Sha256.cpp directly and links only libcrypto
+# (mirrors password_hash_tests): FIPS test vectors, hex validation, and the
+# streaming file hash against the in-memory hash over ~3MB of binary data.
+add_executable(sha256_tests
+  sha256_tests.cpp
+  ../server/common/src/Sha256.cpp
+)
+
+target_include_directories(sha256_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../server/common/include"
+)
+
+target_link_libraries(sha256_tests PRIVATE
+  OpenSSL::Crypto
+)
+
+target_compile_features(sha256_tests PRIVATE cxx_std_17)
+llfc_apply_msvc_defaults(sha256_tests)
+
+add_test(NAME sha256_tests COMMAND sha256_tests)
+
 # --- Client local store (SQLite) tests ---------------------------------------
 # Compiles the client's production LocalChatDb sources directly (mirrors
 # worker_pool_tests). localchatdb.cpp includes the client's global.h, which
@@ -113,7 +135,7 @@ if(LLFC_RUN_INTEGRATION_TESTS)
   # Discover the third-party targets the headless client links against. These
   # are not found at the root (only the llfc_find_* helpers are defined there),
   # so each server calls its own find_package; the test does the same here.
-  find_package(Boost CONFIG REQUIRED COMPONENTS asio beast)
+  find_package(Boost CONFIG REQUIRED COMPONENTS asio beast filesystem)
   find_package(nlohmann_json CONFIG REQUIRED)
   find_package(hiredis CONFIG REQUIRED)
   find_package(mysql-concpp CONFIG REQUIRED)
@@ -133,6 +155,8 @@ if(LLFC_RUN_INTEGRATION_TESTS)
     integration/im_harness.cpp
     integration/im_scenarios.cpp
     integration/im_status_client.cpp
+    # 资源消息分片/整文件 SHA-256 校验：直接复用生产实现
+    ../server/common/src/Sha256.cpp
     integration/im_common.h
     integration/im_frame.h
     integration/im_tcp_client.h
@@ -146,16 +170,19 @@ if(LLFC_RUN_INTEGRATION_TESTS)
 
   target_include_directories(im_integration_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../server/common/include"
   )
 
   target_link_libraries(im_integration_tests PRIVATE
     Boost::asio
     Boost::beast
+    Boost::filesystem
     nlohmann_json::nlohmann_json
     hiredis::hiredis
     mysql::concpp-jdbc-static
     llfc_status_proto
     gRPC::grpc++
+    OpenSSL::Crypto
   )
 
   target_compile_features(im_integration_tests PRIVATE cxx_std_17)
@@ -179,9 +206,11 @@ if(LLFC_RUN_INTEGRATION_TESTS)
   # "integration" so `ctest -L integration` selects exactly these.
   set(_im_scenarios
     gate-smoke order-n4 order-n1 dedup
-    offline lost-ack pull-bytes cross-server image-offline
+    offline lost-ack pull-bytes cross-server resource-offline
     status-discovery chat-failover simple-auth
     sync-bootstrap big-ids
+    resource-create resource-upload resource-resume resource-idempotent
+    resource-corrupt resource-perm resource-offset resource-expiry
   )
   foreach(_scn ${_im_scenarios})
     add_test(NAME im_integration_${_scn}
