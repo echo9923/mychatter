@@ -92,11 +92,12 @@ public slots:
         QList<qint64> insertedIds);
     void slot_send_confirmed(bool ok, LocalMessageDTO dto);
     void slot_send_failed_marked(bool ok, LocalMessageDTO dto);
-    void slot_image_stage_updated(bool ok, LocalMessageDTO dto);
+    void slot_resource_stage_updated(bool ok, LocalMessageDTO dto);
     void slot_reset_icon(QString path);
     void slot_update_upload_progress(std::shared_ptr<MsgInfo> msg_info);
     void slot_update_download_progress(std::shared_ptr<MsgInfo> msg_info);
     void slot_download_finish(std::shared_ptr<MsgInfo> msg_info, QString file_path);
+    void slot_download_failed(std::shared_ptr<MsgInfo> msg_info, int error);
 private slots:
     void slot_reset_head();
 };

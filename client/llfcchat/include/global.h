@@ -9,6 +9,7 @@
 #include <QNetworkReply>
 #include <QDir>
 #include <QSettings>
+#include <QVector>
 #include <set>
 #include <queue>
 
@@ -65,20 +66,19 @@ enum ReqId{
     ID_UPLOAD_HEAD_ICON_RSP  = 1032,      //上传头像回复
     ID_DOWN_LOAD_FILE_REQ = 1033,             //下载文件请求
     ID_DOWN_LOAD_FILE_RSP = 1034,           //下载文件回复
-    ID_IMG_CHAT_MSG_REQ = 1035,            //图片聊天消息请求
-    ID_IMG_CHAT_MSG_RSP = 1036,           //图片聊天信息回复
-    ID_IMG_CHAT_UPLOAD_REQ = 1037,        //上传聊天图片资源
-    ID_IMG_CHAT_UPLOAD_RSP = 1038,        //上传聊天图片资源回复
+    ID_CREATE_RESOURCE_MSG_REQ = 1035,            //图片聊天消息请求
+    ID_CREATE_RESOURCE_MSG_RSP = 1036,           //图片聊天信息回复
+    ID_RESOURCE_CHUNK_UPLOAD_REQ = 1037,        //上传聊天图片资源
+    ID_RESOURCE_CHUNK_UPLOAD_RSP = 1038,        //上传聊天图片资源回复
 
-    ID_NOTIFY_IMG_CHAT_MSG_REQ = 1039,   //通知用户图片聊天信息
-    ID_FILE_INFO_SYNC_REQ     =  1041,    //文件信息同步请求
-    ID_FILE_INFO_SYNC_RSP     =  1042,     //文件信息同步回复
-    ID_IMG_CHAT_CONTINUE_UPLOAD_REQ = 1043,  //续传聊天图片资源请求
-    ID_IMG_CHAT_CONTINUE_UPLOAD_RSP = 1044,  //续传聊天图片资源回复
-    ID_IMG_CHAT_DOWN_INFO_SYNC_REQ  = 1045,  //获取图片下载信息同步请求
-    ID_IMG_CHAT_DOWN_INFO_SYNC_RSP  = 1046,  //获取图片下载信息同步回复
-    ID_IMG_CHAT_DOWN_REQ          =  1047,    //聊天图片下载请求
-    ID_IMG_CHAT_DOWN_RSP          =  1048,    //聊天图片下载回复
+    ID_NOTIFY_RESOURCE_MSG_REQ = 1039,   //通知用户图片聊天信息
+    ID_RESOURCE_UPLOAD_PROGRESS_REQ = 1041,    //文件信息同步请求
+    ID_RESOURCE_UPLOAD_PROGRESS_RSP = 1042,     //文件信息同步回复
+    //1043/1044 续传分支已废弃：首传/续传统一 1037+1041
+    ID_RESOURCE_DOWN_INFO_REQ = 1045,      //查询资源下载信息请求
+    ID_RESOURCE_DOWN_INFO_RSP = 1046,      //查询资源下载信息回复
+    ID_RESOURCE_CHUNK_DOWN_REQ = 1047,     //按偏移量下载资源分片请求
+    ID_RESOURCE_CHUNK_DOWN_RSP = 1048      //按偏移量下载资源分片回复
     ID_CHAT_DELIVERY_ACK_REQ      =  1049,    //聊天消息投递ACK请求
     ID_CHAT_DELIVERY_ACK_RSP      =  1050,    //聊天消息投递ACK回复
     ID_SYNC_MESSAGE_REQ           =  1051,    //增量同步消息请求
@@ -97,7 +97,16 @@ enum ErrorCodes{
     MESSAGE_STORE_FAILED = 1014, //消息存储失败（transient，继续重传）
     RECIPIENT_OFFLINE    = 1015, //接收方离线
     SERVER_BUSY          = 1016, //服务器繁忙（transient，继续重传）
-    MESSAGE_CONFLICT     = 1017  //消息冲突（permanent，停止重传标 SEND_FAILED）
+    MESSAGE_CONFLICT     = 1017, //消息冲突（permanent，停止重传标 SEND_FAILED）
+    RESOURCE_INVALID     = 1019, //资源元数据非法（ChatServer；permanent）
+    RESOURCE_SIZE_EXCEEDED = 1020, //资源超过类型上限（ChatServer；permanent）
+    //资源链路错误码（镜像 ResourceServer const.h）
+    FILE_OFFSET_INVALID  = 1018, //分片偏移超前（按响应 server_offset 对齐重发）
+    MSG_ID_ERR           = 1022, //消息不存在（permanent，标失败）
+    FILE_HASH_MISMATCH   = 1023, //分片/整文件 SHA-256 校验失败（重传该片/整文件）
+    RESOURCE_NOT_READY   = 1025, //资源未就绪（稍后重试或提示）
+    RESOURCE_FORBIDDEN   = 1026, //无权访问该资源（permanent）
+    RESOURCE_STATE_INVALID = 1027 //资源已过期/终态（permanent，标 Expired）
 };
 
 enum Modules{
@@ -170,39 +179,43 @@ enum class TransferState {
     Uploading,      // 上传中
     Paused,         // 暂停
     Completed,      // 完成
-    Failed          // 失败
+    Failed,         // 失败
+    Expired         // 资源已过期/终态（服务端标记 resource_status=2）
 };
 
 struct MsgInfo{
     MsgInfo() = default;
-    MsgInfo(MsgType msgtype, QString text_or_url, QPixmap pixmap, QString unique_name, qint64 total_size, QString md5)
+    MsgInfo(MsgType msgtype, QString text_or_url, QPixmap pixmap, QString unique_name,
+            qint64 total_size, QString content_hash)
     :_msg_type(msgtype), _text_or_url(text_or_url), _preview_pix(pixmap),_unique_name(unique_name),_total_size(total_size),
-        _current_size(0),_seq(1),_md5(md5), _last_confirmed_seq(0),_rsp_size(0), _transfer_state(TransferState::None),
+        _current_size(0),_seq(1),_content_hash(content_hash), _last_confirmed_seq(0),_rsp_size(0), _transfer_state(TransferState::None),
         _transfer_type(TransferType::None)
     {
         _max_seq = ((total_size + MAX_FILE_LEN - 1) / MAX_FILE_LEN);
     }
 
     MsgType _msg_type;   //消息类型, 文本，图片，视频，文件
-    QString _text_or_url;//表示文件和图像的url,文本信息
+    QString _text_or_url;//表示文件和图像的本地路径,文本信息
     QPixmap _preview_pix;//文件和图片的缩略图
-    QString _unique_name; //文件唯一名字
+    QString _unique_name; //展示文件名（原始文件名；磁盘缓存按 message_id 隔离）
     qint64 _total_size; //文件总大小
-    qint64 _current_size; //传输大小
-    qint64 _seq;          //传输序号
-    QString _md5;         //文件md5
+    qint64 _current_size; //传输大小（已确认偏移）
+    qint64 _seq;          //传输序号（由偏移推导，仅 UI 进度用）
+    QString _content_hash;//整文件 SHA-256（小写 hex）
+    QVector<QString> _chunk_hashes; //每 32KiB 分片的 SHA-256（后台一次遍历预计算）
     std::set<qint64> _rsp_seqs;      //已经接受的回传序列集合
     std::set<qint64> _flighting_seqs;  //正在发送，但是未收到服务器回复，将来用来做超时重传
     qint64 _last_confirmed_seq;      //最后确认序列
     qint64 _max_seq;                //最大序列号
-    qint64 _msg_id;                 //关联的消息id
+    qint64 _msg_id;                 //关联的消息id（资源上传/下载的主键）
     qint64 _rsp_size;  //服务器返回实际上传或者下载的大小
     qint64 _thread_id;             // 会话id
+    QString _local_download_path;  //下载完成后的本地最终路径（缓存目录内）
     TransferState _transfer_state;  //上传或者下载, 暂停，传输完成
     TransferType  _transfer_type;   //文件类型, 上传或者下载
     int           _sender;          //发送者
     int           _receiver;        //接收者
-    
+
 };
 //声明为元对象类型
 Q_DECLARE_METATYPE(MsgInfo)
@@ -249,8 +262,14 @@ const int CHAT_COUNT_PER_PAGE = 13;
 enum MsgStatus{
     UN_READ = 0,  //对方未读
     SEND_FAILED = 1,  //发送失败
-    READED = 2,  //对方已读
-    UN_UPLOAD = 3 //未上传完成
+    READED = 2   //对方已读（3=UN_UPLOAD 已废弃，资源状态读 ResourceStatus）
+};
+
+//资源生命周期（镜像服务端 chat_message.resource_status）
+enum ResourceStatus{
+    RESOURCE_UPLOADING = 0, //待上传（分片未收齐）
+    RESOURCE_READY     = 1, //就绪可下载
+    RESOURCE_EXPIRED   = 2  //失败/过期（终态）
 };
 
 //聊天形式，私聊和群聊
@@ -281,7 +300,14 @@ struct DownloadInfo {
     QString _client_path;
 };
 
-extern QString calculateFileHash(const QString& filePath);
+//后台一次 32KiB 遍历，同时产出整文件 SHA-256 与每片 SHA-256；
+//文件不可读返回 false（out 参数保持为空）
+extern bool calculateFileSha256(const QString& filePath, QString& content_hash,
+    QVector<QString>& chunk_hashes);
+//整文件 SHA-256（校验下载结果用）
+extern QString calculateFileSha256Only(const QString& filePath);
 extern     QPixmap CreateLoadingPlaceholder(int width = 200, int height = 200);
+//根据扩展名猜测 MIME 类型（1035 创建请求的 mime_type 字段）
+extern QString guessMimeType(const QString& fileName);
 
 #endif // GLOBAL_H

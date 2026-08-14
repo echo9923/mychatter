@@ -59,6 +59,15 @@ out/run/<Config>/ResourceServer/ResourceServer.exe
 - TcpMgr 已回归纯网络传输；旧 QSettings pending/replay/离线轮询（llfcchat-delivery.ini、旧 1051/1052 pending 拉取、Redis offline_msg ZSET）已全部删除
 - 协议破坏性变更：TCP JSON 中 message_id/thread_id/sync_seq 一律十进制字符串（1049 message_ids 也是字符串数组），两端必须同批发布；1051/1052 数值不变但语义改为 ID_SYNC_MESSAGE_REQ/RSP
 
+## 图片与文件统一资源传输（20260814 改造）
+
+- 图片与普通文件统一为“资源消息”：创建元数据（1035）→ 查询上传进度（1041）→ 分片上传（1037）→ 完整性校验 → 发布消息 → 分片下载（1045/1047）。分片 32KiB Base64 JSON 帧，帧格式与 MAX_FILE_LEN 维持不变。
+- `chat_message` 新增 `resource_status`（0 待上传/1 就绪/2 失败过期）、`content_hash`（整文件 SHA-256）、`mime_type`；`content` 存原始文件名，服务端磁盘文件统一以 `message_id` 命名于 `bin/resource/<sender_uid>/`，进行中为 `.part` 后缀，收齐校验后原子改名。迁移脚本 `sql备份/20260814_resource_unified.sql`（清库重建，不兼容旧数据/旧磁盘文件）。
+- 协议语义变更（三端同批发布）：1035/1036 通用资源创建（file_name/content_hash/mime_type，上限图片 20MB/文件 100MB，可由 [Resource] 配置覆盖）；1037/1038 按 message_id+offset+chunk_sha256 上传；1041/1042 纯进度查询（返回服务端 .part 实际长度）；1043/1044 续传分支已删除（首传续传统一 1037+1041）；1045/1046 下载信息（校验请求者必须是 sender/recv）；1047/1048 按 offset 下载并随片下发 SHA-256；1039 与 gRPC `NotifyChatResourceMsg` 泛化为通用资源通知（envelope 含 resource_status/content_hash/mime_type）。
+- ResourceServer 按 `message_id % worker 数` 固定路由，同一 .part 只被一个线程写；分片/整文件 SHA-256 由 `server/common` 的 `llfc::Sha256Hex/Sha256FileHex`（OpenSSL EVP，llfc_server_common_crypto）校验；重复分片幂等确认、偏移超前返回 server_offset 供客户端对齐；完成点单事务 `resource_status=1` + 双方同步行后才尝试 gRPC 通知（先 DB 后 RPC 不变式）。Redis 不再保存上传进度（真值=磁盘 .part 长度+MySQL 行），头像通道（1031-1034）维持旧协议不动。
+- 清理：ResourceServer 启动时及每小时清理超时（7 天）未完成资源，标记 `resource_status=2` 并补双方同步行（客户端展示“已过期”），回收陈旧 .part 与无属主最终文件；只扫 `resource/` 目录，与头像目录 `static/` 隔离。
+- 客户端：MessageTextEdit 采集时一次 32KiB 遍历预计算整文件+逐片 SHA-256；发送统一走 outbox（SEND_RESOURCE，FILE_MSG 不再被跳过）；上传恢复/断线重连一律 1041 对齐服务端偏移；下载缓存按 message_id 隔离（`cache/<message_id>/<文件名>`，写 .part 逐片校验、整文件校验后原子改名）；图片自动下载显示预览，文件用新 `FileBubble`（下载/暂停/继续/打开/另存为）；`applySyncPage` 与 `insertIncoming` 一样同事务生成 DELIVERY_ACK（离线资源消息 ACK 闭环）。
+
 ## 注意事项
 
 - 生成器固定为 `Ninja Multi-Config`，CMakeLists 中有强制检查

@@ -5,21 +5,63 @@
 #include "ConfigMgr.h"
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
+#include "Sha256.h"
+
+#include <boost/filesystem.hpp>
 
 //将请求消息类型映射为对应的回复消息类型；无对应回复（通知类）或未知类型返回0
 static short ReqToRspId(short msg_type)
 {
 	switch (msg_type) {
-	case ID_UPLOAD_HEAD_ICON_REQ:           return ID_UPLOAD_HEAD_ICON_RSP;
-	case ID_DOWN_LOAD_FILE_REQ:             return ID_DOWN_LOAD_FILE_RSP;
-	case ID_IMG_CHAT_UPLOAD_REQ:            return ID_IMG_CHAT_UPLOAD_RSP;
-	case ID_FILE_INFO_SYNC_REQ:             return ID_FILE_INFO_SYNC_RSP;
-	case ID_IMG_CHAT_CONTINUE_UPLOAD_REQ:   return ID_IMG_CHAT_CONTINUE_UPLOAD_RSP;
-	case ID_IMG_CHAT_DOWN_INFO_SYNC_REQ:    return ID_IMG_CHAT_DOWN_INFO_SYNC_RSP;
-	case ID_IMG_CHAT_DOWN_REQ:              return ID_IMG_CHAT_DOWN_RSP;
-	default:                                return 0;
+	case ID_UPLOAD_HEAD_ICON_REQ:             return ID_UPLOAD_HEAD_ICON_RSP;
+	case ID_DOWN_LOAD_FILE_REQ:               return ID_DOWN_LOAD_FILE_RSP;
+	case ID_RESOURCE_CHUNK_UPLOAD_REQ:        return ID_RESOURCE_CHUNK_UPLOAD_RSP;
+	case ID_RESOURCE_UPLOAD_PROGRESS_REQ:     return ID_RESOURCE_UPLOAD_PROGRESS_RSP;
+	case ID_RESOURCE_DOWN_INFO_REQ:           return ID_RESOURCE_DOWN_INFO_RSP;
+	case ID_RESOURCE_CHUNK_DOWN_REQ:          return ID_RESOURCE_CHUNK_DOWN_RSP;
+	default:                                  return 0;
 	}
 }
+
+namespace {
+/// 从 JSON 值解析 64 位无符号整数：十进制字符串（协议约定）与数字（兼容）都接受，
+/// 字符串必须整串消费；解析失败返回 false
+bool ParseJsonUInt64(const json& v, unsigned long long& out) {
+	if (v.is_number_unsigned()) {
+		out = v.get<unsigned long long>();
+		return true;
+	}
+	if (v.is_number_integer()) {
+		const long long n = v.get<long long>();
+		if (n >= 0) {
+			out = static_cast<unsigned long long>(n);
+			return true;
+		}
+		return false;
+	}
+	if (v.is_string()) {
+		try {
+			auto s = v.get<std::string>();
+			std::size_t pos = 0;
+			unsigned long long n = std::stoull(s, &pos);
+			if (pos == s.size()) {
+				out = n;
+				return true;
+			}
+		}
+		catch (...) {
+			//非法字符串，按解析失败处理
+		}
+	}
+	return false;
+}
+
+/// 资源文件路径（磁盘真值）：resource/<sender_uid>/<message_id>
+boost::filesystem::path ResourceFilePath(long long sender_id, long long message_id) {
+	return ConfigMgr::Inst().GetResourceRootPath()
+		/ std::to_string(sender_id) / std::to_string(message_id);
+}
+} // namespace
 
 LogicWorker::LogicWorker():_b_stop(false)
 {
@@ -192,361 +234,237 @@ void LogicWorker::RegisterCallBacks()
 
 	};
 
-	_fun_callbacks[ID_IMG_CHAT_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+	//1037 上传资源分片：{message_id:"<str>", offset:"<str>", chunk_sha256, data:"<base64>"}
+	//固定路由 message_id % FILE_WORKER_COUNT：同一 .part 只被一个线程写
+	_fun_callbacks[ID_RESOURCE_CHUNK_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
 			auto root = json::parse(msg_data, nullptr, false);
-			auto md5 = root["md5"].get<std::string>();
-			auto seq = root["seq"].get<int>();
-			auto name = root["name"].get<std::string>();
-			auto total_size_str = root["total_size"].get<std::string>();
-			auto trans_size_str = root["trans_size"].get<std::string>();
-			int64_t total_size = std::stoll(total_size_str);
-			int64_t trans_size = std::stoll(trans_size_str);
-			auto last = root["last"].get<int>();
-			auto file_data = root["data"].get<std::string>();
-			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto uid = session->GetUserId();
-			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
-			auto sender = uid;
-			auto receiver = root["receiver"].get<int>();
-			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
-			//转化为字符串
-			auto uid_str = std::to_string(uid);
-			auto file_path_str = (file_path / uid_str / name).string();
-			json  rtvalue;
-
-			auto callback = [=](const json& result) {
-
-				// 在异步任务完成后调用
-				json rtvalue = result;
-				rtvalue["error"] = ErrorCodes::Success;
-				rtvalue["total_size"] = std::to_string(total_size);
-				rtvalue["seq"] = seq;
-				rtvalue["name"] = name;
-				rtvalue["trans_size"] = std::to_string(trans_size);
-				rtvalue["last"] = last;
-				rtvalue["md5"] = md5;
-				rtvalue["uid"] = uid;
-				rtvalue["sender"] = sender;
-				rtvalue["receiver"] = receiver;
-				std::string return_str = rtvalue.dump(4);
-				session->Send(return_str, ID_IMG_CHAT_UPLOAD_RSP);
-			};
-
-			// 使用 std::hash 对字符串进行哈希
-			std::hash<std::string> hash_fn;
-			size_t hash_value = hash_fn(name); // 生成哈希值
-			int index = hash_value % FILE_WORKER_COUNT;
-			std::cout << "Hash value: " << hash_value << std::endl;
-
-			//第一个包
-			if (seq == 1) {
-				//构造数据存储
-				auto file_info = std::make_shared<FileInfo>();
-				file_info->_file_path_str = file_path_str;
-				file_info->_name = name;
-				file_info->_seq = seq;
-				file_info->_total_size = total_size;
-				file_info->_trans_size = trans_size;
-				bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_IMG_CHAT_UPLOAD_RSP);
-					return;
-				}
-			}
-			else {
-				auto file_info = RedisMgr::GetInstance()->GetFileInfo(name);
-				if (file_info == nullptr) {
-					rtvalue["error"] = ErrorCodes::FileNotExists;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_IMG_CHAT_UPLOAD_RSP);
-					return;
-				}
-				file_info->_seq++;
-				file_info->_trans_size = trans_size;
-				bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_IMG_CHAT_UPLOAD_RSP);
-					return;
-				}
-			}
-
-
-			FileSystem::GetInstance()->PostMsgToQue(
-				std::make_shared<FileTask>(session, ID_IMG_CHAT_UPLOAD_REQ, uid, file_path_str, name, seq, total_size,
-					trans_size, last, file_data, callback, message_id,sender,receiver),
-				index
-			);
-	};	
-
-
-	_fun_callbacks[ID_FILE_INFO_SYNC_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			auto root = json::parse(msg_data, nullptr, false);
-			auto md5 = root["md5"].get<std::string>();
-			auto seq = root["seq"].get<int>();
-			auto name = root["name"].get<std::string>();
-			auto total_size_str = root["total_size"].get<std::string>();
-			auto trans_size_str = root["trans_size"].get<std::string>();
-			auto total_size = std::stoll(total_size_str);
-			auto trans_size = std::stoll(trans_size_str);
-			auto last = root["last"].get<int>();
-			auto file_data = root["data"].get<std::string>();
-			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto uid = session->GetUserId();
-			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
-			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
-			auto sender = uid;
-			auto receiver = root["receiver"].get<int>();
-			//转化为字符串
-			auto uid_str = std::to_string(uid);
-			auto file_path_str = (file_path / uid_str / name).string();
-			json  rtvalue;
-
-			auto callback = [=](const json& result) {
-
-				// 在异步任务完成后调用
-				json rtvalue = result;
-				rtvalue["error"] = ErrorCodes::Success;		
-				rtvalue["seq"] = seq;
-				rtvalue["name"] = name;
-				rtvalue["last"] = last;
-				rtvalue["md5"] = md5;
-				rtvalue["uid"] = uid;
-				rtvalue["sender"] = sender;
-				rtvalue["receiver"] = receiver;
-				std::string return_str = rtvalue.dump(4);
-				session->Send(return_str, ID_FILE_INFO_SYNC_RSP);
-			};
-
-			// 使用 std::hash 对字符串进行哈希
-			std::hash<std::string> hash_fn;
-			size_t hash_value = hash_fn(name); // 生成哈希值
-			int index = hash_value % FILE_WORKER_COUNT;
-			std::cout << "Hash value: " << hash_value << std::endl;
-
-			//第一个包
-			if (seq == 1) {
-				//构造数据存储
-				auto file_info = std::make_shared<FileInfo>();
-				file_info->_file_path_str = file_path_str;
-				file_info->_name = name;
-				file_info->_seq = seq;
-				file_info->_total_size = total_size;
-				file_info->_trans_size = trans_size;
-				bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_FILE_INFO_SYNC_RSP);
-					return;
-				}
-			}
-			else {
-				auto file_info = RedisMgr::GetInstance()->GetFileInfo(name);
-				if (file_info == nullptr) {
-					rtvalue["error"] = ErrorCodes::FileNotExists;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_FILE_INFO_SYNC_RSP);
-					return;
-				}
-				file_info->_seq = seq;
-				file_info->_trans_size = trans_size;
-				bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_FILE_INFO_SYNC_RSP);
-					return;
-				}
-			}
-
-
-			FileSystem::GetInstance()->PostMsgToQue(
-				std::make_shared<FileTask>(session, ID_FILE_INFO_SYNC_REQ, uid, file_path_str, name, seq, total_size,
-					trans_size, last, file_data, callback, message_id,sender,receiver),
-				index
-			);
-	};
-
-
-
-	_fun_callbacks[ID_IMG_CHAT_CONTINUE_UPLOAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			auto root = json::parse(msg_data, nullptr, false);
-			auto md5 = root["md5"].get<std::string>();
-			auto seq = root["seq"].get<int>();
-			auto name = root["name"].get<std::string>();
-			auto total_size = root["total_size"].get<int>();
-			auto trans_size = root["trans_size"].get<int>();
-			auto last = root["last"].get<int>();
-			auto file_data = root["data"].get<std::string>();
-			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto uid = session->GetUserId();
-			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
-			//上传资源时发送者即已认证上传者，不信任客户端 JSON 的 sender 字段
-			auto sender = uid;
-			auto receiver = root["receiver"].get<int>();
-			//转化为字符串
-			auto uid_str = std::to_string(uid);
-			auto file_path_str = (file_path / uid_str / name).string();
-			json  rtvalue;
-
-			auto callback = [=](const json& result) {
-
-				// 在异步任务完成后调用
-				json rtvalue = result;
-				rtvalue["error"] = ErrorCodes::Success;
-				rtvalue["total_size"] = total_size;
-				rtvalue["seq"] = seq;
-				rtvalue["name"] = name;
-				rtvalue["trans_size"] = trans_size;
-				rtvalue["last"] = last;
-				rtvalue["md5"] = md5;
-				rtvalue["uid"] = uid;
-				rtvalue["sender"] = sender;
-				rtvalue["receiver"] = receiver;
-				std::string return_str = rtvalue.dump(4);
-				session->Send(return_str, ID_IMG_CHAT_CONTINUE_UPLOAD_RSP);
-			};
-
-			// 使用 std::hash 对字符串进行哈希
-			std::hash<std::string> hash_fn;
-			size_t hash_value = hash_fn(name); // 生成哈希值
-			int index = hash_value % FILE_WORKER_COUNT;
-			std::cout << "Hash value: " << hash_value << std::endl;
-
-			//第一个包
-			if (seq == 1) {
-				//构造数据存储
-				auto file_info = std::make_shared<FileInfo>();
-				file_info->_file_path_str = file_path_str;
-				file_info->_name = name;
-				file_info->_seq = seq;
-				file_info->_total_size = total_size;
-				file_info->_trans_size = trans_size;
-				bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_IMG_CHAT_CONTINUE_UPLOAD_RSP);
-					return;
-				}
-			}
-			else {
-				auto file_info = RedisMgr::GetInstance()->GetFileInfo(name);
-				if (file_info == nullptr) {
-					rtvalue["error"] = ErrorCodes::FileNotExists;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_IMG_CHAT_CONTINUE_UPLOAD_RSP);
-					return;
-				}
-				file_info->_seq = seq;
-				file_info->_trans_size = trans_size;
-				bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
-				if (!success) {
-					rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-					std::string return_str = rtvalue.dump(4);
-					session->Send(return_str, ID_IMG_CHAT_CONTINUE_UPLOAD_RSP);
-					return;
-				}
-			}
-
-
-			FileSystem::GetInstance()->PostMsgToQue(
-				std::make_shared<FileTask>(session, ID_IMG_CHAT_CONTINUE_UPLOAD_REQ, uid, file_path_str, name, seq, total_size,
-					trans_size, last, file_data, callback, message_id,sender,receiver),
-				index
-			);
-	};
-
-	_fun_callbacks[ID_IMG_CHAT_DOWN_INFO_SYNC_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			auto root = json::parse(msg_data, nullptr, false);
-			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
-			auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(message_id);
-			if (chat_msg == nullptr) {
+			if (root.is_discarded() || !root.is_object()) {
 				json rtvalue;
-				rtvalue["error"] = ErrorCodes::MsgIdErr;
+				rtvalue["error"] = ErrorCodes::Error_Json;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_UPLOAD_RSP);
 				return;
 			}
 
-			// 资源文件路径
-			auto file_dir = ConfigMgr::Inst().GetFileOutPath();
-			//该消息是接收方客户端发送过来的,服务器将资源存储在发送方的文件夹中
-			auto uid_str = std::to_string(chat_msg->sender_id);
-			auto file_path = (file_dir / uid_str / chat_msg->content);
-			//文件可能缺失（头像/历史图片被清理）：用 error_code 重载，绝不让
-			//boost::filesystem_error 穿出 LogicWorker 线程导致 std::terminate/abort
+			unsigned long long message_id = 0, offset = 0;
+			if (!root.contains("message_id") || !root.contains("offset") ||
+				!root.contains("chunk_sha256") || !root.contains("data") ||
+				!ParseJsonUInt64(root["message_id"], message_id) ||
+				!ParseJsonUInt64(root["offset"], offset) ||
+				!root["chunk_sha256"].is_string() || !root["data"].is_string()) {
+				json rtvalue;
+				rtvalue["error"] = ErrorCodes::Error_Json;
+				rtvalue["message_id"] = root.contains("message_id")
+					&& root["message_id"].is_string() ? root["message_id"].get<std::string>() : "0";
+				session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_UPLOAD_RSP);
+				return;
+			}
+			auto chunk_sha256 = root["chunk_sha256"].get<std::string>();
+			auto file_data = root["data"].get<std::string>();
+
+			//协议字段格式校验：片哈希必须是 64 位小写 hex（真值比对在 FileWorker 解码后进行）
+			if (message_id == 0 || !llfc::IsValidSha256Hex(chunk_sha256)) {
+				json rtvalue;
+				rtvalue["error"] = ErrorCodes::Error_Json;
+				rtvalue["message_id"] = std::to_string(message_id);
+				session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_UPLOAD_RSP);
+				return;
+			}
+
+			auto callback = [=](const json& result) {
+				std::string return_str = result.dump(4);
+				session->Send(return_str, ID_RESOURCE_CHUNK_UPLOAD_RSP);
+			};
+
+			int index = ResourceWorkerIndex(static_cast<long long>(message_id), FILE_WORKER_COUNT);
+			FileSystem::GetInstance()->PostChunkToQue(
+				std::make_shared<ResourceChunkTask>(session, static_cast<long long>(message_id),
+					static_cast<long long>(offset), chunk_sha256, file_data, callback),
+				index
+			);
+	};
+
+	//1041 查询上传进度：{message_id:"<str>"} -> {error, message_id, server_offset, total_size,
+	//resource_status, content_hash}。与 1037 同 worker 串行化，server_offset 为磁盘 .part 真值
+	_fun_callbacks[ID_RESOURCE_UPLOAD_PROGRESS_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			auto root = json::parse(msg_data, nullptr, false);
+			unsigned long long message_id = 0;
+			if (root.is_discarded() || !root.is_object() ||
+				!root.contains("message_id") ||
+				!ParseJsonUInt64(root["message_id"], message_id) || message_id == 0) {
+				json rtvalue;
+				rtvalue["error"] = ErrorCodes::Error_Json;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+				return;
+			}
+
+			auto callback = [session, message_id]() {
+				auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(static_cast<long long>(message_id));
+				json rtvalue;
+				rtvalue["message_id"] = std::to_string(message_id);
+				if (chat_msg == nullptr) {
+					rtvalue["error"] = ErrorCodes::MsgIdErr;
+					session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+					return;
+				}
+
+				unsigned long long server_offset = 0;
+				if (chat_msg->resource_status == static_cast<int>(ResourceStatus::Ready)) {
+					server_offset = chat_msg->content_size;
+				}
+				else {
+					//磁盘真值：.part 实际长度（无文件即 0），error_code 重载防异常穿出线程
+					const auto part_path = ResourceFilePath(chat_msg->sender_id,
+						static_cast<long long>(message_id)).string() + ".part";
+					boost::system::error_code fs_ec;
+					if (boost::filesystem::exists(part_path, fs_ec)) {
+						boost::uintmax_t size = boost::filesystem::file_size(part_path, fs_ec);
+						if (!fs_ec) {
+							server_offset = static_cast<unsigned long long>(size);
+						}
+					}
+				}
+
+				rtvalue["error"] = ErrorCodes::Success;
+				rtvalue["server_offset"] = std::to_string(server_offset);
+				rtvalue["total_size"] = std::to_string(chat_msg->content_size);
+				rtvalue["resource_status"] = chat_msg->resource_status;
+				rtvalue["content_hash"] = chat_msg->content_hash;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			};
+
+			int index = ResourceWorkerIndex(static_cast<long long>(message_id), FILE_WORKER_COUNT);
+			FileSystem::GetInstance()->PostClosureToQue(callback, index);
+	};
+
+	//1045 查询资源下载信息：{message_id:"<str>"} -> {error, message_id, file_name, total_size,
+	//content_hash, mime_type, msg_type, resource_status}。权限：请求者必须是 sender 或 recv
+	_fun_callbacks[ID_RESOURCE_DOWN_INFO_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data) {
+			auto root = json::parse(msg_data, nullptr, false);
+			unsigned long long message_id = 0;
+			if (root.is_discarded() || !root.is_object() ||
+				!root.contains("message_id") ||
+				!ParseJsonUInt64(root["message_id"], message_id) || message_id == 0) {
+				json rtvalue;
+				rtvalue["error"] = ErrorCodes::Error_Json;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
+				return;
+			}
+
+			auto uid = session->GetUserId();
+			auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(static_cast<long long>(message_id));
+
+			auto respond_error = [session, message_id](int error) {
+				json rtvalue;
+				rtvalue["error"] = error;
+				rtvalue["message_id"] = std::to_string(message_id);
+				session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
+			};
+
+			if (chat_msg == nullptr) {
+				respond_error(ErrorCodes::MsgIdErr);
+				return;
+			}
+
+			//权限校验：非收发双方一律拒绝（不泄露资源存在性以外的信息）
+			if (uid != chat_msg->sender_id && uid != chat_msg->recv_id) {
+				respond_error(ErrorCodes::ResourceForbidden);
+				return;
+			}
+
+			//就绪校验：未完成/已过期的资源不可下载
+			if (chat_msg->resource_status != static_cast<int>(ResourceStatus::Ready)) {
+				json rtvalue;
+				rtvalue["error"] = ErrorCodes::ResourceNotReady;
+				rtvalue["message_id"] = std::to_string(message_id);
+				rtvalue["resource_status"] = chat_msg->resource_status;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
+				return;
+			}
+
+			//最终文件必须存在（清理任务可能已回收）
 			boost::system::error_code fs_ec;
+			const auto file_path = ResourceFilePath(chat_msg->sender_id, static_cast<long long>(message_id));
 			boost::uintmax_t file_size = boost::filesystem::file_size(file_path, fs_ec);
 			if (fs_ec) {
-				std::cerr << "img down info sync: file missing " << file_path
-				          << " ec=" << fs_ec.message() << std::endl;
-				json err_value;
-				err_value["error"] = ErrorCodes::FileNotExists;
-				err_value["message_id"] = chat_msg->message_id;
-				session->Send(err_value.dump(4), ID_IMG_CHAT_DOWN_INFO_SYNC_RSP);
+				std::cerr << "resource down info: file missing " << file_path.string()
+					<< " ec=" << fs_ec.message() << std::endl;
+				respond_error(ErrorCodes::FileNotExists);
 				return;
 			}
 
-			json rtvalue ;
+			json rtvalue;
 			rtvalue["error"] = ErrorCodes::Success;
-			rtvalue["message_id"] = chat_msg->message_id;
-			rtvalue["thread_id"] = chat_msg->thread_id;
-			rtvalue["sender_id"] = chat_msg->sender_id;
-			rtvalue["recv_id"] = chat_msg->recv_id;
-			rtvalue["name"] = chat_msg->content;
-			rtvalue["msg_type"] = chat_msg->msg_type;
-			rtvalue["status"] = chat_msg->status;
+			rtvalue["message_id"] = std::to_string(message_id);
+			rtvalue["file_name"] = chat_msg->content;   //原始文件名（仅展示用）
 			rtvalue["total_size"] = std::to_string(file_size);
- 			std::string return_str = rtvalue.dump(4);
-			session->Send(return_str, ID_IMG_CHAT_DOWN_INFO_SYNC_RSP);
+			rtvalue["content_hash"] = chat_msg->content_hash;
+			rtvalue["mime_type"] = chat_msg->mime_type;
+			rtvalue["msg_type"] = chat_msg->msg_type;
+			rtvalue["resource_status"] = chat_msg->resource_status;
+			session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
 	};
 
-	_fun_callbacks[ID_IMG_CHAT_DOWN_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_type,
+	//1047 按偏移量下载资源分片：{message_id:"<str>", offset:"<str>"} ->
+	//{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
+	_fun_callbacks[ID_RESOURCE_CHUNK_DOWN_REQ] = [this](std::shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data) {
-
 			auto root = json::parse(msg_data, nullptr, false);
+			unsigned long long message_id = 0, offset = 0;
+			if (root.is_discarded() || !root.is_object() ||
+				!root.contains("message_id") || !root.contains("offset") ||
+				!ParseJsonUInt64(root["message_id"], message_id) ||
+				!ParseJsonUInt64(root["offset"], offset) || message_id == 0) {
+				json rtvalue;
+				rtvalue["error"] = ErrorCodes::Error_Json;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_DOWN_RSP);
+				return;
+			}
 
-			auto seq = root["seq"].get<int>();
-			auto name = root["name"].get<std::string>();
-			auto total_size_str = root["total_size"].get<std::string>();
-			auto trans_size_str = root["trans_size"].get<std::string>();
-			auto file_path = ConfigMgr::Inst().GetFileOutPath();
-			auto message_id = root["message_id"].get<long long>(); //message_id 按 64 位解析（协议为数字）
-			auto sender = root["sender_id"].get<int>();
-			auto receiver = root["receiver_id"].get<int>();
 			auto uid = session->GetUserId();
-			
-			auto callback = [=](const json& result) {
-				// 在异步任务完成后调用
-				json rtvalue = result;
-				rtvalue["error"] = ErrorCodes::Success;
-				rtvalue["name"] = name;
-				rtvalue["sender_id"] = sender;
-				rtvalue["receiver_id"] = receiver;
-				std::string return_str = rtvalue.dump(4);
-				session->Send(return_str, ID_IMG_CHAT_DOWN_RSP);
+			auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(static_cast<long long>(message_id));
+
+			auto respond_error = [session, message_id](int error) {
+				json rtvalue;
+				rtvalue["error"] = error;
+				rtvalue["message_id"] = std::to_string(message_id);
+				session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_DOWN_RSP);
 			};
 
-			// 使用 std::hash 对字符串进行哈希
-			std::hash<std::string> hash_fn;
-			size_t hash_value = hash_fn(name); // 生成哈希值
-			int index = hash_value % DOWN_LOAD_WORKER_COUNT;
-			std::cout << "Hash value: " << hash_value << std::endl;
+			if (chat_msg == nullptr) {
+				respond_error(ErrorCodes::MsgIdErr);
+				return;
+			}
+			if (uid != chat_msg->sender_id && uid != chat_msg->recv_id) {
+				respond_error(ErrorCodes::ResourceForbidden);
+				return;
+			}
+			if (chat_msg->resource_status != static_cast<int>(ResourceStatus::Ready)) {
+				respond_error(ErrorCodes::ResourceNotReady);
+				return;
+			}
 
+			boost::system::error_code fs_ec;
+			const auto file_path = ResourceFilePath(chat_msg->sender_id, static_cast<long long>(message_id));
+			if (!boost::filesystem::exists(file_path, fs_ec) || fs_ec) {
+				respond_error(ErrorCodes::FileNotExists);
+				return;
+			}
 
-			auto sender_str = std::to_string(sender);
-			auto file_path_str = (file_path / sender_str / name).string();
+			auto callback = [=](const json& result) {
+				std::string return_str = result.dump(4);
+				session->Send(return_str, ID_RESOURCE_CHUNK_DOWN_RSP);
+			};
 
-		    auto down_load_task = std::make_shared<DownloadTask>(session, uid, name, seq, file_path_str, callback);
-
-			FileSystem::GetInstance()->PostDownloadTaskToQue(down_load_task,index);
+			//下载只读最终文件（rename 后与写天然互斥）；固定路由保持同一 message_id 串行
+			int index = ResourceWorkerIndex(static_cast<long long>(message_id), DOWN_LOAD_WORKER_COUNT);
+			FileSystem::GetInstance()->PostChunkDownToQue(
+				std::make_shared<ResourceChunkDownTask>(session, static_cast<long long>(message_id),
+					static_cast<long long>(offset), file_path.string(), chat_msg->content_size, callback),
+				index
+			);
 	};
 
 	_fun_callbacks[ID_RESOURCE_LOGIN_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,

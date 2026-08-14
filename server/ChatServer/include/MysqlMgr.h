@@ -48,6 +48,8 @@ public:
 		int64_t& nextLastId);
 	/// 创建私聊会话
 	bool CreatePrivateChat(int user1_id, int user2_id, std::int64_t &thread_id);
+	/// 取私聊会话两成员（1035 资源消息会话归属校验用）；会话不存在返回 false
+	bool GetPrivateChatMembers(std::int64_t thread_id, int& user1, int& user2);
 	/// 分页加载历史聊天消息
 	std::shared_ptr<PageResult> LoadChatMsg(std::int64_t threadId, std::int64_t lastId, int pageSize);
 	/// 插入单条聊天消息（幂等），返回持久化结果；成功/重复时回写 canonical message_id
@@ -60,6 +62,8 @@ public:
 	/// 按 recv_uid+ids 批量取回消息（防越权）
 	std::vector<std::shared_ptr<ChatMessage>> GetMessagesByIds(int recv_uid,
 		const std::vector<std::int64_t>& ids);
+	/// 按 message_id 取单条消息（服务间 gRPC 通知回读用）；不存在返回 nullptr
+	std::shared_ptr<ChatMessage> GetChatMsgById(std::int64_t message_id);
 	/// 将指定接收者的一批消息标记为已投递（ACK，带 recv_id 防越权，幂等）
 	bool MarkMessagesDelivered(int recv_uid, const std::vector<std::int64_t>& ids);
 

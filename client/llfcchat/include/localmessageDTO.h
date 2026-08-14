@@ -13,10 +13,13 @@ struct LocalMessageDTO {
     qint64 thread_id = 0;
     qint64 sender_id = 0;
     qint64 receiver_id = 0;
-    int message_type = 0;           //0 文本 1 图片（对齐 ChatMsgType）
-    QString content;                //文本内容 / 图片唯一名
-    QString local_path;             //图片本地路径（发送端）
+    int message_type = 0;           //0 文本 1 图片 3 文件（对齐 ChatMsgType）
+    QString content;                //文本内容 / 资源原始文件名（仅展示）
+    QString local_path;             //资源本地路径（发送端源文件/接收端缓存）
     QString content_size;           //十进制字符串，维持线协议现状
+    int resource_status = 0;        //资源生命周期（0 待上传/1 就绪/2 失败过期；文本为 0）
+    QString content_hash;           //整文件 SHA-256（资源消息）
+    QString mime_type;              //资源 MIME 类型（资源消息）
     QString send_state;             //sending/sent/failed
     QString created_at;             //chat_time 字符串
 };
@@ -36,11 +39,11 @@ struct LocalConversationDTO {
 //outbox 可靠重试条目
 struct OutboxEntryDTO {
     qint64 operation_id = 0;        //outbox 表自增主键
-    QString operation_type;         //SEND_TEXT/SEND_IMAGE/DELIVERY_ACK
+    QString operation_type;         //SEND_TEXT/SEND_RESOURCE/DELIVERY_ACK
     QString dedup_key;              //去重键（唯一约束）
     QString request_id;             //关联 client_message_id（ACK 条目为空）
     QString payload;                //原始请求 JSON（ACK 条目为 {"message_id":"..."}）
-    QString stage;                  //图片阶段：metadata/uploading，其余为空
+    QString stage;                  //资源阶段：metadata/uploading，其余为空
     int retry_count = 0;
     qint64 next_retry_at = 0;       //下次重试时刻（epoch ms）
 };

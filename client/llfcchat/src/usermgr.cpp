@@ -385,6 +385,16 @@ std::shared_ptr<MsgInfo> UserMgr::GetTransFileByName(QString name) {
     return *iter;
 }
 
+std::shared_ptr<MsgInfo> UserMgr::GetTransFileByMsgId(qint64 message_id) {
+    std::lock_guard<std::mutex> mtx(_trans_mtx);
+    for (auto iter = _name_to_msg_info.begin(); iter != _name_to_msg_info.end(); ++iter) {
+        if (iter.value() && iter.value()->_msg_id == message_id) {
+            return iter.value();
+        }
+    }
+    return nullptr;
+}
+
 void UserMgr::RmvTransFileByName(QString name) {
     std::lock_guard<std::mutex> mtx(_trans_mtx);
     auto iter = _name_to_msg_info.find(name);

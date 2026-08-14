@@ -66,10 +66,23 @@ struct ChatThreadInfo {
 };
 
 /**
+ * @brief 资源生命周期状态枚举
+ *
+ * 与数据库 resource_status 列对应，图片/文件统一资源消息的单一真值。
+ * status 的 3=UN_UPLOAD 语义已废弃：资源是否可下载只看本枚举，
+ * status 收紧为纯阅读态（0 未读/1 发送失败/2 已读）。
+ */
+enum class ResourceStatus {
+	Uploading = 0, ///< 待上传（1035 创建后，分片未收齐）
+	Ready     = 1, ///< 就绪（分片收齐、整文件 SHA-256 校验通过、已进同步流）
+	Expired   = 2  ///< 失败/过期（7 天清理标记或整文件校验失败终态）
+};
+
+/**
  * @brief 消息投递状态枚举
  *
  * 与数据库 delivery_status 列对应，表示应用层“至少一次投递”的进展。
- * 与展示状态(status)分离：status 描述阅读/上传状态，delivery_status 描述是否已被接收方 ACK。
+ * 与展示状态(status)分离：status 描述阅读状态，delivery_status 描述是否已被接收方 ACK。
  */
 enum class DeliveryStatus {
 	Pending = 0, ///< 待投递（新写入默认值，进入离线 pending 集合）
@@ -89,9 +102,12 @@ struct ChatMessage {
 	std::string unique_id;  ///< 消息唯一标识（客户端生成，用于去重，历史/系统消息为空串）
 	std::string content;    ///< 消息内容（文本或图片URL）
 	std::string chat_time;  ///< 消息发送时间
-	int status;             ///< 消息状态（参见MsgStatus枚举）
+	int status;             ///< 消息状态（纯阅读态：0未读/1发送失败/2已读；3已废弃）
 	int msg_type;           ///< 消息类型（参见ChatMsgType枚举）
-	std::uint64_t content_size{0};                ///< 内容字节大小（文本为0，图片为字节数）
+	ResourceStatus resource_status{ResourceStatus::Uploading}; ///< 资源生命周期（仅 msg_type 1/3 有意义）
+	std::uint64_t content_size{0};                ///< 内容字节大小（文本为0，资源为字节数）
+	std::string content_hash;                     ///< 整文件 SHA-256 小写 hex（资源消息必填，文本为空）
+	std::string mime_type;                         ///< 资源 MIME 类型（如 image/png，仅展示用）
 	DeliveryStatus delivery_status{DeliveryStatus::Pending}; ///< 应用层投递状态（参见DeliveryStatus枚举）
 };
 

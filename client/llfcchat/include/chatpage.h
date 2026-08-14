@@ -27,6 +27,14 @@ public:
     void LoadHeadIcon(QString avatarPath, QLabel* icon_label, QString file_name, QString req_type);
     void AppendOtherMsg(std::shared_ptr<ChatDataBase> msg);
     void DownloadFileFinished(std::shared_ptr<MsgInfo> msg_info, QString file_path);
+    //下载失败/过期终态：气泡置为失败/已过期
+    void DownloadFileFailed(std::shared_ptr<MsgInfo> msg_info);
+
+private:
+    //按消息类型创建资源气泡（图片 PictureBubble / 文件 FileBubble）并接好
+    //暂停/恢复/下载信号；返回 nullptr 表示类型不支持
+    QWidget* makeResourceBubble(ChatMsgType type, const std::shared_ptr<MsgInfo>& info,
+        ChatRole role);
 protected:
     void paintEvent(QPaintEvent *event);
 

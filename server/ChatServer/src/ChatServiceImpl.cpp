@@ -3,6 +3,7 @@
 #include "CSession.h"
 #include "LogicSystem.h"
 #include <nlohmann/json.hpp>
+#include <iostream>
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
 #include "utils.h"
@@ -272,9 +273,9 @@ void ChatServiceImpl::RegisterServer(std::shared_ptr<CServer> pServer)
 	_p_server = pServer;
 }
 
-Status ChatServiceImpl::NotifyChatImgMsg(::grpc::ServerContext* context, const ::message::NotifyChatImgReq* request, ::message::NotifyChatImgRsp* response)
+Status ChatServiceImpl::NotifyChatResourceMsg(::grpc::ServerContext* context, const ::message::NotifyResourceReq* request, ::message::NotifyResourceRsp* response)
 {
-	//计划1.5：面向 recipient 的写入必须纳入其 uid 分片，gRPC 线程只复制数据 + 投递闭包
+	//面向 recipient 的写入必须纳入其 uid 分片，gRPC 线程只复制数据 + 投递闭包
 	int err = ErrorCodes::Success;
 	Defer defer([request, response, &err]() {
 		//设置具体的回包信息
@@ -292,15 +293,23 @@ Status ChatServiceImpl::NotifyChatImgMsg(::grpc::ServerContext* context, const :
 		return Status::OK;
 	}
 
-	//复制 proto 请求为值（闭包可能晚于 gRPC 调用执行，不可持有 request 指针），闭包在
-	//recipient shard 上重新查 session 后通知图片消息；队列停止则返回 SERVER_BUSY
-	::message::NotifyChatImgReq req_copy = *request;
+	//复制定位字段为值（闭包可能晚于 gRPC 调用执行，不可持有 request 指针），闭包在
+	//recipient shard 上重新查 session、按 message_id 回读 DB 真值组统一 envelope 后
+	//下发 1039；队列停止则返回 SERVER_BUSY
+	const std::int64_t message_id = request->message_id();
 	if (!LogicSystem::GetInstance()->PostToUser(uid,
-		[uid, req_copy]() {
+		[uid, message_id]() {
 			auto session = UserMgr::GetInstance()->GetSession(uid);
-			if (session) {
-				session->NotifyChatImgRecv(&req_copy);
+			if (!session) {
+				return;
 			}
+			auto msg = MysqlMgr::GetInstance()->GetChatMsgById(message_id);
+			if (!msg) {
+				std::cerr << "NotifyChatResourceMsg: message " << message_id
+					<< " missing in DB, skip live notify" << std::endl;
+				return;
+			}
+			session->NotifyResourceRecv(msg);
 		})) {
 		err = ErrorCodes::SERVER_BUSY;
 		return Status::OK;

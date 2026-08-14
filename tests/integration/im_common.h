@@ -61,11 +61,19 @@ inline constexpr short ID_CHAT_LOGIN_RSP          = 1006;
 inline constexpr short ID_TEXT_CHAT_MSG_REQ       = 1017;
 inline constexpr short ID_TEXT_CHAT_MSG_RSP       = 1018;
 inline constexpr short ID_NOTIFY_TEXT_CHAT_MSG    = 1019;
-inline constexpr short ID_IMG_CHAT_MSG_REQ        = 1035;
-inline constexpr short ID_IMG_CHAT_MSG_RSP        = 1036;
-inline constexpr short ID_IMG_CHAT_UPLOAD_REQ     = 1037;
-inline constexpr short ID_IMG_CHAT_UPLOAD_RSP     = 1038;
-inline constexpr short ID_NOTIFY_IMG_CHAT_MSG     = 1039;
+// 资源消息（图片/文件统一传输）：创建-分片上传-进度查询-下载信息-分片下载
+inline constexpr short ID_CREATE_RESOURCE_MSG_REQ   = 1035;
+inline constexpr short ID_CREATE_RESOURCE_MSG_RSP   = 1036;
+inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_REQ = 1037;
+inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_RSP = 1038;
+inline constexpr short ID_NOTIFY_RESOURCE_MSG       = 1039;
+inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_REQ = 1041;
+inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_RSP = 1042;
+// 1043/1044 续传分支已废弃：首传/续传统一 1037+1041
+inline constexpr short ID_RESOURCE_DOWN_INFO_REQ    = 1045;
+inline constexpr short ID_RESOURCE_DOWN_INFO_RSP    = 1046;
+inline constexpr short ID_RESOURCE_CHUNK_DOWN_REQ   = 1047;
+inline constexpr short ID_RESOURCE_CHUNK_DOWN_RSP   = 1048;
 inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = 1049;
 inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = 1050;
 // 1051/1052 数值不变，语义由离线拉取改为 user_message_sync 增量同步。
@@ -75,15 +83,16 @@ inline constexpr short ID_SYNC_MESSAGE_RSP        = 1052;
 // all subsequent file frames are authorized against the bound session.
 inline constexpr short ID_RESOURCE_LOGIN_REQ       = 1053;
 inline constexpr short ID_RESOURCE_LOGIN_RSP       = 1054;
-// A representative Resource business frame (rejected pre-auth).
-inline constexpr short ID_FILE_INFO_SYNC_REQ       = 1041;
-inline constexpr short ID_FILE_INFO_SYNC_RSP       = 1042;
 
-// ---- MsgStatus / ChatMsgType (mirror server const.h / data.h) --------------
+// ---- MsgStatus / ChatMsgType / ResourceStatus (mirror const.h / data.h) ----
 inline constexpr int MSG_STATUS_UN_READ   = 0;
-inline constexpr int MSG_STATUS_UN_UPLOAD = 3;
+// 原 3=UN_UPLOAD 已废弃：资源生命周期读 resource_status 列
 inline constexpr int MSG_TYPE_TEXT        = 0;
 inline constexpr int MSG_TYPE_PIC         = 1;
+inline constexpr int MSG_TYPE_FILE        = 3;
+inline constexpr int RESOURCE_UPLOADING   = 0;   // 待上传
+inline constexpr int RESOURCE_READY       = 1;   // 就绪可下载
+inline constexpr int RESOURCE_EXPIRED     = 2;   // 失败/过期终态
 
 // ---- Cross-server test proxy port -----------------------------------------
 // The harness places a TCP proxy on this port between chatserver1 and
@@ -100,6 +109,17 @@ inline constexpr int ERR_RECIPIENT_OFFLINE   = 1015;
 inline constexpr int ERR_SERVER_BUSY         = 1016;
 inline constexpr int ERR_MESSAGE_CONFLICT    = 1017;
 inline constexpr int ERR_NO_AVAILABLE_CHAT_SERVER = 1018;
+inline constexpr int ERR_RESOURCE_INVALID    = 1019;  // ChatServer：资源元数据非法
+inline constexpr int ERR_RESOURCE_SIZE_EXCEEDED = 1020; // ChatServer：超类型上限
+// ResourceServer 侧（同一数值段，不同语义表）
+inline constexpr int ERR_RS_FILE_NOT_EXISTS  = 1012;
+inline constexpr int ERR_RS_OFFSET_INVALID   = 1018;  // 偏移超前（响应带 server_offset）
+inline constexpr int ERR_RS_MSG_ID_ERR       = 1022;
+inline constexpr int ERR_RS_HASH_MISMATCH    = 1023;  // 分片/整文件 SHA-256 不符
+inline constexpr int ERR_RS_SIZE_EXCEEDED    = 1024;
+inline constexpr int ERR_RS_NOT_READY        = 1025;  // resource_status != Ready
+inline constexpr int ERR_RS_FORBIDDEN        = 1026;  // 非收发双方
+inline constexpr int ERR_RS_STATE_INVALID    = 1027;  // 已过期/终态
 
 // ---- Process-wide failure counter ------------------------------------------
 inline std::atomic<int> g_failures{0};

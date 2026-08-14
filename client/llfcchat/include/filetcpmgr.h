@@ -23,6 +23,10 @@ private:
 
 };
 
+//ResourceServer 连接管理（驻 File 线程）。
+//头像通道（1031-1034）保持旧 seq+MD5 协议；资源消息通道（1037/1041/1045/1047）
+//统一 offset+SHA-256 协议：上传以 message_id 为主键、按服务端 server_offset 对齐，
+//下载按 offset 逐片拉取并做片/整文件哈希校验后原子落盘。
 class FileTcpMgr : public QObject, public Singleton<FileTcpMgr>,
         public std::enable_shared_from_this<FileTcpMgr>
 {
@@ -33,9 +37,17 @@ public:
     void SendData(ReqId reqId, QByteArray data);
     void CloseConnection();
     void SendDownloadInfo(std::shared_ptr<DownloadInfo> download,QString req_type);
-    void BatchSend(std::shared_ptr<MsgInfo> msg_info, int sender, int receiver);
+    //窗口发送下一批资源分片（1037）：从 MsgInfo 当前确认偏移续读。
+    //只能在 File 线程内调用；跨线程请用 PostBatchSend。
+    void BatchSend(std::shared_ptr<MsgInfo> msg_info);
+    //跨线程入口：投递到 File 线程执行 BatchSend（_cwnd_size 是 File 线程状态）
+    void PostBatchSend(std::shared_ptr<MsgInfo> msg_info);
+    //启动资源下载：1045 查元数据 -> 1047 逐片下载（自动/手动触发统一入口）
+    void StartResourceDownload(std::shared_ptr<MsgInfo> msg_info);
+    //暂停/继续/重试既有资源传输（GUI 信号入口）
     void ContinueUploadFile(QString unique_name);
     void ContinueDownloadFile(QString unique_name);
+    //复制文件到用户资源目录（发送完成后的本地归档）
     void CopyFile(QString src_path, QString dst_path, QString dst_dir);
 private:
     void initHandlers();
@@ -43,6 +55,8 @@ private:
 
     void registerMetaType();
     void handleMsg(ReqId id, int len, QByteArray data);
+    //下载缓存目录：AppData/user/<uid>/cache/<message_id>/（按 message_id 隔离）
+    QString resourceCacheDir(qint64 message_id);
 
     QTcpSocket _socket;
     QString _host;
@@ -71,12 +85,21 @@ signals:
      void sig_connection_closed();
      void sig_reset_label_icon(QString path);
      void sig_update_upload_progress(std::shared_ptr<MsgInfo>);
+     void sig_start_resource_download(std::shared_ptr<MsgInfo>);
      void sig_continue_upload_file(QString unique_name);
      void sig_continue_download_file(QString unique_name);
+     void sig_batch_send(std::shared_ptr<MsgInfo>);
      void sig_update_download_progress(std::shared_ptr<MsgInfo>);
      void sig_download_finish(std::shared_ptr<MsgInfo>,QString file_path);
-     //聊天图片上传收全（1038/1044 完成分支），OutboxDispatcher 据此 confirmImageSent
-     void sig_chat_img_upload_done(QString unique_name);
+     //资源上传收全（1038 resource_status=1），OutboxDispatcher 据此 confirmResourceSent
+     void sig_resource_upload_done(QString unique_name);
+     //资源上传永久失败（1026/1027 等），OutboxDispatcher 据此 markSendFailed
+     void sig_resource_upload_failed(QString unique_name, int error);
+     //资源下载失败/终态（UI 据此把气泡置为失败/已过期）
+     void sig_download_failed(std::shared_ptr<MsgInfo>, int error);
+     //1041/1042 上传进度查询回包（OutboxDispatcher 重启恢复续传用）
+     void sig_upload_progress_rsp(qint64 message_id, int error, qint64 server_offset,
+         int resource_status);
      //3.2 Resource 登录(1054)成功信号
      void sig_resource_login_success();
      //3.2 Resource 登录(1054)失败信号（携带用户可见错误）
@@ -85,6 +108,8 @@ public slots:
     void slot_send_data(ReqId reqId, QByteArray data);
     void slot_tcp_connect(std::shared_ptr<ServerInfo> si);
     void slot_tcp_close();
+    void slot_start_resource_download(std::shared_ptr<MsgInfo> msg_info);
+    void slot_batch_send(std::shared_ptr<MsgInfo> msg_info);
     void slot_continue_upload_file(QString unique_name);
     void slot_continue_download_file(QString unique_name);
 };

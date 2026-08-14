@@ -82,13 +82,14 @@ target_link_libraries(llfc_server_common_mysql PUBLIC
 target_compile_features(llfc_server_common_mysql PUBLIC cxx_std_17)
 llfc_apply_msvc_defaults(llfc_server_common_mysql)
 
-# --- Password-hashing layer: PBKDF2-HMAC-SHA256 via OpenSSL libcrypto --------
-# Only services that store/verify user passwords link this (GateServer,
-# ChatServer, ResourceServer, and the password_hash unit test). Kept out of
+# --- Crypto layer: PBKDF2 password hashing + generic SHA-256 (libcrypto) ------
+# Only services that hash passwords or verify resource integrity link this
+# (GateServer, ChatServer, ResourceServer, and the unit tests). Kept out of
 # llfc_server_common so the base lib stays dependency-lean. find_package is
 # idempotent: llfc_find_server_dependencies() re-finds it for the servers.
 add_library(llfc_server_common_crypto STATIC
   src/PasswordHash.cpp
+  src/Sha256.cpp
 )
 target_include_directories(llfc_server_common_crypto PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/include"

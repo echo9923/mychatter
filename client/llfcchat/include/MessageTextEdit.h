@@ -44,7 +44,8 @@ private:
     bool isImage(QString url);//判断文件是否为图片
     void insertMsgList(QVector<std::shared_ptr<MsgInfo>>& list, MsgType msgtype,
         QString text_or_url, QPixmap preview_pix,
-        QString unique_name, uint64_t total_size, QString md5);
+        QString unique_name, uint64_t total_size, QString content_hash,
+        const QVector<QString>& chunk_hashes);
   
     QStringList getUrl(QString text);
     QPixmap getFileIconPixmap(const QString &url);//获取文件图标及大小信息，并转化成图片

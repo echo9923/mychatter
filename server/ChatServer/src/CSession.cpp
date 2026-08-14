@@ -371,24 +371,30 @@ void CSession::NotifyOffline(int uid) {
 	return;
 }
 
-void CSession::NotifyChatImgRecv(const ::message::NotifyChatImgReq* request) {
-	json  rtvalue;
+void CSession::NotifyResourceRecv(const std::shared_ptr<ChatMessage>& msg) {
+	if (!msg) {
+		return;
+	}
+	//1039 通用资源消息通知：与 1019/1052 同构的统一 envelope
+	//（msg_type/content/hash/mime/resource_status 均取 DB 真值）
+	json rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
-	//统一可映射字段（计划5.5/6.4）：1039 JSON 含 message_id,unique_id="",
-	//thread_id,fromuid,touid,msg_type=PIC,content=file_name,content_size=total_size
-	//十进制字符串。客户端据此构造与文本一致的 envelope。
-	rtvalue["message_id"] = std::to_string(request->message_id());
+	rtvalue["message_id"] = std::to_string(msg->message_id);
 	rtvalue["unique_id"] = "";
-	rtvalue["thread_id"] = std::to_string(request->thread_id());
-	rtvalue["fromuid"] = request->from_uid();
-	rtvalue["touid"] = request->to_uid();
-	rtvalue["msg_type"] = static_cast<int>(ChatMsgType::PIC);
-	rtvalue["content"] = request->file_name();
-	rtvalue["content_size"] = std::to_string(request->total_size());
+	rtvalue["thread_id"] = std::to_string(msg->thread_id);
+	rtvalue["fromuid"] = msg->sender_id;
+	rtvalue["touid"] = msg->recv_id;
+	rtvalue["msg_type"] = msg->msg_type;
+	rtvalue["content"] = msg->content;
+	rtvalue["content_size"] = std::to_string(msg->content_size);
+	rtvalue["chat_time"] = msg->chat_time;
+	rtvalue["status"] = msg->status;
+	rtvalue["resource_status"] = static_cast<int>(msg->resource_status);
+	rtvalue["content_hash"] = msg->content_hash;
+	rtvalue["mime_type"] = msg->mime_type;
 
 	std::string return_str = rtvalue.dump(4);
-	//通知图片聊天信息
-	Send(return_str, ID_NOTIFY_IMG_CHAT_MSG_REQ);
+	Send(return_str, ID_NOTIFY_RESOURCE_MSG_REQ);
 	return;
 }
 

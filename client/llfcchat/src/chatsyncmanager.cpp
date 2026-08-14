@@ -259,6 +259,10 @@ LocalMessageDTO ChatSyncManager::envelopeToDto(const QJsonObject& envelope)
     dto.message_type = envelope["msg_type"].toInt(static_cast<int>(ChatMsgType::TEXT));
     dto.content = envelope["content"].toString();
     dto.content_size = envelope["content_size"].toString();
+    //资源消息三件套（图片/文件：状态/整文件哈希/MIME）
+    dto.resource_status = envelope["resource_status"].toInt(RESOURCE_READY);
+    dto.content_hash = envelope["content_hash"].toString();
+    dto.mime_type = envelope["mime_type"].toString();
     dto.created_at = envelope["chat_time"].toString();
     dto.send_state = SEND_STATE_SENT;
     return dto;

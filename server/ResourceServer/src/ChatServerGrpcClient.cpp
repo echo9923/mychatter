@@ -15,8 +15,8 @@
 using grpc::ClientContext;
 using grpc::Status;
 using message::ChatService;
-using message::NotifyChatImgReq;
-using message::NotifyChatImgRsp;
+using message::NotifyResourceReq;
+using message::NotifyResourceRsp;
 
 namespace {
 /// 从 [Delivery] 读取整数配置；非法/缺失时回退 fallback（与 ChatServer 同一模式，计划4.2/5.7）
@@ -95,11 +95,12 @@ std::shared_ptr<Channel> ChatServerGrpcClient::ResolveChannel(
 	return channel;
 }
 
-NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(long long message_id, std::string chatserver)
+NotifyResult ChatServerGrpcClient::NotifyChatResourceMsg(long long message_id,
+	long long thread_id, int from_uid, int to_uid, std::string chatserver)
 {
 	NotifyResult result{ grpc::StatusCode::OK, ErrorCodes::Success };
 
-	//配置：每次尝试 deadline、最多尝试次数、退避基数（计划5.7/4.2）
+	//配置：每次尝试 deadline、最多尝试次数、退避基数
 	int deadline_ms = ReadDeliveryInt("RpcDeadlineMs", 3000);
 	if (deadline_ms < 1) deadline_ms = 3000;
 	int max_attempts = ReadDeliveryInt("RpcMaxAttempts", 3);
@@ -109,57 +110,33 @@ NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(long long message_id, std::s
 
 	auto channel = ResolveChannel(chatserver);
 	if (!channel) {
-		//未知 server：配置/路由缺失，参数类错误，立即停止不重试（计划5.7）
+		//未知 server：配置/路由缺失，参数类错误，立即停止不重试
 		result.grpc_code = grpc::StatusCode::NOT_FOUND;
 		result.app_error = ErrorCodes::RPCFailed;
 		return result;
 	}
 
-	//构造请求（消息元数据 + 文件大小），与重试无关，构建一次
-	NotifyChatImgReq request;
+	//只传定位字段：ChatServer 按 message_id 回读 DB 组统一 envelope，
+	//避免展示字段在 gRPC 层与 DB 真值分叉
+	NotifyResourceReq request;
 	request.set_message_id(message_id);
-	auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(message_id);
-	if (chat_msg == nullptr) {
-		//消息不存在：参数类错误，立即停止不重试
-		result.grpc_code = grpc::StatusCode::NOT_FOUND;
-		result.app_error = ErrorCodes::MsgIdErr;
-		return result;
-	}
-	request.set_file_name(chat_msg->content);
-	request.set_from_uid(chat_msg->sender_id);
-	request.set_to_uid(chat_msg->recv_id);
-	request.set_thread_id(chat_msg->thread_id);
-	// 资源文件路径
-	auto file_dir = ConfigMgr::Inst().GetFileOutPath();
-	//该消息是接收方客户端发送过来的,服务器将资源存储在发送方的文件夹中
-	auto uid_str = std::to_string(chat_msg->sender_id);
-	auto file_path = (file_dir / uid_str / chat_msg->content);
-	boost::uintmax_t file_size = 0;
-	boost::system::error_code ec;
-	file_size = boost::filesystem::file_size(file_path, ec);
-	if (ec) {
-		//文件不存在/不可读：参数类错误，立即停止不重试（不激活对端推送）
-		std::cerr << "NotifyChatImgMsg file_size failed for " << file_path.string()
-		          << ": " << ec.message() << std::endl;
-		result.grpc_code = grpc::StatusCode::NOT_FOUND;
-		result.app_error = ErrorCodes::FileNotExists;
-		return result;
-	}
-	request.set_total_size(file_size);
+	request.set_thread_id(thread_id);
+	request.set_from_uid(from_uid);
+	request.set_to_uid(to_uid);
 
 	for (int attempt = 1; attempt <= max_attempts; ++attempt) {
-		//每次尝试新的 stub + ClientContext，deadline 固定 RpcDeadlineMs（计划5.7）
+		//每次尝试新的 stub + ClientContext，deadline 固定 RpcDeadlineMs
 		auto stub = ChatService::NewStub(channel);
 		ClientContext context;
 		context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(deadline_ms));
 
-		NotifyChatImgRsp reply;
-		Status status = stub->NotifyChatImgMsg(&context, request, &reply);
+		NotifyResourceRsp reply;
+		Status status = stub->NotifyChatResourceMsg(&context, request, &reply);
 
 		if (status.ok()) {
 			result.grpc_code = grpc::StatusCode::OK;
 			result.app_error = reply.error();
-			//仅对端 SERVER_BUSY(1016) 重试；Success/RECIPIENT_OFFLINE(1015)/未知应用错误立即停止（计划5.7）
+			//仅对端 SERVER_BUSY(1016) 重试；Success/RECIPIENT_OFFLINE(1015)/未知应用错误立即停止
 			if (reply.error() == kAppServerBusy && attempt < max_attempts) {
 				//退避：RpcBackoffMs、2×RpcBackoffMs（100/200ms）；位移限幅防溢出
 				int shift = attempt - 1;
@@ -170,7 +147,7 @@ NotifyResult ChatServerGrpcClient::NotifyChatImgMsg(long long message_id, std::s
 			return result;
 		}
 
-		//transport 失败：记录后判断是否重试（计划5.7）
+		//transport 失败：记录后判断是否重试
 		result.grpc_code = status.error_code();
 		result.app_error = ErrorCodes::RPCFailed;
 		bool retryable = (status.error_code() == grpc::StatusCode::UNAVAILABLE ||

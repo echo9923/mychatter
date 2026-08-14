@@ -10,6 +10,7 @@
 #include <memory>
 #include "const.h"
 #include "MsgNode.h"
+#include "data.h"
 #include "chat.grpc.pb.h"
 #include "chat.pb.h"
 #include <grpcpp/grpcpp.h>
@@ -20,7 +21,6 @@ namespace beast = boost::beast;         // from <boost/beast.hpp>
 namespace http = beast::http;           // from <boost/beast/http.hpp>
 namespace net = boost::asio;            // from <boost/asio.hpp>
 using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
-using message::NotifyChatImgReq;
 
 class CServer;
 class LogicSystem;
@@ -138,7 +138,7 @@ public:
 	 * @brief 通知客户端接收图片聊天消息（由gRPC服务层调用）
 	 * @param request 图片聊天通知请求
 	 */
-	void NotifyChatImgRecv(const ::message::NotifyChatImgReq* request);
+	void NotifyResourceRecv(const std::shared_ptr<ChatMessage>& msg);
 
 	/**
 	 * @brief 判断心跳是否已超时
