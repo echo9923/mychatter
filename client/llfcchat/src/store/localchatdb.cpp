@@ -103,11 +103,6 @@ bool LocalChatDb::initSchema()
             }
         }
     }
-    //一次性作废旧协议的 SEND_IMAGE 条目（三端同批发布，旧 stage 语义不复存在）
-    if (!query.exec("DELETE FROM outbox WHERE operation_type = 'SEND_IMAGE'")) {
-        qWarning() << "[LocalChatDb] purge legacy outbox failed:" << query.lastError().text();
-        return false;
-    }
     if (!query.exec(
         "CREATE INDEX IF NOT EXISTS idx_messages_thread"
         " ON messages(thread_id, server_message_id)")) {
@@ -138,6 +133,11 @@ bool LocalChatDb::initSchema()
         " retry_count INTEGER NOT NULL DEFAULT 0,"
         " next_retry_at INTEGER NOT NULL DEFAULT 0)")) {
         qWarning() << "[LocalChatDb] create outbox failed:" << query.lastError().text();
+        return false;
+    }
+    //一次性作废旧协议的 SEND_IMAGE 条目（三端同批发布，旧 stage 语义不复存在）
+    if (!query.exec("DELETE FROM outbox WHERE operation_type = 'SEND_IMAGE'")) {
+        qWarning() << "[LocalChatDb] purge legacy outbox failed:" << query.lastError().text();
         return false;
     }
     if (!query.exec(

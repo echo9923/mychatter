@@ -78,7 +78,7 @@ enum ReqId{
     ID_RESOURCE_DOWN_INFO_REQ = 1045,      //查询资源下载信息请求
     ID_RESOURCE_DOWN_INFO_RSP = 1046,      //查询资源下载信息回复
     ID_RESOURCE_CHUNK_DOWN_REQ = 1047,     //按偏移量下载资源分片请求
-    ID_RESOURCE_CHUNK_DOWN_RSP = 1048      //按偏移量下载资源分片回复
+    ID_RESOURCE_CHUNK_DOWN_RSP = 1048,     //按偏移量下载资源分片回复
     ID_CHAT_DELIVERY_ACK_REQ      =  1049,    //聊天消息投递ACK请求
     ID_CHAT_DELIVERY_ACK_RSP      =  1050,    //聊天消息投递ACK回复
     ID_SYNC_MESSAGE_REQ           =  1051,    //增量同步消息请求

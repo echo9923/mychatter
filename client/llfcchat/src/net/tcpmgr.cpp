@@ -597,7 +597,7 @@ void TcpMgr::initHandlers()
         QJsonObject jsonObj = jsonDoc.object();
 
         if (!jsonObj.contains("error")) {
-            qDebug() << "Notify Chat Msg Failed, err is Json Parse Err" << err;
+            qDebug() << "Notify Chat Msg Failed, err is Json Parse Err";
             return;
         }
 
@@ -630,7 +630,7 @@ void TcpMgr::initHandlers()
         QJsonObject jsonObj = jsonDoc.object();
 
         if (!jsonObj.contains("error")) {
-            qDebug() << "Heart Beat Msg Failed, err is Json Parse Err" << err;
+            qDebug() << "Heart Beat Msg Failed, err is Json Parse Err";
             return;
         }
 

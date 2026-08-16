@@ -876,7 +876,7 @@ void FileTcpMgr::BatchSend(std::shared_ptr<MsgInfo> msg_info) {
         sendObj["message_id"] = QString::number(msg_info->_msg_id);
         sendObj["offset"] = QString::number((msg_info->_seq - 1) * MAX_FILE_LEN);
         sendObj["chunk_sha256"] = msg_info->_chunk_hashes[chunk_index];
-        sendObj["data"] = buffer.toBase64();
+        sendObj["data"] = QString::fromLatin1(buffer.toBase64());
 
         b_last = (msg_info->_seq >= msg_info->_max_seq);
         msg_info->_seq++;
@@ -953,3 +953,16 @@ void FileTcpMgr::SendDownloadInfo(std::shared_ptr<DownloadInfo> download, QStrin
 
 
 FileTcpThread::FileTcpThread()
+{
+    _file_tcp_thread = new QThread();
+    FileTcpMgr::GetInstance()->moveToThread(_file_tcp_thread);
+    QObject::connect(_file_tcp_thread, &QThread::finished, _file_tcp_thread, &QObject::deleteLater);
+
+    _file_tcp_thread->start();
+}
+
+FileTcpThread::~FileTcpThread()
+{
+    _file_tcp_thread->quit();
+    _file_tcp_thread->wait();
+}
