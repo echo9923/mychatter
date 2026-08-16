@@ -1,12 +1,28 @@
 #include "CServer.h"
 #include <iostream>
 #include <ctime>
+#include <cstdlib>
 #include "AsioIOServicePool.h"
 #include "UserMgr.h"
 #include "RedisMgr.h"
+#include "ConfigMgr.h"
+
+namespace {
+//心跳扫描间隔可配置（[Heartbeat] SweepIntervalSeconds），缺省 60 秒
+int HeartbeatSweepSeconds() {
+	auto sweep_str = ConfigMgr::Inst()["Heartbeat"]["SweepIntervalSeconds"];
+	if (!sweep_str.empty()) {
+		int parsed = atoi(sweep_str.c_str());
+		if (parsed > 0) {
+			return parsed;
+		}
+	}
+	return 60;
+}
+} // namespace
 
 CServer::CServer(boost::asio::io_context& io_context, short port, std::shared_ptr<AsioIOServicePool> pool):_io_context(io_context), _port(port),
-_acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _timer(_io_context, std::chrono::seconds(60)), _pool(pool)
+_acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _timer(_io_context, std::chrono::seconds(HeartbeatSweepSeconds())), _pool(pool)
 {
 	cout << "Server start success, listen on port : " << _port << endl;
 
