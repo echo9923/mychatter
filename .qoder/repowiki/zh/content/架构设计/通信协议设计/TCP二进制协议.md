@@ -39,7 +39,7 @@
 - 客户端（Qt）负责TCP连接、粘包处理、消息编解码、事件分发与UI交互
 - 聊天服务器（C++/Asio）负责会话管理、消息路由、心跳检测与离线通知
 - 资源服务器（C++/Asio）负责大文件分片上传下载、续传与进度同步
-- 全局常量与枚举定义消息类型、错误码、传输状态等
+- 全局常量与枚举定义消息ID、错误码、传输状态等
 
 ```mermaid
 graph TB
@@ -51,11 +51,11 @@ USERDATA["数据模型<br/>UserInfo/ChatData等"]
 end
 subgraph "聊天服务器"
 CSESSION["CSession<br/>异步读写/心跳/队列"]
-CONST_CHAT["const.h<br/>HEAD_* / MSG_TYPES"]
+CONST_CHAT["const.h<br/>HEAD_* / MSG_IDS"]
 MSGNODE["MsgNode<br/>收发节点封装"]
 end
 subgraph "资源服务器"
-RCONST["const.h<br/>HEAD_* / MSG_TYPES"]
+RCONST["const.h<br/>HEAD_* / MSG_IDS"]
 end
 UI --> TCPMGR
 TCPMGR --> GLOBAL
@@ -87,12 +87,12 @@ CSESSION --> |"文件传输帧"| RCONST
 ## 核心组件
 - 客户端TcpMgr
   - 负责QTcpSocket生命周期、readyRead粘包解析、bytesWritten分段发送、发送队列与pending标志
-  - 维护_message_type/_message_len用于解析头部，_buffer作为接收缓冲
+  - 维护_message_id/_message_len用于解析头部，_buffer作为接收缓冲
 - 服务端CSession
   - 基于Asio的异步读头/体、写队列、心跳更新与过期检测、异常会话清理
   - 使用RecvNode/SendNode封装消息体与头部信息
 - 全局常量与枚举
-  - ReqId定义所有业务消息类型；ErrorCodes统一错误码；传输状态与消息类型枚举
+  - ReqId定义所有业务消息ID；ErrorCodes统一错误码；传输状态与消息类型枚举
 
 **章节来源**
 - [tcpmgr.h:22-87](file://client/llfcchat/include/tcpmgr.h#L22-L87)
@@ -137,7 +137,7 @@ Client->>Server : "断开连接"
 ### 客户端TcpMgr：粘包/拆包与发送队列
 - 接收流程
   - readyRead将所有可读数据追加到_buffer
-  - 循环解析：先读取固定长度的头部（消息类型+长度），再根据长度读取消息体
+  - 循环解析：先读取固定长度的头部（消息ID+长度），再根据长度读取消息体
   - 若头部或体不完整，设置_b_recv_pending并继续等待
 - 发送流程
   - bytesWritten回调中累计已发送字节数，未发完则继续write
@@ -148,7 +148,7 @@ Client->>Server : "断开连接"
 flowchart TD
 Start(["进入readyRead"]) --> CheckHead["缓冲区是否足够解析头部?"]
 CheckHead --> |否| WaitMore["等待更多数据"]
-CheckHead --> |是| ParseHead["解析消息类型与长度"]
+CheckHead --> |是| ParseHead["解析消息ID与长度"]
 ParseHead --> CheckBody["缓冲区剩余长度>=消息体长度?"]
 CheckBody --> |否| SetPending["设置接收挂起标志"]
 SetPending --> WaitMore
@@ -167,7 +167,7 @@ Loop --> End
 
 ### 服务端CSession：异步读写、心跳与异常处理
 - 读流程
-  - AsyncReadHead读取固定长度头部，解析msg_type与msg_len（网络字节序转换）
+  - AsyncReadHead读取固定长度头部，解析msg_id与msg_len（网络字节序转换）
   - 校验合法性后分配RecvNode并AsyncReadBody读取完整消息体
   - 将消息投递至逻辑队列，随后继续监听头部
 - 写流程
@@ -183,7 +183,7 @@ classDiagram
 class CSession {
 +GetSocket()
 +Start()
-+Send(msg, msg_type)
++Send(msg, msgid)
 +Close()
 +AsyncReadHead(total_len)
 +AsyncReadBody(total_len)
@@ -202,10 +202,10 @@ class MsgNode {
 +_data
 }
 class RecvNode {
--_msg_type
+-_msg_id
 }
 class SendNode {
--_msg_type
+-_msg_id
 }
 CSession --> MsgNode : "使用"
 CSession --> RecvNode : "接收"
@@ -225,7 +225,7 @@ CSession --> SendNode : "发送"
 - [CSession.cpp:285-333](file://server/ChatServer/src/CSession.cpp#L285-L333)
 
 ### 消息类型标识与错误码
-- 客户端ReqId与服务端MSG_TYPES保持一致，涵盖登录、搜索、好友申请、聊天消息、心跳、文件传输等
+- 客户端ReqId与服务端MSG_IDS保持一致，涵盖登录、搜索、好友申请、聊天消息、心跳、文件传输等
 - ErrorCodes统一错误码，包含SUCCESS、JSON解析失败、网络错误、Token失效等
 
 **章节来源**
@@ -243,7 +243,7 @@ CSession --> SendNode : "发送"
 ## 依赖关系分析
 - 客户端依赖Qt网络库与JSON库，通过TcpMgr统一管理IO与消息分发
 - 服务端依赖Boost.Asio进行高性能异步IO，使用Redis进行会话与分布式锁管理
-- 资源服务器与聊天服务器共享部分消息类型与错误码，但头部长度不同（聊天服务器4字节，资源服务器6字节）
+- 资源服务器与聊天服务器共享部分消息ID与错误码，但头部长度不同（聊天服务器4字节，资源服务器6字节）
 
 ```mermaid
 graph LR
@@ -302,14 +302,14 @@ LLFCChat的TCP二进制协议通过固定长度头部与动态长度消息体实
 ### 聊天服务器消息帧格式
 - 头部总长度：4字节
 - 头部组成：
-  - 消息类型：2字节（网络字节序）
+  - 消息ID：2字节（网络字节序）
   - 消息体长度：2字节（网络字节序）
 - 消息体：JSON字符串（UTF-8）
 
 ```mermaid
 erDiagram
 FRAME_CHAT {
-short msg_type "2字节 网络字节序"
+short msg_id "2字节 网络字节序"
 short body_len "2字节 网络字节序"
 string body "JSON文本"
 }
@@ -322,14 +322,14 @@ string body "JSON文本"
 ### 资源服务器消息帧格式
 - 头部总长度：6字节
 - 头部组成：
-  - 消息类型：2字节（网络字节序）
+  - 消息ID：2字节（网络字节序）
   - 消息体长度：4字节（网络字节序）
 - 消息体：二进制或JSON（依业务而定）
 
 ```mermaid
 erDiagram
 FRAME_RESOURCE {
-short msg_type "2字节 网络字节序"
+short msg_id "2字节 网络字节序"
 int body_len "4字节 网络字节序"
 bytes body "二进制/JSON"
 }
@@ -340,15 +340,15 @@ bytes body "二进制/JSON"
 
 ### 示例数据包说明
 - 登录请求（ID_CHAT_LOGIN）
-  - 头部：msg_type=1005, body_len=JSON长度
+  - 头部：msg_id=1005, body_len=JSON长度
   - 体：{"uid":..., "token":...}
 - 登录响应（ID_CHAT_LOGIN_RSP）
-  - 头部：msg_type=1006, body_len=JSON长度
+  - 头部：msg_id=1006, body_len=JSON长度
   - 体：{"error":0, "uid":..., "name":..., "nick":..., "icon":..., "sex":..., "desc":..., "apply_list":[], "friend_list":[]}
 - 心跳请求（ID_HEART_BEAT_REQ）
-  - 头部：msg_type=1023, body_len=0
+  - 头部：msg_id=1023, body_len=0
 - 心跳响应（ID_HEARTBEAT_RSP）
-  - 头部：msg_type=1024, body_len=0
+  - 头部：msg_id=1024, body_len=0
 
 注意：以上字段与结构来源于客户端处理器与服务端构造逻辑，实际实现以源码为准。
 

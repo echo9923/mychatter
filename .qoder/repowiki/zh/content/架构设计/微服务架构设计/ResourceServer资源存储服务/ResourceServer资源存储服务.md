@@ -98,9 +98,9 @@ FileWorker --> ChatGrpc
 
 ## 架构总览
 ResourceServer 的请求处理流程如下：
-- 客户端通过 TCP 发送带固定头部的消息（msg_type + length）。
+- 客户端通过 TCP 发送带固定头部的消息（msg_id + length）。
 - CSession 解析头部后，将消息投递至 LogicSystem，按 session 哈希选择 LogicWorker。
-- LogicWorker 根据 msg_type 调用对应处理器，可能创建 FileTask/DownloadTask 并投递给 FileSystem。
+- LogicWorker 根据 msg_id 调用对应处理器，可能创建 FileTask/DownloadTask 并投递给 FileSystem。
 - FileSystem 将任务分发给 FileWorker/DownloadWorker 执行，涉及文件写入、数据库更新、Redis 查询与 gRPC 通知。
 
 ```mermaid
@@ -214,7 +214,7 @@ Last --> |否| ReturnOK
 
 ### 逻辑系统 LogicSystem/LogicWorker
 - LogicSystem：维护 LogicWorker 池，提供 PostMsgToQue 分发；维护 MD5 到 FileInfo 的映射，支持文件去重与快速查找。
-- LogicWorker：注册回调函数表，按 msg_type 路由到具体处理器。
+- LogicWorker：注册回调函数表，按 msg_id 路由到具体处理器。
 
 ```mermaid
 classDiagram
@@ -245,7 +245,7 @@ LogicSystem --> LogicWorker : "多实例工作池"
 - [LogicSystem.cpp:1-46](file://server/ResourceServer/src/LogicSystem.cpp#L1-L46)
 
 ### 网络会话 CSession
-- 功能：异步读取头部与载荷，校验长度与 msg_type，构建 RecvNode 并投递到 LogicSystem；发送端维护队列与异步写回调。
+- 功能：异步读取头部与载荷，校验长度与 msg_id，构建 RecvNode 并投递到 LogicSystem；发送端维护队列与异步写回调。
 - 错误处理：读失败或长度不匹配时关闭会话并从服务器清理。
 
 章节来源
@@ -273,7 +273,7 @@ LogicSystem --> LogicWorker : "多实例工作池"
 - LogicSystem 依赖 LogicWorker 与 FileSystem。
 - FileSystem 依赖 FileWorker/DownloadWorker。
 - FileWorker 依赖 MysqlMgr、RedisMgr、ChatServerGrpcClient。
-- const.h 定义错误码、消息类型、工作者数量与限制。
+- const.h 定义错误码、消息ID、工作者数量与限制。
 
 ```mermaid
 graph LR
@@ -321,7 +321,7 @@ FileWorker --> ChatGrpc
 - 典型问题定位：
   - 上传失败：检查目录创建、文件打开与写入返回值；确认 last 标志与分块序列正确。
   - 通知未达：确认 Redis 中接收者 IP 是否存在；检查 gRPC 连接池与通道状态。
-  - 会话异常：查看 CSession 的错误回调与日志，确认长度校验与 msg_type 合法性。
+  - 会话异常：查看 CSession 的错误回调与日志，确认长度校验与 msg_id 合法性。
 - 建议日志与监控：
   - 记录关键步骤（解码、目录创建、文件写入、状态更新、gRPC 调用）耗时与错误码。
   - 统计队列长度、工作者空闲率、错误率与超时比例。
@@ -338,7 +338,7 @@ ResourceServer 以清晰的分层与工作者池模型实现了高并发、可�
 
 ## 附录
 
-### 文件API接口（基于消息类型）
+### 文件API接口（基于消息ID）
 - ID_UPLOAD_FILE_REQ / ID_UPLOAD_FILE_RSP：普通文件上传请求/回复
 - ID_SYNC_FILE_REQ / ID_SYNC_FILE_RSP：文件信息同步请求/回复
 - ID_UPLOAD_HEAD_ICON_REQ / ID_UPLOAD_HEAD_ICON_RSP：头像上传请求/回复
