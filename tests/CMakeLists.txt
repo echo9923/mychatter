@@ -92,12 +92,20 @@ llfc_find_client_dependencies()
 
 add_executable(local_store_tests
   local_store_tests.cpp
-  ../client/llfcchat/src/localchatdb.cpp
-  ../client/llfcchat/src/global.cpp
+  ../client/llfcchat/src/store/localchatdb.cpp
+  ../client/llfcchat/src/protocol/global.cpp
 )
 
 target_include_directories(local_store_tests PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/app"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/dialogs"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/chat"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/contact"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/widgets"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/net"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/store"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/protocol"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/util"
 )
 
 target_link_libraries(local_store_tests PRIVATE

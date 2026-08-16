@@ -147,7 +147,10 @@ private:
     LocalChatWorker _worker;
 };
 
-//仿 TcpThread：启动本地库 worker 线程
+//LocalChatThread：本地库 worker 线程的生命周期管理类（仿 TcpThread）。
+//构造时 new 一个 QThread，把 LocalChatStore 单例里的 LocalChatWorker moveToThread 迁入该线程并
+//start()，此后所有 SQLite 读写都经 queued 信号在 worker 线程串行执行，不阻塞 GUI 线程。
+//析构时 quit()+wait() 同步退出；在 main 中作为栈对象构造，随进程存活。
 class LocalChatThread {
 public:
     LocalChatThread();

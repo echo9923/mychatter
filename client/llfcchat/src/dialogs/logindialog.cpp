@@ -1,68 +1,64 @@
 #include "logindialog.h"
-#include "ui_logindialog.h"
-#include <QDebug>
+#include "filetcpmgr.h"
 #include "httpmgr.h"
+#include "localchatstore.h"
 #include "tcpmgr.h"
+#include "ui_logindialog.h"
 #include "usermgr.h"
-#include <QRegExp>
-#include <QRegularExpression>
+#include <QDebug>
 #include <QPainter>
 #include <QPainterPath>
-#include "filetcpmgr.h"
-#include "localchatstore.h"
+#include <QRegExp>
+#include <QRegularExpression>
 
-LoginDialog::LoginDialog(QWidget *parent) :
-    QDialog(parent),
-    ui(new Ui::LoginDialog)
-{
+LoginDialog::LoginDialog(QWidget *parent) : QDialog(parent),
+                                            ui(new Ui::LoginDialog) {
     ui->setupUi(this);
     connect(ui->reg_btn, &QPushButton::clicked, this, &LoginDialog::switchRegister);
-    ui->forget_label->SetState("normal","hover","","selected","selected_hover","");
+    ui->forget_label->SetState("normal", "hover", "", "selected", "selected_hover", "");
     ui->forget_label->setCursor(Qt::PointingHandCursor);
     connect(ui->forget_label, &ClickedLabel::clicked, this, &LoginDialog::slot_forget_pwd);
     initHttpHandlers();
-    //连接登录回包信号
+    // 连接登录回包信号
     connect(HttpMgr::GetInstance().get(), &HttpMgr::sig_login_mod_finish, this,
             &LoginDialog::slot_login_mod_finish);
-    //连接tcp连接请求的信号和槽函数
+    // 连接tcp连接请求的信号和槽函数
     connect(this, &LoginDialog::sig_connect_tcp, TcpMgr::GetInstance().get(), &TcpMgr::slot_tcp_connect);
-    //连接tcp管理者发出的连接成功信号
+    // 连接tcp管理者发出的连接成功信号
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_con_success, this, &LoginDialog::slot_tcp_con_finish);
-    //连接tcp管理者发出的登陆失败信号
+    // 连接tcp管理者发出的登陆失败信号
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_login_failed, this, &LoginDialog::slot_login_failed);
 
-    //3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource
+    // 3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_connect_resource,
             FileTcpMgr::GetInstance().get(), &FileTcpMgr::slot_tcp_connect);
 
-    //连接资源管理tcp发出的连接成功信号
+    // 连接资源管理tcp发出的连接成功信号
     connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_con_success, this, &LoginDialog::slot_res_con_finish);
-    //3.2 Resource 登录成功后才切 UI
+    // 3.2 Resource 登录成功后才切 UI
     connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_login_success,
             TcpMgr::GetInstance().get(), &TcpMgr::sig_swich_chatdlg);
-    //3.2 Resource 登录失败提示
+    // 3.2 Resource 登录失败提示
     connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_login_failed,
-            this, [this](QString reason){
-        showTip(reason, false);
-        enableBtn(true);
-    });
+            this, [this](QString reason) {
+                showTip(reason, false);
+                enableBtn(true);
+            });
     initHead();
 }
 
-LoginDialog::~LoginDialog()
-{
-    qDebug()<<"destruct LoginDlg";
+LoginDialog::~LoginDialog() {
+    qDebug() << "destruct LoginDlg";
     delete ui;
 }
 
-void LoginDialog::initHead()
-{
+void LoginDialog::initHead() {
     // 加载图片
     QPixmap originalPixmap(":/res/head_1.jpg");
-      // 设置图片自动缩放
-    qDebug()<< originalPixmap.size() << ui->head_label->size();
+    // 设置图片自动缩放
+    qDebug() << originalPixmap.size() << ui->head_label->size();
     originalPixmap = originalPixmap.scaled(ui->head_label->size(),
-            Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                                           Qt::KeepAspectRatio, Qt::SmoothTransformation);
 
     // 创建一个和原始图片相同大小的QPixmap，用于绘制圆角图片
     QPixmap roundedPixmap(originalPixmap.size());
@@ -82,26 +78,24 @@ void LoginDialog::initHead()
 
     // 设置绘制好的圆角图片到QLabel上
     ui->head_label->setPixmap(roundedPixmap);
-
 }
 
-void LoginDialog::initHttpHandlers()
-{
-    //注册获取登录回包逻辑
-    _handlers.insert(ReqId::ID_LOGIN_USER, [this](QJsonObject jsonObj){
+void LoginDialog::initHttpHandlers() {
+    // 注册获取登录回包逻辑
+    _handlers.insert(ReqId::ID_LOGIN_USER, [this](QJsonObject jsonObj) {
         int error = jsonObj["error"].toInt();
-        if(error != ErrorCodes::SUCCESS){
-            showTip(tr("参数错误"),false);
+        if (error != ErrorCodes::SUCCESS) {
+            showTip(tr("参数错误"), false);
             enableBtn(true);
             return;
         }
         auto email = jsonObj["email"].toString();
 
-        //发送信号通知tcpMgr发送长链接
+        // 发送信号通知tcpMgr发送长链接
         _si = std::make_shared<ServerInfo>();
 
         _si->_uid = jsonObj["uid"].toInt();
-        //拿到 uid 后立即打开该账号的本地库（后续秒开/落库都依赖它）
+        // 拿到 uid 后立即打开该账号的本地库（后续秒开/落库都依赖它）
         LocalChatStore::GetInstance()->openUserDb(_si->_uid);
         _si->_chat_host = jsonObj["chathost"].toString();
         _si->_chat_port = jsonObj["chatport"].toString();
@@ -110,24 +104,22 @@ void LoginDialog::initHttpHandlers()
         _si->_res_host = jsonObj["reshost"].toString();
         _si->_res_port = jsonObj["resport"].toString();
 
-
-        qDebug()<< "email is " << email << " uid is " << _si->_uid <<" chat host is "
-                << _si->_chat_host << " chat port is "
-                << _si->_chat_port
-                << " res host is " << _si->_res_host
-                << " res port is " << _si->_res_port;
+        qDebug() << "email is " << email << " uid is " << _si->_uid << " chat host is "
+                 << _si->_chat_host << " chat port is "
+                 << _si->_chat_port
+                 << " res host is " << _si->_res_host
+                 << " res port is " << _si->_res_port;
         emit sig_connect_tcp(_si);
-       // qDebug() << "send thread is " << QThread::currentThread();
-       // emit sig_test();
+        // qDebug() << "send thread is " << QThread::currentThread();
+        // emit sig_test();
     });
 }
 
-void LoginDialog::showTip(QString str, bool b_ok)
-{
-    if(b_ok){
-         ui->err_tip->setProperty("state","normal");
-    }else{
-        ui->err_tip->setProperty("state","err");
+void LoginDialog::showTip(QString str, bool b_ok) {
+    if (b_ok) {
+        ui->err_tip->setProperty("state", "normal");
+    } else {
+        ui->err_tip->setProperty("state", "err");
     }
 
     ui->err_tip->setText(str);
@@ -135,17 +127,16 @@ void LoginDialog::showTip(QString str, bool b_ok)
     repolish(ui->err_tip);
 }
 
-void LoginDialog::slot_forget_pwd()
-{
-    qDebug()<<"slot forget pwd";
+void LoginDialog::slot_forget_pwd() {
+    qDebug() << "slot forget pwd";
     emit switchReset();
 }
 
-bool LoginDialog::checkUserValid(){
+bool LoginDialog::checkUserValid() {
 
     auto email = ui->email_edit->text();
-    if(email.isEmpty()){
-        qDebug() << "email empty " ;
+    if (email.isEmpty()) {
+        qDebug() << "email empty ";
         AddTipErr(TipErr::TIP_EMAIL_ERR, tr("邮箱不能为空"));
         return false;
     }
@@ -153,11 +144,11 @@ bool LoginDialog::checkUserValid(){
     return true;
 }
 
-bool LoginDialog::checkPwdValid(){
+bool LoginDialog::checkPwdValid() {
     auto pwd = ui->pass_edit->text();
-    if(pwd.length() < 6 || pwd.length() > 15){
+    if (pwd.length() < 6 || pwd.length() > 15) {
         qDebug() << "Pass length invalid";
-        //提示长度不准确
+        // 提示长度不准确
         AddTipErr(TipErr::TIP_PWD_ERR, tr("密码长度应为6~15"));
         return false;
     }
@@ -167,10 +158,11 @@ bool LoginDialog::checkPwdValid(){
     // ^[a-zA-Z0-9!@#$%^&*]{6,15}$ 密码长度至少6，可以是字母、数字和特定的特殊字符
     QRegularExpression regExp("^[a-zA-Z0-9!@#$%^&*.]{6,15}$");
     bool match = regExp.match(pwd).hasMatch();
-    if(!match){
-        //提示字符非法
+    if (!match) {
+        // 提示字符非法
         AddTipErr(TipErr::TIP_PWD_ERR, tr("不能包含非法字符且长度为(6~15)"));
-        return false;;
+        return false;
+        ;
     }
 
     DelTipErr(TipErr::TIP_PWD_ERR);
@@ -178,67 +170,62 @@ bool LoginDialog::checkPwdValid(){
     return true;
 }
 
-bool LoginDialog::enableBtn(bool enabled)
-{
+bool LoginDialog::enableBtn(bool enabled) {
     ui->login_btn->setEnabled(enabled);
     ui->reg_btn->setEnabled(enabled);
     return true;
 }
 
-void LoginDialog::on_login_btn_clicked()
-{
-    qDebug()<<"login btn clicked";
-    if(checkUserValid() == false){
+void LoginDialog::on_login_btn_clicked() {
+    qDebug() << "login btn clicked";
+    if (checkUserValid() == false) {
         return;
     }
 
-    if(checkPwdValid() == false){
-        return ;
+    if (checkPwdValid() == false) {
+        return;
     }
 
     enableBtn(false);
     auto email = ui->email_edit->text();
     auto pwd = ui->pass_edit->text();
-    //发送http请求登录
+    // 发送http请求登录
     QJsonObject json_obj;
     json_obj["email"] = email;
     json_obj["passwd"] = xorString(pwd);
-    HttpMgr::GetInstance()->PostHttpReq(QUrl(gate_url_prefix+"/user_login"),
-                                        json_obj, ReqId::ID_LOGIN_USER,Modules::LOGINMOD);
+    HttpMgr::GetInstance()->PostHttpReq(QUrl(gate_url_prefix + "/user_login"),
+                                        json_obj, ReqId::ID_LOGIN_USER, Modules::LOGINMOD);
 }
 
-void LoginDialog::slot_login_mod_finish(ReqId id, QString res, ErrorCodes err)
-{
-    if(err != ErrorCodes::SUCCESS){
-        showTip(tr("网络请求错误"),false);
+void LoginDialog::slot_login_mod_finish(ReqId id, QString res, ErrorCodes err) {
+    if (err != ErrorCodes::SUCCESS) {
+        showTip(tr("网络请求错误"), false);
         return;
     }
 
     // 解析 JSON 字符串,res需转化为QByteArray
     QJsonDocument jsonDoc = QJsonDocument::fromJson(res.toUtf8());
-    //json解析错误
-    if(jsonDoc.isNull()){
-        showTip(tr("json解析错误"),false);
+    // json解析错误
+    if (jsonDoc.isNull()) {
+        showTip(tr("json解析错误"), false);
         return;
     }
 
-    //json解析错误
-    if(!jsonDoc.isObject()){
-        showTip(tr("json解析错误"),false);
+    // json解析错误
+    if (!jsonDoc.isObject()) {
+        showTip(tr("json解析错误"), false);
         return;
     }
 
-
-    //调用对应的逻辑,根据id回调。
+    // 调用对应的逻辑,根据id回调。
     _handlers[id](jsonDoc.object());
 
     return;
 }
 
-void LoginDialog::slot_tcp_con_finish(bool bsuccess)
-{
-    if(bsuccess){
-        showTip(tr("聊天服务连接成功，正在登录..."),true);
+void LoginDialog::slot_tcp_con_finish(bool bsuccess) {
+    if (bsuccess) {
+        showTip(tr("聊天服务连接成功，正在登录..."), true);
         QJsonObject jsonObj;
         jsonObj["uid"] = _si->_uid;
         jsonObj["token"] = _si->_token;
@@ -246,51 +233,48 @@ void LoginDialog::slot_tcp_con_finish(bool bsuccess)
         QJsonDocument doc(jsonObj);
         QByteArray jsonData = doc.toJson(QJsonDocument::Indented);
 
-        //发送tcp请求给chat server
-        emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_CHAT_LOGIN, jsonData);
-    }else{
+        // 发送tcp请求给chat server
+        emit TcpMgr::GetInstance() -> sig_send_data(ReqId::ID_CHAT_LOGIN, jsonData);
+    } else {
         showTip(tr("网络异常"), false);
         enableBtn(true);
     }
 }
 
-void LoginDialog::slot_login_failed(int err)
-{
+void LoginDialog::slot_login_failed(int err) {
     QString result = QString("登录失败, err is %1")
-                             .arg(err);
-    showTip(result,false);
+                         .arg(err);
+    showTip(result, false);
     enableBtn(true);
 }
 
-void LoginDialog::slot_res_con_finish(bool bsuccess)
-{
-       if(bsuccess){
-          showTip(tr("资源服务连接成功，正在鉴权..."),true);
-          QJsonObject jsonObj;
-          jsonObj["uid"] = _si->_uid;
-          jsonObj["token"] = UserMgr::GetInstance()->GetToken();
+void LoginDialog::slot_res_con_finish(bool bsuccess) {
+    if (bsuccess) {
+        showTip(tr("资源服务连接成功，正在鉴权..."), true);
+        QJsonObject jsonObj;
+        jsonObj["uid"] = _si->_uid;
+        jsonObj["token"] = UserMgr::GetInstance()->GetToken();
 
-          QJsonDocument doc(jsonObj);
-          QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
+        QJsonDocument doc(jsonObj);
+        QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
 
-          FileTcpMgr::GetInstance()->SendData(ReqId::ID_RESOURCE_LOGIN_REQ, jsonData);
+        FileTcpMgr::GetInstance()->SendData(ReqId::ID_RESOURCE_LOGIN_REQ, jsonData);
 
-       }else{
-          showTip(tr("网络异常"),false);
-          enableBtn(true);
-       }
-
+    } else {
+        showTip(tr("网络异常"), false);
+        enableBtn(true);
+    }
 }
 
-void LoginDialog::AddTipErr(TipErr te,QString tips){
+void LoginDialog::AddTipErr(TipErr te, QString tips) {
     _tip_errs[te] = tips;
     showTip(tips, false);
 }
-void LoginDialog::DelTipErr(TipErr te){
+void LoginDialog::DelTipErr(TipErr te) {
     _tip_errs.remove(te);
-    if(_tip_errs.empty()){
-      ui->err_tip->clear();
-      return;
+    if (_tip_errs.empty()) {
+        ui->err_tip->clear();
+        return;
     }
 
     showTip(_tip_errs.first(), false);
