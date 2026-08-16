@@ -22,6 +22,7 @@
 #include <QTemporaryDir>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QVariant>
 #include <QFile>
 #include <QList>
 #include <QString>

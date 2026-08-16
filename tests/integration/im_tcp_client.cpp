@@ -66,7 +66,7 @@ void TcpClient::ReaderLoop() {
 		if (len && !ReadExact(&body[0], static_cast<std::size_t>(len))) break;
 
 		Frame f;
-		f.type = id;
+		f.type = type;
 		f.body = std::move(body);
 		{
 			std::lock_guard<std::mutex> lk(queue_mtx_);
@@ -209,7 +209,7 @@ void ResClient::ReaderLoop() {
 		if (len && !ReadExact(&body[0], static_cast<std::size_t>(len))) break;
 
 		Frame f;
-		f.type = id;
+		f.type = type;
 		f.body = std::move(body);
 		{
 			std::lock_guard<std::mutex> lk(queue_mtx_);
