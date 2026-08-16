@@ -656,7 +656,8 @@ bool MysqlDao::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> 
 				continue;
 			}
 
-			user_info->back = user_info->name;
+			//好友备注为空时兜底显示账号名（修复：原实现读出 back 后误用 name 覆盖）
+			user_info->back = back.empty() ? user_info->name : back;
 			user_info_list.push_back(user_info);
 		}
 		return true;
