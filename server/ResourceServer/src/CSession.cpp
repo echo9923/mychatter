@@ -40,33 +40,49 @@ int CSession::GetUserId() const
 }
 
 void CSession::Start(){
-	std::cout << "session : " << _session_id << " started to read" << std::endl;
-	AsyncReadHead(HEAD_TOTAL_LEN);
+	//首轮读必须由 socket 所属 IO 线程发起（accept 线程只负责投递），并发修复
+	auto self = shared_from_this();
+	boost::asio::post(_socket.get_executor(), [self, this]() {
+		std::cout << "session : " << _session_id << " started to read" << std::endl;
+		AsyncReadHead(HEAD_TOTAL_LEN);
+	});
 }
 
 void CSession::Send(std::string msg, short msg_type) {
-	std::lock_guard<std::mutex> lock(_send_lock);
-	int send_que_size = _send_que.size();
-	if (send_que_size > MAX_SENDQUE) {
-		std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
-		return;
-	}
+	//投递到 socket 所属 IO 线程执行，避免 worker 线程跨线程触碰 socket（并发修复）
+	auto self = shared_from_this();
+	boost::asio::post(_socket.get_executor(), [self, this, msg = std::move(msg), msg_type]() {
+		if (!_socket.is_open()) {
+			//连接已关闭（异常路径已各自处理清理），静默丢弃
+			return;
+		}
+		std::lock_guard<std::mutex> lock(_send_lock);
+		int send_que_size = _send_que.size();
+		if (send_que_size > MAX_SENDQUE) {
+			std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
+			return;
+		}
 
-	_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
-	if (send_que_size > 0) {
-		return;
-	}
-	auto& msgnode = _send_que.front();
-	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-		[self = SharedSelf(), this](const boost::system::error_code& error,
-			std::size_t /*bytes_transferred*/) {
-				HandleWrite(error, self);
-			});
+		_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
+		if (send_que_size > 0) {
+			return;
+		}
+		auto& msgnode = _send_que.front();
+		boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+			[self = SharedSelf(), this](const boost::system::error_code& error,
+				std::size_t /*bytes_transferred*/) {
+					HandleWrite(error, self);
+				});
+	});
 }
 
 void CSession::Close() {
-	_socket.close();
-	_b_close = true;
+	//投递到 socket 所属 IO 线程再关闭；worker 线程只负责排队（并发修复）
+	auto self = shared_from_this();
+	boost::asio::post(_socket.get_executor(), [self, this]() {
+		_socket.close();
+		_b_close = true;
+	});
 }
 
 std::shared_ptr<CSession>CSession::SharedSelf() {

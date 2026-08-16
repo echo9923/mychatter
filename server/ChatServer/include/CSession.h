@@ -178,6 +178,7 @@ private:
 	void HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self);
 
 	/// TCP socket，与客户端的实际网络连接
+	/// 并发约束：所有 _socket 成员调用只能在所属 IO 线程执行（跨线程入口 Start/Send/SendAndClose/Close 一律 post）
 	tcp::socket _socket;
 	/// 会话唯一标识符（UUID），用于在服务器中唯一标识该连接
 	std::string _session_id;

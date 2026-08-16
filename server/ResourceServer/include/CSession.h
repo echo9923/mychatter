@@ -47,6 +47,7 @@ private:
 	
 	
 	void HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self);
+	//并发约束：所有 _socket 成员调用只能在所属 IO 线程执行（跨线程入口 Start/Send/Close 一律 post）
 	tcp::socket _socket;
 	std::string _session_id;
 	char _data[MAX_LENGTH];

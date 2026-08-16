@@ -3,6 +3,7 @@
 #include <iostream>
 #include <sstream>
 #include <climits>
+#include <cstdlib>
 #include "LogicSystem.h"
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
@@ -60,70 +61,94 @@ int CSession::GetRoutingUid() const
 }
 
 void CSession::Start(){
-	AsyncReadHead(HEAD_TOTAL_LEN);
+	//首轮读必须由 socket 所属 IO 线程发起（accept 线程只负责投递），并发修复
+	auto self = shared_from_this();
+	boost::asio::post(_socket.get_executor(), [self, this]() {
+		AsyncReadHead(HEAD_TOTAL_LEN);
+	});
 }
 
 void CSession::Send(std::string msg, short msg_type) {
-	std::lock_guard<std::mutex> lock(_send_lock);
-	if (_close_after_send) {
-		//已安排写完即关的终帧，后续发送一律拒绝
-		return;
-	}
-	//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出，拒绝并入队（计划5.3）
-	if (static_cast<int>(msg.length()) > kMaxSendPayload) {
-		std::cout << "session: " << _session_id << " drop oversize payload, msgtype=" << msg_type
-			<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
-		return;
-	}
-	int send_que_size = _send_que.size();
-	if (send_que_size > MAX_SENDQUE) {
-		std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
-		return;
-	}
+	//投递到 socket 所属 IO 线程执行，避免 worker 线程跨线程触碰 socket（并发修复）
+	auto self = shared_from_this();
+	boost::asio::post(_socket.get_executor(), [self, this, msg = std::move(msg), msg_type]() {
+		if (!_socket.is_open()) {
+			//连接已关闭（心跳超时/异常路径已各自处理清理），静默丢弃
+			return;
+		}
+		std::lock_guard<std::mutex> lock(_send_lock);
+		if (_close_after_send) {
+			//已安排写完即关的终帧，后续发送一律拒绝
+			return;
+		}
+		//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出，拒绝并入队（计划5.3）
+		if (static_cast<int>(msg.length()) > kMaxSendPayload) {
+			std::cout << "session: " << _session_id << " drop oversize payload, msgtype=" << msg_type
+				<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
+			return;
+		}
+		int send_que_size = _send_que.size();
+		if (send_que_size > MAX_SENDQUE) {
+			std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
+			return;
+		}
 
-	_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
-	if (send_que_size > 0) {
-		return;
-	}
-	auto& msgnode = _send_que.front();
-	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-		[self = SharedSelf(), this](const boost::system::error_code& error,
-			std::size_t /*bytes_transferred*/) {
-				HandleWrite(error, self);
-			});
+		_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
+		if (send_que_size > 0) {
+			return;
+		}
+		auto& msgnode = _send_que.front();
+		boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+			[self = SharedSelf(), this](const boost::system::error_code& error,
+				std::size_t /*bytes_transferred*/) {
+					HandleWrite(error, self);
+				});
+	});
 }
 
 void CSession::SendAndClose(std::string msg, short msg_type) {
-	std::lock_guard<std::mutex> lock(_send_lock);
-	if (_close_after_send) {
-		//已经安排过终帧，忽略重复调用
-		return;
-	}
-	//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出；终帧虽小但仍统一检查（计划5.3）
-	if (static_cast<int>(msg.length()) > kMaxSendPayload) {
-		std::cout << "session: " << _session_id << " drop oversize terminal payload, msgtype=" << msg_type
-			<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
-		return;
-	}
-	//先置标志再入队：同一把锁内拒绝后续一切 Send，保证该帧是最后一帧
-	_close_after_send = true;
-	_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
-	if (_send_que.size() > 1) {
-		//已有写在飞，HandleWrite 会依次写完并在排空后关闭
-		return;
-	}
-	auto& msgnode = _send_que.front();
-	boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-		[self = SharedSelf(), this](const boost::system::error_code& error,
-			std::size_t /*bytes_transferred*/) {
-				HandleWrite(error, self);
-			});
+	//投递到 socket 所属 IO 线程执行，避免 worker 线程跨线程触碰 socket（并发修复）
+	auto self = shared_from_this();
+	boost::asio::post(_socket.get_executor(), [self, this, msg = std::move(msg), msg_type]() {
+		if (!_socket.is_open()) {
+			//连接已关闭，无需再安排终帧
+			return;
+		}
+		std::lock_guard<std::mutex> lock(_send_lock);
+		if (_close_after_send) {
+			//已经安排过终帧，忽略重复调用
+			return;
+		}
+		//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出；终帧虽小但仍统一检查（计划5.3）
+		if (static_cast<int>(msg.length()) > kMaxSendPayload) {
+			std::cout << "session: " << _session_id << " drop oversize terminal payload, msgtype=" << msg_type
+				<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
+			return;
+		}
+		//先置标志再入队：同一把锁内拒绝后续一切 Send，保证该帧是最后一帧
+		_close_after_send = true;
+		_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
+		if (_send_que.size() > 1) {
+			//已有写在飞，HandleWrite 会依次写完并在排空后关闭
+			return;
+		}
+		auto& msgnode = _send_que.front();
+		boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+			[self = SharedSelf(), this](const boost::system::error_code& error,
+				std::size_t /*bytes_transferred*/) {
+					HandleWrite(error, self);
+				});
+	});
 }
 
 void CSession::Close() {
-	std::lock_guard<std::mutex> lock(_session_mtx);
-	_socket.close();
-	_b_close = true;
+	//投递到 socket 所属 IO 线程再关闭；定时器/worker 线程只负责排队（并发修复）
+	auto self = shared_from_this();
+	boost::asio::post(_socket.get_executor(), [self, this]() {
+		std::lock_guard<std::mutex> lock(_session_mtx);
+		_socket.close();
+		_b_close = true;
+	});
 }
 
 std::shared_ptr<CSession>CSession::SharedSelf() {
@@ -405,8 +430,17 @@ LogicNode::LogicNode(shared_ptr<CSession>  session,
 
 
 bool CSession::IsHeartbeatExpired(std::time_t& now) {
+	//过期阈值可配置（[Heartbeat] ExpiryThresholdSeconds），缺省 20 秒
+	int threshold = 20;
+	auto threshold_str = ConfigMgr::Inst()["Heartbeat"]["ExpiryThresholdSeconds"];
+	if (!threshold_str.empty()) {
+		int parsed = atoi(threshold_str.c_str());
+		if (parsed > 0) {
+			threshold = parsed;
+		}
+	}
 	double diff_sec = std::difftime(now, _last_heartbeat);
-	if (diff_sec > 20) {
+	if (diff_sec > threshold) {
 		std::cout << "heartbeat expired, session id is  " << _session_id << endl;
 		return true;
 	}
