@@ -38,7 +38,7 @@
   - CServer：监听端口、接受连接、会话管理与定时心跳检测。
   - CSession：单连接的生命周期、异步读写、发送队列、心跳更新与异常清理。
   - AsioIOServicePool：多I/O服务线程池，轮询分配io_context，提升并发吞吐。
-  - LogicSystem：业务逻辑处理器，通过消息类型分发到具体处理函数。
+  - LogicSystem：业务逻辑处理器，通过消息ID分发到具体处理函数。
 
 ```mermaid
 graph TB
@@ -71,7 +71,7 @@ D --> E
 
 ## 核心组件
 - 客户端TcpMgr
-  - 职责：维护一个QTcpSocket，实现消息头解析（消息类型+长度），粘包处理，发送队列与bytesWritten回调驱动连续发送，错误分类与信号上报。
+  - 职责：维护一个QTcpSocket，实现消息头解析（消息ID+长度），粘包处理，发送队列与bytesWritten回调驱动连续发送，错误分类与信号上报。
   - 关键点：接收缓冲区循环使用；发送采用QQueue串行化；错误分支区分拒绝、超时、主机未找到等。
 - 客户端FileTcpMgr
   - 职责：独立文件传输通道，支持分片上传/下载、断点续传、进度回调与拥塞窗口控制。
@@ -135,7 +135,7 @@ Server->>Session : Close() + DealExceptionSession()
   - 构造函数中绑定connected、readyRead、error、disconnected、bytesWritten等信号。
   - connected后发出sig_con_success(true)，供上层切换界面或进入主流程。
 - 数据接收
-  - readyRead将全部可读数据追加到_buffer，循环解析：先读固定长度的头部（消息类型+长度），再按长度读取消息体。
+  - readyRead将全部可读数据追加到_buffer，循环解析：先读固定长度的头部（消息ID+长度），再按长度读取消息体。
   - _b_recv_pending标志用于处理半包场景，保证完整帧后再处理。
 - 数据发送
   - SendData通过sig_send_data投递到slot_send_data，组装头部与载荷，入队_send_queue。
@@ -144,14 +144,14 @@ Server->>Session : Close() + DealExceptionSession()
   - error分支区分ConnectionRefusedError、RemoteHostClosedError、HostNotFoundError、SocketTimeoutError等，分别上报sig_con_success(false)或断开信号。
   - disconnected触发sig_connection_closed，通知UI层。
 - 消息分发
-  - initHandlers注册各ReqId对应的处理lambda，统一在handleMsg中根据类型路由。
+  - initHandlers注册各ReqId对应的处理lambda，统一在handleMsg中根据ID路由。
   - 典型消息：登录响应、搜索响应、好友申请通知、认证结果、文本聊天消息、离线通知、心跳响应、聊天线程加载、私聊创建、聊天消息加载等。
 
 ```mermaid
 flowchart TD
 Start(["TcpMgr::readyRead"]) --> CheckHead["检查缓冲区是否足够解析头部"]
 CheckHead --> |否| WaitMore["等待更多数据"]
-CheckHead --> |是| ParseHead["解析消息类型和长度"]
+CheckHead --> |是| ParseHead["解析消息ID和长度"]
 ParseHead --> CheckBody["检查缓冲区是否满足消息体长度"]
 CheckBody --> |否| SetPending["_b_recv_pending=true，等待更多数据"]
 CheckBody --> |是| ReadBody["取出消息体，移动缓冲区指针"]
@@ -204,7 +204,7 @@ class CServer {
 }
 class CSession {
 +Start()
-+Send(msg, msg_type)
++Send(msg, msgid)
 +Close()
 +AsyncReadHead(total_len)
 +AsyncReadBody(length)
@@ -230,7 +230,7 @@ CServer --> CSession : "管理/清理"
 
 ### 服务端CSession：异步IO与心跳
 - 异步读
-  - AsyncReadHead读取固定长度头部，校验msg_type与msg_len合法性，构造RecvNode后进入AsyncReadBody。
+  - AsyncReadHead读取固定长度头部，校验msg_id与msg_len合法性，构造RecvNode后进入AsyncReadBody。
   - AsyncReadBody递归读取剩余字节，完成后更新心跳时间戳，投递到LogicSystem处理，再回到AsyncReadHead继续监听。
 - 异步写
   - Send将消息封装为SendNode入队，若队列为空则立即开始async_write。
@@ -274,7 +274,7 @@ end
 - [CSession.cpp:285-333](file://server/ChatServer/src/CSession.cpp#L285-L333)
 
 ### 业务逻辑分发（LogicSystem）
-- 登录、搜索、好友申请、认证、文本/图片聊天、心跳、聊天线程加载、私聊创建、聊天消息加载等均由LogicSystem根据消息类型分发处理。
+- 登录、搜索、好友申请、认证、文本/图片聊天、心跳、聊天线程加载、私聊创建、聊天消息加载等均由LogicSystem根据消息ID分发处理。
 - 对于跨服通信，通过ChatGrpcClient进行gRPC通知；本地会话直接通过UserMgr查找并发送。
 
 章节来源

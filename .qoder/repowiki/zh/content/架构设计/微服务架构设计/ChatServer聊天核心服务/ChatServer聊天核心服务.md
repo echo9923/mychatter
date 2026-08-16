@@ -92,7 +92,7 @@ D --> J
 - AsioIOServicePool：按硬件并发度创建多个 io_context，轮询分配，提升吞吐与隔离性
 - CServer：监听端口、接受连接、维护活跃 session 集合、定时器心跳扫描与清理
 - CSession：封装 socket、发送队列、接收缓冲、心跳时间戳、异常处理与关闭
-- LogicSystem：单例，维护消息队列与工作线程，注册各消息类型的回调处理器
+- LogicSystem：单例，维护消息队列与工作线程，注册各消息ID的回调处理器
 - UserMgr：维护 uid 到 session 的映射，支持设置、移除与查询
 - DistLock：基于 Redis 的分布式锁获取与释放
 - StatusGrpcClient/ChatGrpcClient：gRPC 连接池与客户端封装，用于跨服务调用
@@ -111,7 +111,7 @@ D --> J
 ChatServer 以 Asio 事件驱动为核心，结合单例模式与队列解耦，形成高并发、可扩展的聊天服务。关键流程如下：
 - 连接建立：CServer 接受连接，创建 CSession，加入活跃会话表
 - 消息解析：CSession 读取头部与体，组装 RecvNode，投递至 LogicSystem 队列
-- 逻辑处理：LogicSystem 工作线程取出节点，根据 msg_type 分发给对应回调
+- 逻辑处理：LogicSystem 工作线程取出节点，根据 msg_id 分发给对应回调
 - 状态同步：通过 StatusGrpcClient 与 StatusServer 交互完成登录校验与路由
 - 跨服通知：通过 ChatGrpcClient 向目标 ChatServer 推送消息（如好友申请、文本消息）
 - 资源协调：图片/文件上传走 ResourceServer，ChatServer 仅做信令通知与进度协调
@@ -176,7 +176,7 @@ HandleErr --> End
 
 ### 消息路由与处理流程
 - LogicSystem 维护一个无锁入队、有锁出队的消息队列，配合条件变量唤醒工作线程
-- 注册各消息类型对应的回调函数，DealMsg 循环取出节点并调用相应处理器
+- 注册各消息ID对应的回调函数，DealMsg 循环取出节点并调用相应处理器
 - 典型处理器包括登录、搜索、好友申请/认证、文本/图片聊天、心跳、加载聊天线程与消息等
 
 ```mermaid
@@ -186,13 +186,13 @@ class LogicSystem {
 +SetServer(server)
 -DealMsg()
 -RegisterCallBacks()
--LoginHandler(session, msg_type, data)
--HeartBeatHandler(session, msg_type, data)
--DealChatTextMsg(session, msg_type, data)
--DealChatImgMsg(session, msg_type, data)
--GetUserThreadsHandler(session, msg_type, data)
--CreatePrivateChat(session, msg_type, data)
--LoadChatMsg(session, msg_type, data)
+-LoginHandler(session, msg_id, data)
+-HeartBeatHandler(session, msg_id, data)
+-DealChatTextMsg(session, msg_id, data)
+-DealChatImgMsg(session, msg_id, data)
+-GetUserThreadsHandler(session, msg_id, data)
+-CreatePrivateChat(session, msg_id, data)
+-LoadChatMsg(session, msg_id, data)
 -_msg_que : queue<LogicNode>
 -_fun_callbacks : map<short, FunCallBack>
 }
@@ -342,12 +342,12 @@ ResetTimer --> TEnd(["结束"])
 - [CSession.h:46-51](file://server/ChatServer/include/CSession.h#L46-L51)
 
 ### 消息协议定义
-- 内部消息类型定义于 const.h，涵盖登录、搜索、好友、聊天、心跳、图片、文件同步等
+- 内部消息ID定义于 const.h，涵盖登录、搜索、好友、聊天、心跳、图片、文件同步等
 - 跨服务协议定义于 proto 文件，ChatService 与 StatusService 分别描述 RPC 方法与数据结构
 
 ```mermaid
 erDiagram
-MSG_TYPES {
+MSG_IDS {
 int MSG_CHAT_LOGIN
 int MSG_CHAT_LOGIN_RSP
 int ID_SEARCH_USER_REQ
@@ -423,7 +423,7 @@ LogicSystem --> DistLock
 - 连接异常：检查 CServer::HandleAccept 错误码与日志，确认端口与防火墙
 - 心跳超时：查看 CServer::on_timer 的过期判断与 Close() 行为，确认客户端心跳频率
 - 登录失败：核对 StatusGrpcClient::Login 返回值与 Redis Token 键值一致性
-- 消息丢失：检查 LogicSystem 队列是否积压，回调是否注册正确，是否存在未处理的 msg_type
+- 消息丢失：检查 LogicSystem 队列是否积压，回调是否注册正确，是否存在未处理的 msg_id
 - 分布式锁：确认 DistLock 获取/释放成对出现，避免死锁；观察 Redis 锁键是否残留
 
 章节来源
@@ -440,7 +440,7 @@ ChatServer 通过 Asio 事件驱动、单例逻辑系统与队列解耦，实现
 
 ## 附录
 - 数据模型：UserInfo、ApplyInfo、ChatThreadInfo、ChatMessage、PageResult 等结构定义见 data.h
-- 常量与错误码：ErrorCodes、MSG_TYPES、KeyPrefixes 等见 const.h
+- 常量与错误码：ErrorCodes、MSG_IDS、KeyPrefixes 等见 const.h
 - Proto 契约：chat.proto 与 status.proto 定义跨服务接口与消息格式
 
 章节来源
