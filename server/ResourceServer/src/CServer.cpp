@@ -1,7 +1,6 @@
 ﻿#include "CServer.h"
 #include <iostream>
 #include "AsioIOServicePool.h"
-#include "UserMgr.h"
 
 CServer::CServer(boost::asio::io_context& io_context, short port, std::shared_ptr<AsioIOServicePool> pool):_io_context(io_context), _port(port),
 _acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _pool(pool)
@@ -11,23 +10,40 @@ _acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _pool(pool)
 }
 
 CServer::~CServer() {
+	Stop();
 	cout << "Server destruct listen on port : " << _port << endl;
 }
 
 void CServer::HandleAccept(shared_ptr<CSession> new_session, const boost::system::error_code& error){
 	if (!error) {
-		new_session->Start();
-		lock_guard<mutex> lock(_mutex);
-		_sessions.insert(make_pair(new_session->GetSessionId(), new_session));
+		bool registered = false;
+		{
+			lock_guard<mutex> lock(_mutex);
+			if (!_stopped.load()) {
+				registered = _sessions.emplace(
+					new_session->GetSessionId(), new_session).second;
+			}
+		}
+		if (registered) {
+			new_session->Start();
+		}
+		else {
+			new_session->Close();
+		}
 	}
-	else {
+	else if (!_stopped.load()) {
 		cout << "session accept failed, error is " << error.what() << endl;
 	}
 
-	StartAccept();
+	if (!_stopped.load()) {
+		StartAccept();
+	}
 }
 
 void CServer::StartAccept() {
+	if (_stopped.load()) {
+		return;
+	}
 	auto &io_context = _pool->GetIOService();
 	shared_ptr<CSession> new_session = make_shared<CSession>(io_context, this);
 	_acceptor.async_accept(new_session->GetSocket(),
@@ -36,16 +52,35 @@ void CServer::StartAccept() {
 		});
 }
 
-void CServer::ClearSession(std::string uuid) {
-	
-	if (_sessions.find(uuid) != _sessions.end()) {
-		//移除用户和session的关联
-		UserMgr::GetInstance()->RmvUserSession(_sessions[uuid]->GetUserId());
+void CServer::RemoveSession(const std::shared_ptr<CSession>& session) {
+	if (!session) {
+		return;
+	}
+	lock_guard<mutex> lock(_mutex);
+	auto it = _sessions.find(session->GetSessionId());
+	if (it == _sessions.end() || it->second != session) {
+		return;
+	}
+	_sessions.erase(it);
+}
+
+void CServer::Stop() {
+	if (_stopped.exchange(true)) {
+		return;
 	}
 
+	boost::system::error_code ignored;
+	_acceptor.cancel(ignored);
+	_acceptor.close(ignored);
+
+	std::map<std::string, shared_ptr<CSession>> sessions_copy;
 	{
 		lock_guard<mutex> lock(_mutex);
-		_sessions.erase(uuid);
+		sessions_copy = _sessions;
 	}
-	
+	for (const auto& entry : sessions_copy) {
+		if (entry.second) {
+			entry.second->Close();
+		}
+	}
 }

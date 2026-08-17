@@ -1,12 +1,16 @@
 #include "CSession.h"
 #include "CServer.h"
+#include <chrono>
 #include <iostream>
 #include <sstream>
 #include "LogicSystem.h"
 
+namespace {
+constexpr std::chrono::seconds kGracefulCloseTimeout(5);
+}
 
 CSession::CSession(boost::asio::io_context& io_context, CServer* server):
-	_socket(io_context), _server(server), _b_close(false),_b_head_parse(false), _user_uid(0){
+	_socket(io_context), _drain_timer(io_context), _server(server), _b_head_parse(false), _user_uid(0){
 	boost::uuids::uuid  a_uuid = boost::uuids::random_generator()();
 	_session_id = boost::uuids::to_string(a_uuid);
 	_recv_head_node = make_shared<MsgNode>(HEAD_TOTAL_LEN);
@@ -23,10 +27,18 @@ std::string& CSession::GetSessionId() {
 	return _session_id;
 }
 
-void CSession::SetAuth(int uid)
+bool CSession::TrySetAuth(int uid)
 {
-	_authed.store(true);
+	if (uid <= 0) {
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(_lifecycle_mtx);
+	if (!_lifecycle.IsOpen() || _authed.load()) {
+		return false;
+	}
 	_user_uid.store(uid);
+	_authed.store(true);
+	return true;
 }
 
 bool CSession::IsAuthed() const
@@ -39,50 +51,121 @@ int CSession::GetUserId() const
 	return _user_uid.load();
 }
 
+bool CSession::IsOpen() const noexcept
+{
+	return _lifecycle.IsOpen();
+}
+
+bool CSession::BeginDrain()
+{
+	std::lock_guard<std::mutex> lock(_lifecycle_mtx);
+	return _lifecycle.BeginDrain();
+}
+
 void CSession::Start(){
 	//首轮读必须由 socket 所属 IO 线程发起（accept 线程只负责投递），并发修复
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self, this]() {
-		std::cout << "session : " << _session_id << " started to read" << std::endl;
-		AsyncReadHead(HEAD_TOTAL_LEN);
+	boost::asio::post(_socket.get_executor(), [self]() {
+		if (!self->IsOpen()) {
+			return;
+		}
+		std::cout << "session : " << self->_session_id << " started to read" << std::endl;
+		self->AsyncReadHead(HEAD_TOTAL_LEN);
 	});
 }
 
 void CSession::Send(std::string msg, short msg_type) {
 	//投递到 socket 所属 IO 线程执行，避免 worker 线程跨线程触碰 socket（并发修复）
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self, this, msg = std::move(msg), msg_type]() {
-		if (!_socket.is_open()) {
-			//连接已关闭（异常路径已各自处理清理），静默丢弃
+	boost::asio::post(_socket.get_executor(), [self, msg = std::move(msg), msg_type]() {
+		if (!self->IsOpen() || !self->_socket.is_open()) {
 			return;
 		}
-		std::lock_guard<std::mutex> lock(_send_lock);
-		int send_que_size = _send_que.size();
+		std::lock_guard<std::mutex> lock(self->_send_lock);
+		if (!self->IsOpen()) {
+			return;
+		}
+		int send_que_size = self->_send_que.size();
 		if (send_que_size > MAX_SENDQUE) {
-			std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
+			std::cout << "session: " << self->_session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
 			return;
 		}
 
-		_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
+		self->_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
 		if (send_que_size > 0) {
 			return;
 		}
-		auto& msgnode = _send_que.front();
-		boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-			[self = SharedSelf(), this](const boost::system::error_code& error,
+		auto& msgnode = self->_send_que.front();
+		boost::asio::async_write(self->_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+			[self](const boost::system::error_code& error,
 				std::size_t /*bytes_transferred*/) {
-					HandleWrite(error, self);
+					self->HandleWrite(error, self);
 				});
 	});
 }
 
-void CSession::Close() {
-	//投递到 socket 所属 IO 线程再关闭；worker 线程只负责排队（并发修复）
+void CSession::SendAndClose(std::string msg, short msg_type) {
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self, this]() {
-		_socket.close();
-		_b_close = true;
+	boost::asio::post(_socket.get_executor(), [self, msg = std::move(msg), msg_type]() {
+		bool close_immediately = false;
+		{
+			std::lock_guard<std::mutex> lock(self->_send_lock);
+			if (!self->_socket.is_open()) {
+				close_immediately = true;
+			}
+			else if (!self->BeginDrain()) {
+				return;
+			}
+			else {
+				self->_drain_timer.expires_after(kGracefulCloseTimeout);
+				self->_drain_timer.async_wait([self](const boost::system::error_code& ec) {
+					if (!ec) {
+						self->Close();
+					}
+				});
+
+				self->_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
+				if (self->_send_que.size() == 1) {
+					auto& msgnode = self->_send_que.front();
+					boost::asio::async_write(self->_socket,
+						boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+						[self](const boost::system::error_code& error,
+							std::size_t /*bytes_transferred*/) {
+								self->HandleWrite(error, self);
+							});
+				}
+			}
+		}
+		if (close_immediately) {
+			self->Close();
+		}
 	});
+}
+
+void CSession::Close() {
+	{
+		std::lock_guard<std::mutex> send_lock(_send_lock);
+		std::lock_guard<std::mutex> lock(_lifecycle_mtx);
+		if (!_lifecycle.BeginClose()) {
+			return;
+		}
+	}
+
+	auto self = shared_from_this();
+	boost::asio::dispatch(_socket.get_executor(), [self]() {
+		boost::system::error_code ignored;
+		try {
+			self->_drain_timer.cancel();
+		}
+		catch (const boost::system::system_error&) {
+			// Close is idempotent and must remain non-throwing.
+		}
+		self->_socket.cancel(ignored);
+		self->_socket.shutdown(tcp::socket::shutdown_both, ignored);
+		self->_socket.close(ignored);
+		self->_lifecycle.CompleteClose();
+	});
+	_server->RemoveSession(self);
 }
 
 std::shared_ptr<CSession>CSession::SharedSelf() {
@@ -97,7 +180,6 @@ void CSession::AsyncReadBody(int total_len)
 			if (ec) {
 				std::cout << "handle read failed, error is " << ec.what() << endl;
 				Close();
-				_server->ClearSession(_session_id);
 				return;
 			}
 
@@ -105,7 +187,10 @@ void CSession::AsyncReadBody(int total_len)
 				std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
 					<< total_len<<"]" << endl;
 				Close();
-				_server->ClearSession(_session_id);
+				return;
+			}
+
+			if (!IsOpen()) {
 				return;
 			}
 
@@ -123,6 +208,7 @@ void CSession::AsyncReadBody(int total_len)
 		}
 		catch (std::exception& e) {
 			std::cout << "Exception code is " << e.what() << endl;
+			Close();
 		}
 		});
 }
@@ -135,7 +221,6 @@ void CSession::AsyncReadHead(int total_len)
 			if (ec) {
 				std::cout << "handle read failed, error is " << ec.what() << endl;
 				Close();
-				_server->ClearSession(_session_id);
 				return;
 			}
 
@@ -143,7 +228,10 @@ void CSession::AsyncReadHead(int total_len)
 				std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
 					<< HEAD_TOTAL_LEN << "]" << endl;
 				Close();
-				_server->ClearSession(_session_id);
+				return;
+			}
+
+			if (!IsOpen()) {
 				return;
 			}
 
@@ -159,7 +247,7 @@ void CSession::AsyncReadHead(int total_len)
 			//类型非法
 			if (msg_type > MAX_LENGTH) {
 				std::cout << "invalid msg_type is " << msg_type << endl;
-				_server->ClearSession(_session_id);
+				Close();
 				return;
 			}
 			int msg_len = 0;
@@ -171,7 +259,7 @@ void CSession::AsyncReadHead(int total_len)
 			//长度非法
 			if (msg_len > MAX_LENGTH) {
 				std::cout << "invalid data length is " << msg_len << endl;
-				_server->ClearSession(_session_id);
+				Close();
 				return;
 			}
 
@@ -180,6 +268,7 @@ void CSession::AsyncReadHead(int total_len)
 		}
 		catch (std::exception& e) {
 			std::cout << "Exception code is " << e.what() << endl;
+			Close();
 		}
 		});
 }
@@ -188,25 +277,35 @@ void CSession::HandleWrite(const boost::system::error_code& error, std::shared_p
 	//增加异常处理
 	try {
 		if (!error) {
-			std::lock_guard<std::mutex> lock(_send_lock);
-			_send_que.pop();
-			if (!_send_que.empty()) {
-				auto& msgnode = _send_que.front();
-				boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-					[shared_self, this](const boost::system::error_code& error,
-						std::size_t /*bytes_transferred*/) {
-							HandleWrite(error, shared_self);
-						});
+			bool drain_close = false;
+			{
+				std::lock_guard<std::mutex> lock(_send_lock);
+				_send_que.pop();
+				if (!_send_que.empty()) {
+					auto& msgnode = _send_que.front();
+					boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+						[shared_self, this](const boost::system::error_code& error,
+							std::size_t /*bytes_transferred*/) {
+								HandleWrite(error, shared_self);
+							});
+				}
+				else {
+					drain_close = _lifecycle.GetState()
+						== llfc::SessionLifecycle::State::Draining;
+				}
+			}
+			if (drain_close) {
+				Close();
 			}
 		}
 		else {
 			std::cout << "handle write failed, error is " << error.what() << endl;
 			Close();
-			_server->ClearSession(_session_id);
 		}
 	}
 	catch (std::exception& e) {
 		std::cerr << "Exception code : " << e.what() << endl;
+		Close();
 	}
 	
 }

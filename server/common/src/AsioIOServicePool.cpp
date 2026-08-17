@@ -1,4 +1,5 @@
 #include "AsioIOServicePool.h"
+#include <future>
 #include <iostream>
 
 AsioIOServicePool::AsioIOServicePool(std::size_t size)
@@ -30,7 +31,26 @@ boost::asio::io_context& AsioIOServicePool::GetIOService() {
 	return service;
 }
 
+void AsioIOServicePool::Drain() {
+	std::unique_lock<std::mutex> stop_lock(_stop_mutex);
+	if (_stopped.load()) {
+		return;
+	}
+
+	std::vector<std::future<void>> barriers;
+	barriers.reserve(_ioServices.size());
+	for (auto& service : _ioServices) {
+		auto barrier = std::make_shared<std::promise<void>>();
+		barriers.push_back(barrier->get_future());
+		boost::asio::post(service, [barrier]() { barrier->set_value(); });
+	}
+	for (auto& barrier : barriers) {
+		barrier.get();
+	}
+}
+
 void AsioIOServicePool::Stop() {
+	std::lock_guard<std::mutex> stop_lock(_stop_mutex);
 	// 原子标志保证重复/并发调用只执行一次停止流程
 	if (_stopped.exchange(true)) {
 		return;

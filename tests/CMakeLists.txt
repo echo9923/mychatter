@@ -38,6 +38,24 @@ llfc_apply_msvc_defaults(worker_pool_tests)
 
 add_test(NAME worker_pool_tests COMMAND worker_pool_tests)
 
+# --- Shared session lifecycle state machine ---------------------------------
+add_executable(session_lifecycle_tests
+  session_lifecycle_tests.cpp
+)
+
+target_include_directories(session_lifecycle_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../server/common/include"
+)
+
+target_link_libraries(session_lifecycle_tests PRIVATE
+  llfc_server_common
+)
+
+target_compile_features(session_lifecycle_tests PRIVATE cxx_std_17)
+llfc_apply_msvc_defaults(session_lifecycle_tests)
+
+add_test(NAME session_lifecycle_tests COMMAND session_lifecycle_tests)
+
 # --- Password hash helper tests ----------------------------------------------
 # Compiles the production PasswordHash.cpp directly and links only libcrypto
 # (mirrors worker_pool_tests), so it runs on any build without externals.

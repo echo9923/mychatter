@@ -39,9 +39,9 @@ public:
 	/**
 	 * @brief 移除用户ID与会话的绑定（用户下线/被踢时调用）
 	 * @param uid 用户ID
-	 * @param session_id 会话ID（用于验证是否为当前有效会话，防止误删新会话）
+	 * @param session 预期移除的会话对象（防止延迟清理误删新会话）
 	 */
-	void RmvUserSession(int uid, std::string session_id);
+	void RmvUserSession(int uid, const std::shared_ptr<CSession>& session);
 
 private:
 	/// 私有构造函数
@@ -51,4 +51,3 @@ private:
 	/// uid到会话的映射表，存储当前服务器上所有在线用户的会话
 	std::unordered_map<int, std::shared_ptr<CSession>> _uid_to_session;
 };
-

@@ -4,6 +4,7 @@
 #include "CSession.h"
 #include <memory.h>
 #include <map>
+#include <atomic>
 #include <mutex>
 #include <boost/asio/steady_timer.hpp>
 
@@ -32,26 +33,6 @@ public:
 	~CServer();
 
 	/**
-	 * @brief 清除指定用户的会话（用于踢人/下线）
-	 * @param session_id 要清除的会话唯一标识
-	 */
-	void ClearSession(std::string);
-
-	/**
-	 * @brief 根据用户uid获取对应的在线会话
-	 * @param uid 用户ID字符串
-	 * @return 会话共享指针，若用户不在线则返回nullptr
-	 */
-	shared_ptr<CSession> GetSession(std::string);
-
-	/**
-	 * @brief 检查指定会话ID是否仍然有效（未被清除）
-	 * @param session_id 会话唯一标识
-	 * @return true表示会话有效，false表示已不存在
-	 */
-	bool CheckValid(std::string);
-
-	/**
 	 * @brief 心跳定时器回调函数，检测并清理心跳超时的会话
 	 * @param ec 错误码，若定时器被取消则不执行清理逻辑
 	 */
@@ -63,6 +44,9 @@ public:
 	/// 停止心跳定时器
 	void StopTimer();
 
+	/// 幂等停止监听并让所有活跃会话走统一 Close 生命周期。
+	void Stop();
+
 	/**
 	 * @brief 统计当前已认证（已登录）的会话数量
 	 *
@@ -73,6 +57,11 @@ public:
 	int GetAuthenticatedSessionCount();
 
 private:
+	friend class CSession;
+
+	/// CSession::Close 的内部摘除步骤；同时校验 session id 与对象身份。
+	void RemoveSession(const std::shared_ptr<CSession>& session);
+
 	/**
 	 * @brief 处理新连接接受完成的回调
 	 * @param session 新创建的会话对象
@@ -97,5 +86,5 @@ private:
 	std::mutex _mutex;
 	/// 稳态定时器，用于执行周期性任务（心跳检测、超时断开等）
 	boost::asio::steady_timer _timer;
+	std::atomic<bool> _stopped{false};
 };
-

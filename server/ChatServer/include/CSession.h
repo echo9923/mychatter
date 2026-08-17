@@ -6,11 +6,13 @@
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
 #include <queue>
+#include <atomic>
 #include <mutex>
 #include <memory>
 #include "const.h"
 #include "MsgNode.h"
 #include "data.h"
+#include "SessionLifecycle.h"
 #include "chat.grpc.pb.h"
 #include "chat.pb.h"
 #include <grpcpp/grpcpp.h>
@@ -62,14 +64,18 @@ public:
 	/**
 	 * @brief 设置该会话对应的用户ID（登录成功后调用）
 	 * @param uid 用户ID
+	 * @return 仅当会话仍为 Open 且尚未绑定用户时返回 true
 	 */
-	void SetUserId(int uid);
+	bool TrySetUserId(int uid);
 
 	/**
 	 * @brief 获取该会话对应的用户ID
 	 * @return 用户ID，未登录时为0
 	 */
 	int GetUserId() const;
+
+	/// Returns true only while the session still accepts application work.
+	bool IsOpen() const noexcept;
 
 	/**
 	 * @brief 绑定路由分片用的用户ID（计划1.3）
@@ -97,7 +103,7 @@ public:
 	 */
 	void Send(std::string msg, short msg_type);
 
-	/// 关闭会话，断开TCP连接
+	/// 唯一关闭入口：幂等注销会话，并在所属 I/O 线程关闭 TCP 连接
 	void Close();
 
 	/**
@@ -150,10 +156,9 @@ public:
 	/// 更新心跳时间戳为当前时间
 	void UpdateHeartbeat();
 
-	/// 处理异常会话（连接断开、错误等），清理资源并通知服务器
-	void DealExceptionSession();
-
 private:
+	bool BeginDrain();
+
 	/**
 	 * @brief 异步读取指定最大长度的数据（底层读取封装）
 	 * @param maxLength 最大读取字节数
@@ -180,16 +185,16 @@ private:
 	/// TCP socket，与客户端的实际网络连接
 	/// 并发约束：所有 _socket 成员调用只能在所属 IO 线程执行（跨线程入口 Start/Send/SendAndClose/Close 一律 post）
 	tcp::socket _socket;
+	/// SendAndClose 的有界排空定时器，防止对端不读导致 Draining 永久悬挂
+	boost::asio::steady_timer _drain_timer;
 	/// 会话唯一标识符（UUID），用于在服务器中唯一标识该连接
 	std::string _session_id;
 	/// 数据接收缓冲区，存储从socket读取的原始数据
 	char _data[MAX_LENGTH];
 	/// 所属CServer指针，用于会话注册/注销和状态查询
 	CServer* _server;
-	/// 会话关闭标志，为true时表示会话已关闭不再处理消息
-	bool _b_close;
-	/// 写完即关标志（_send_lock 保护）：为true时拒绝新 Send，队列排空后由 HandleWrite 关闭
-	bool _close_after_send{false};
+	/// Open -> Draining/Closing -> Closed; all terminal paths share this state machine.
+	llfc::SessionLifecycle _lifecycle;
 	/// 发送队列，缓存待发送给客户端的消息节点
 	std::queue<shared_ptr<SendNode> > _send_que;
 	/// 发送队列互斥锁，保护_send_que的线程安全
@@ -206,8 +211,8 @@ private:
 	std::atomic<int> _routing_uid{0};
 	/// 最后一次收到心跳/数据的时间戳（原子变量，线程安全）
 	std::atomic<time_t> _last_heartbeat;
-	/// 会话级别的互斥锁，保护会话状态的并发访问
-	std::mutex _session_mtx;
+	/// Serializes user binding with lifecycle transitions.
+	std::mutex _lifecycle_mtx;
 };
 
 /**
