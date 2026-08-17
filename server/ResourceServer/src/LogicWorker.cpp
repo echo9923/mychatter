@@ -501,7 +501,9 @@ void LogicWorker::RegisterCallBacks()
 				return;
 			}
 
-			session->SetAuth(uid);
+			if (!session->TrySetAuth(uid)) {
+				return;
+			}
 			rtvalue["error"] = ErrorCodes::Success;
 			rtvalue["uid"] = uid;
 			session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
@@ -511,6 +513,9 @@ void LogicWorker::RegisterCallBacks()
 void LogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 {
 	auto session = task->_session;
+	if (!session->IsOpen()) {
+		return;
+	}
 	short msg_type = task->_recvnode->_msg_type;
 	std::string msg_data(task->_recvnode->_data, task->_recvnode->_cur_len);
 
@@ -532,9 +537,11 @@ void LogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 		if (rsp_id != 0) {
 			json rtvalue;
 			rtvalue["error"] = ErrorCodes::TokenInvalid;
-			session->Send(rtvalue.dump(4), rsp_id);
+			session->SendAndClose(rtvalue.dump(4), rsp_id);
 		}
-		session->Close();
+		else {
+			session->Close();
+		}
 		return;
 	}
 

@@ -46,6 +46,7 @@ add_library(llfc_server_common STATIC
   src/ConfigMgr.cpp
   src/AsioIOServicePool.cpp
   src/LogicWorker.cpp
+  include/SessionLifecycle.h
 )
 target_include_directories(llfc_server_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/include"

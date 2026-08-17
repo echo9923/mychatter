@@ -88,7 +88,6 @@ int main()
 		// 监听端口和添加服务
 		builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
 		builder.RegisterService(&service);
-		service.RegisterServer(pointer_server);
 		// 构建并启动gRPC服务器
 		std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
 		std::cout << "RPC Server listening on " << server_address << std::endl;
@@ -102,16 +101,16 @@ int main()
 		boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
 		//计划1.6 优雅停机顺序：停止新 gRPC 投递 → 停止新 accept/read → 排空 logic worker → 停止 IO 池。
 		//LogicSystem::Stop 幂等：静态析构再次调用不会重复 join。
-		signals.async_wait([&io_context, pool, &server](auto, auto) {
+		signals.async_wait([&io_context, pool, &server, pointer_server](auto, auto) {
+			pointer_server->Stop();
 			server->Shutdown();
 			io_context.stop();
 			LogicSystem::GetInstance()->Stop();
+			pool->Drain();
 			pool->Stop();
 			});
 		
 	
-		//将Cserver注册给逻辑类方便以后清除连接
-		LogicSystem::GetInstance()->SetServer(pointer_server);
 		io_context.run();
 
 		grpc_server_thread.join();

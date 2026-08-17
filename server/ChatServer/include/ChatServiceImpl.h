@@ -4,7 +4,6 @@
 #include "chat.pb.h"
 #include <mutex>
 #include "data.h"
-#include "CServer.h"
 #include <memory>
 
 using grpc::Server;
@@ -93,12 +92,6 @@ public:
 		const KickUserReq* request, KickUserRsp* response) override;
 
 	/**
-	 * @brief 注册CServer实例，使gRPC服务能够访问TCP服务器层的会话管理功能
-	 * @param pServer CServer共享指针
-	 */
-	void RegisterServer(std::shared_ptr<CServer> pServer);
-
-	/**
 	 * @brief 处理ResourceServer发送的图片聊天通知，将图片消息推送给在线接收者
 	 * @param context gRPC服务端上下文
 	 * @param request 图片聊天通知请求（包含图片URL、发送者、接收者等）
@@ -107,8 +100,5 @@ public:
 	 */
 	virtual ::grpc::Status NotifyChatResourceMsg(::grpc::ServerContext* context, const ::message::NotifyResourceReq* request, ::message::NotifyResourceRsp* response) override;
 
-private:
-	/// CServer实例指针，用于访问在线会话、向客户端推送消息
-	std::shared_ptr<CServer> _p_server;
 };
 

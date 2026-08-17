@@ -135,10 +135,6 @@ int main()
 
 		boost::asio::io_context  io_context;
 		boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
-		signals.async_wait([&io_context, pool](auto, auto) {
-			io_context.stop();
-			pool->Stop();
-			});
 		auto port_str = cfg["SelfServer"]["Port"];
 
 		//资源清理定时器：启动时 + 每小时（挂主 io_context，与 acceptor 同线程串行）
@@ -151,6 +147,12 @@ int main()
 			});
 
 		CServer s(io_context, atoi(port_str.c_str()), pool);
+		signals.async_wait([&io_context, pool, &s](auto, auto) {
+			s.Stop();
+			pool->Drain();
+			io_context.stop();
+			pool->Stop();
+			});
 		io_context.run();
 	}
 	catch (std::exception& e) {

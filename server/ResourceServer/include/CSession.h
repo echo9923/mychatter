@@ -12,6 +12,7 @@
 #include <string>
 #include "const.h"
 #include "MsgNode.h"
+#include "SessionLifecycle.h"
 using namespace std;
 
 
@@ -31,16 +32,19 @@ public:
 	~CSession();
 	tcp::socket& GetSocket();
 	std::string& GetSessionId();
-	void SetAuth(int uid);
+	bool TrySetAuth(int uid);
 	bool IsAuthed() const;
 	int GetUserId() const;
+	bool IsOpen() const noexcept;
 	void Start();
 	void Send(std::string msg, short msg_type);
+	void SendAndClose(std::string msg, short msg_type);
 	void Close();
 	std::shared_ptr<CSession> SharedSelf();
 	void AsyncReadBody(int length);
 	void AsyncReadHead(int total_len);
 private:
+	bool BeginDrain();
 	void asyncReadFull(std::size_t maxLength, std::function<void(const boost::system::error_code& , std::size_t)> handler);
 	void asyncReadLen(std::size_t  read_len, std::size_t total_len,
 		std::function<void(const boost::system::error_code&, std::size_t)> handler);
@@ -49,12 +53,15 @@ private:
 	void HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self);
 	//并发约束：所有 _socket 成员调用只能在所属 IO 线程执行（跨线程入口 Start/Send/Close 一律 post）
 	tcp::socket _socket;
+	//SendAndClose 的有界排空定时器，防止对端不读导致 Draining 永久悬挂
+	boost::asio::steady_timer _drain_timer;
 	std::string _session_id;
 	char _data[MAX_LENGTH];
 	CServer* _server;
-	bool _b_close;
+	llfc::SessionLifecycle _lifecycle;
 	std::queue<shared_ptr<SendNode> > _send_que;
 	std::mutex _send_lock;
+	std::mutex _lifecycle_mtx;
 	//收到的消息结构
 	std::shared_ptr<RecvNode> _recv_msg_node;
 	bool _b_head_parse;

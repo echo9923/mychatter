@@ -3,20 +3,49 @@
 #include <iostream>
 #include <sstream>
 #include <climits>
+#include <chrono>
 #include <cstdlib>
 #include "LogicSystem.h"
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
 #include "MysqlMgr.h"
+#include "UserMgr.h"
 
 namespace {
 /// SendNode 以 short 记录 payload 长度并构造 _total_len=max_len+HEAD_TOTAL_LEN；
 /// payload 超过 SHRT_MAX-HEAD_TOTAL_LEN 会使 short 溢出。这是帧上限硬约束（计划5.3）
 constexpr int kMaxSendPayload = SHRT_MAX - HEAD_TOTAL_LEN;
+constexpr std::chrono::seconds kGracefulCloseTimeout(5);
+
+void CleanupUserPresence(int uid, const std::string& session_id,
+	const std::shared_ptr<CSession>& session)
+{
+	UserMgr::GetInstance()->RmvUserSession(uid, session);
+
+	const auto uid_str = std::to_string(uid);
+	const auto lock_key = LOCK_PREFIX + uid_str;
+	const auto identifier = RedisMgr::GetInstance()->acquireLock(
+		lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
+	if (identifier.empty()) {
+		return;
+	}
+	Defer release([identifier, lock_key]() {
+		RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
+	});
+
+	std::string current_session_id;
+	if (!RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, current_session_id)
+		|| current_session_id != session_id) {
+		return;
+	}
+
+	RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
+	RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
+}
 } // namespace
 
 CSession::CSession(boost::asio::io_context& io_context, CServer* server):
-	_socket(io_context), _server(server), _b_close(false),_b_head_parse(false), _user_uid(0){
+	_socket(io_context), _drain_timer(io_context), _server(server), _b_head_parse(false), _user_uid(0){
 	boost::uuids::uuid  a_uuid = boost::uuids::random_generator()();
 	_session_id = boost::uuids::to_string(a_uuid);
 	_recv_head_node = make_shared<MsgNode>(HEAD_TOTAL_LEN);
@@ -34,14 +63,33 @@ std::string& CSession::GetSessionId() {
 	return _session_id;
 }
 
-void CSession::SetUserId(int uid)
+bool CSession::TrySetUserId(int uid)
 {
+	if (uid <= 0) {
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(_lifecycle_mtx);
+	if (!_lifecycle.IsOpen() || _user_uid.load() != 0) {
+		return false;
+	}
 	_user_uid = uid;
+	return true;
 }
 
 int CSession::GetUserId() const
 {
 	return _user_uid.load();
+}
+
+bool CSession::IsOpen() const noexcept
+{
+	return _lifecycle.IsOpen();
+}
+
+bool CSession::BeginDrain()
+{
+	std::lock_guard<std::mutex> lock(_lifecycle_mtx);
+	return _lifecycle.BeginDrain();
 }
 
 bool CSession::BindRoutingUid(int uid)
@@ -63,45 +111,45 @@ int CSession::GetRoutingUid() const
 void CSession::Start(){
 	//首轮读必须由 socket 所属 IO 线程发起（accept 线程只负责投递），并发修复
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self, this]() {
-		AsyncReadHead(HEAD_TOTAL_LEN);
+	boost::asio::post(_socket.get_executor(), [self]() {
+		if (self->IsOpen()) {
+			self->AsyncReadHead(HEAD_TOTAL_LEN);
+		}
 	});
 }
 
 void CSession::Send(std::string msg, short msg_type) {
 	//投递到 socket 所属 IO 线程执行，避免 worker 线程跨线程触碰 socket（并发修复）
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self, this, msg = std::move(msg), msg_type]() {
-		if (!_socket.is_open()) {
-			//连接已关闭（心跳超时/异常路径已各自处理清理），静默丢弃
+	boost::asio::post(_socket.get_executor(), [self, msg = std::move(msg), msg_type]() {
+		if (!self->IsOpen() || !self->_socket.is_open()) {
 			return;
 		}
-		std::lock_guard<std::mutex> lock(_send_lock);
-		if (_close_after_send) {
-			//已安排写完即关的终帧，后续发送一律拒绝
+		std::lock_guard<std::mutex> lock(self->_send_lock);
+		if (!self->IsOpen()) {
 			return;
 		}
 		//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出，拒绝并入队（计划5.3）
 		if (static_cast<int>(msg.length()) > kMaxSendPayload) {
-			std::cout << "session: " << _session_id << " drop oversize payload, msgtype=" << msg_type
+			std::cout << "session: " << self->_session_id << " drop oversize payload, msgtype=" << msg_type
 				<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
 			return;
 		}
-		int send_que_size = _send_que.size();
+		int send_que_size = self->_send_que.size();
 		if (send_que_size > MAX_SENDQUE) {
-			std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
+			std::cout << "session: " << self->_session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
 			return;
 		}
 
-		_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
+		self->_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
 		if (send_que_size > 0) {
 			return;
 		}
-		auto& msgnode = _send_que.front();
-		boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-			[self = SharedSelf(), this](const boost::system::error_code& error,
+		auto& msgnode = self->_send_que.front();
+		boost::asio::async_write(self->_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+			[self](const boost::system::error_code& error,
 				std::size_t /*bytes_transferred*/) {
-					HandleWrite(error, self);
+					self->HandleWrite(error, self);
 				});
 	});
 }
@@ -109,46 +157,86 @@ void CSession::Send(std::string msg, short msg_type) {
 void CSession::SendAndClose(std::string msg, short msg_type) {
 	//投递到 socket 所属 IO 线程执行，避免 worker 线程跨线程触碰 socket（并发修复）
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self, this, msg = std::move(msg), msg_type]() {
-		if (!_socket.is_open()) {
-			//连接已关闭，无需再安排终帧
-			return;
-		}
-		std::lock_guard<std::mutex> lock(_send_lock);
-		if (_close_after_send) {
-			//已经安排过终帧，忽略重复调用
-			return;
-		}
-		//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出；终帧虽小但仍统一检查（计划5.3）
-		if (static_cast<int>(msg.length()) > kMaxSendPayload) {
-			std::cout << "session: " << _session_id << " drop oversize terminal payload, msgtype=" << msg_type
-				<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
-			return;
-		}
-		//先置标志再入队：同一把锁内拒绝后续一切 Send，保证该帧是最后一帧
-		_close_after_send = true;
-		_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
-		if (_send_que.size() > 1) {
-			//已有写在飞，HandleWrite 会依次写完并在排空后关闭
-			return;
-		}
-		auto& msgnode = _send_que.front();
-		boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-			[self = SharedSelf(), this](const boost::system::error_code& error,
-				std::size_t /*bytes_transferred*/) {
-					HandleWrite(error, self);
+	boost::asio::post(_socket.get_executor(), [self, msg = std::move(msg), msg_type]() {
+		bool close_immediately = false;
+		{
+			std::lock_guard<std::mutex> lock(self->_send_lock);
+			if (!self->_socket.is_open()) {
+				close_immediately = true;
+			}
+			else if (!self->BeginDrain()) {
+				return;
+			}
+			//防御性：payload 超过 short 上限会令 SendNode 的长度字段溢出；终帧虽小但仍统一检查（计划5.3）
+			else if (static_cast<int>(msg.length()) > kMaxSendPayload) {
+				std::cout << "session: " << self->_session_id << " drop oversize terminal payload, msgtype=" << msg_type
+					<< " length=" << msg.length() << " exceeds " << kMaxSendPayload << endl;
+				close_immediately = true;
+			}
+			else {
+				self->_drain_timer.expires_after(kGracefulCloseTimeout);
+				self->_drain_timer.async_wait([self](const boost::system::error_code& ec) {
+					if (!ec) {
+						self->Close();
+					}
 				});
+				self->_send_que.push(make_shared<SendNode>(msg.c_str(), msg.length(), msg_type));
+				if (self->_send_que.size() == 1) {
+					auto& msgnode = self->_send_que.front();
+					boost::asio::async_write(self->_socket,
+						boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+						[self](const boost::system::error_code& error,
+							std::size_t /*bytes_transferred*/) {
+								self->HandleWrite(error, self);
+							});
+				}
+			}
+		}
+		if (close_immediately) {
+			self->Close();
+		}
 	});
 }
 
 void CSession::Close() {
-	//投递到 socket 所属 IO 线程再关闭；定时器/worker 线程只负责排队（并发修复）
+	int uid = 0;
+	{
+		std::lock_guard<std::mutex> send_lock(_send_lock);
+		std::lock_guard<std::mutex> lock(_lifecycle_mtx);
+		if (!_lifecycle.BeginClose()) {
+			return;
+		}
+		uid = _user_uid.load();
+	}
+
 	auto self = shared_from_this();
-	boost::asio::post(_socket.get_executor(), [self, this]() {
-		std::lock_guard<std::mutex> lock(_session_mtx);
-		_socket.close();
-		_b_close = true;
+	boost::asio::dispatch(_socket.get_executor(), [self]() {
+		boost::system::error_code ignored;
+		try {
+			self->_drain_timer.cancel();
+		}
+		catch (const boost::system::system_error&) {
+			// Close is idempotent and must remain non-throwing.
+		}
+		self->_socket.cancel(ignored);
+		self->_socket.shutdown(tcp::socket::shutdown_both, ignored);
+		self->_socket.close(ignored);
+		self->_lifecycle.CompleteClose();
 	});
+
+	//先从连接表摘除；延迟回调只能摘除同一个对象，不能误删替代会话。
+	_server->RemoveSession(self);
+
+	if (uid > 0) {
+		auto cleanup = [uid, session_id = _session_id, self]() {
+			CleanupUserPresence(uid, session_id, self);
+		};
+		//在线身份属于 uid 业务状态：排到同一分片，避免阻塞 socket I/O，
+		//并保证与正在进行的登录绑定按 FIFO 串行。
+		if (!LogicSystem::GetInstance()->PostToUser(uid, cleanup)) {
+			cleanup();
+		}
+	}
 }
 
 std::shared_ptr<CSession>CSession::SharedSelf() {
@@ -163,7 +251,6 @@ void CSession::AsyncReadBody(int total_len)
 			if (ec) {
 				std::cout << "handle read failed, error is " << ec.what() << endl;
 				Close();
-				DealExceptionSession();
 				return;
 			}
 
@@ -171,13 +258,10 @@ void CSession::AsyncReadBody(int total_len)
 				std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
 					<< total_len<<"]" << endl;
 				Close();
-				_server->ClearSession(_session_id);
 				return;
 			}
 
-			//判断连接无效
-			if (!_server->CheckValid(_session_id)) {
-				Close();
+			if (!IsOpen()) {
 				return;
 			}
 
@@ -246,6 +330,7 @@ void CSession::AsyncReadBody(int total_len)
 		}
 		catch (std::exception& e) {
 			std::cout << "Exception code is " << e.what() << endl;
+			Close();
 		}
 		});
 }
@@ -258,7 +343,6 @@ void CSession::AsyncReadHead(int total_len)
 			if (ec) {
 				std::cout << "handle read failed, error is " << ec.what() << endl;
 				Close();
-				DealExceptionSession();
 				return;
 			}
 
@@ -266,13 +350,10 @@ void CSession::AsyncReadHead(int total_len)
 				std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
 					<< HEAD_TOTAL_LEN << "]" << endl;
 				Close();
-				_server->ClearSession(_session_id);
 				return;
 			}
 
-			//判断连接无效
-			if (!_server->CheckValid(_session_id)) {
-				Close();
+			if (!IsOpen()) {
 				return;
 			}
 
@@ -288,7 +369,7 @@ void CSession::AsyncReadHead(int total_len)
 			//类型非法
 			if (msg_type > MAX_LENGTH) {
 				std::cout << "invalid msg_type is " << msg_type << endl;
-				_server->ClearSession(_session_id);
+				Close();
 				return;
 			}
 			short msg_len = 0;
@@ -300,7 +381,7 @@ void CSession::AsyncReadHead(int total_len)
 			//长度非法
 			if (msg_len > MAX_LENGTH) {
 				std::cout << "invalid data length is " << msg_len << endl;
-				_server->ClearSession(_session_id);
+				Close();
 				return;
 			}
 
@@ -309,6 +390,7 @@ void CSession::AsyncReadHead(int total_len)
 		}
 		catch (std::exception& e) {
 			std::cout << "Exception code is " << e.what() << endl;
+			Close();
 		}
 		});
 }
@@ -316,7 +398,6 @@ void CSession::AsyncReadHead(int total_len)
 void CSession::HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self) {
 	//增加异常处理
 	try {
-		auto self = shared_from_this();
 		if (!error) {
 			bool drain_close = false;
 			{
@@ -333,7 +414,8 @@ void CSession::HandleWrite(const boost::system::error_code& error, std::shared_p
 				}
 				else {
 					//队列已排空：若是 SendAndClose 安排的终帧，现在才真正关闭
-					drain_close = _close_after_send;
+					drain_close = _lifecycle.GetState()
+						== llfc::SessionLifecycle::State::Draining;
 				}
 			}
 			if (drain_close) {
@@ -343,11 +425,11 @@ void CSession::HandleWrite(const boost::system::error_code& error, std::shared_p
 		else {
 			std::cout << "handle write failed, error is " << error.what() << endl;
 			Close();
-			DealExceptionSession();
 		}
 	}
 	catch (std::exception& e) {
 		std::cerr << "Exception code : " << e.what() << endl;
+		Close();
 	}
 	
 }
@@ -392,7 +474,7 @@ void CSession::NotifyOffline(int uid) {
 
 	std::string return_str = rtvalue.dump(4);
 
-	Send(return_str, ID_NOTIFY_OFF_LINE_REQ);
+	SendAndClose(return_str, ID_NOTIFY_OFF_LINE_REQ);
 	return;
 }
 
@@ -430,6 +512,9 @@ LogicNode::LogicNode(shared_ptr<CSession>  session,
 
 
 bool CSession::IsHeartbeatExpired(std::time_t& now) {
+	if (!IsOpen()) {
+		return false;
+	}
 	//过期阈值可配置（[Heartbeat] ExpiryThresholdSeconds），缺省 20 秒
 	int threshold = 20;
 	auto threshold_str = ConfigMgr::Inst()["Heartbeat"]["ExpiryThresholdSeconds"];
@@ -452,36 +537,5 @@ void CSession::UpdateHeartbeat()
 {
 	time_t now = std::time(nullptr);
 	_last_heartbeat = now;
-}
-
-void CSession::DealExceptionSession()
-{
-	auto self = shared_from_this();
-	//加锁清除session
-	auto uid_str = std::to_string(_user_uid.load());
-	auto lock_key = LOCK_PREFIX + uid_str;
-	auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-	Defer defer([identifier, lock_key, self, this]() {
-		_server->ClearSession(_session_id);
-		RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
-		});
-
-	if (identifier.empty()) {
-		return;
-	}
-	std::string redis_session_id = "";
-	auto bsuccess = RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, redis_session_id);
-	if (!bsuccess) {
-		return;
-	}
-
-	if (redis_session_id != _session_id) {
-		//说明有客户在其他服务器异地登录了
-		return;
-	}
-
-	RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
-	//清除用户登录信息
-	RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
 }
 

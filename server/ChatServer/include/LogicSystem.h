@@ -16,7 +16,6 @@ using json = nlohmann::json;
 #include <unordered_map>
 #include "data.h"
 
-class CServer;
 /// 消息处理回调函数类型：接受会话指针、消息类型、消息数据
 typedef  function<void(shared_ptr<CSession>, const short &msg_type, const string &msg_data)> FunCallBack;
 
@@ -77,12 +76,6 @@ public:
 	 * 多次调用安全。logic workers 排空过程中仍可产生 outbound 任务。
 	 */
 	void Stop();
-
-	/**
-	 * @brief 设置CServer实例，使逻辑层能够访问会话管理功能
-	 * @param pserver CServer共享指针
-	 */
-	void SetServer(std::shared_ptr<CServer> pserver);
 
 private:
 	/// 私有构造函数，启动工作线程并注册所有消息回调
@@ -257,7 +250,5 @@ private:
 	std::vector<std::unique_ptr<LogicWorker>> _delivery_workers;
 	/// 消息回调映射表，构造时注册后只读
 	std::map<short, FunCallBack> _fun_callbacks;
-	/// CServer实例指针，用于访问在线会话和踢人等操作
-	std::shared_ptr<CServer> _p_server;
 };
 

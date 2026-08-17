@@ -249,16 +249,12 @@ Status ChatServiceImpl::NotifyKickUser(::grpc::ServerContext* context,
 		return Status::OK;
 	}
 
-	//复制 CServer 共享指针（闭包可能晚于 gRPC 调用执行），闭包在 uid shard 上重新查
-	//session 后踢下线并清除旧连接；队列停止则返回 SERVER_BUSY
-	auto p_server = _p_server;
+	//闭包在 uid shard 上重新查 session 后发送终帧；SendAndClose 会统一完成注销。
 	if (!LogicSystem::GetInstance()->PostToUser(uid,
-		[uid, p_server]() {
+		[uid]() {
 			auto session = UserMgr::GetInstance()->GetSession(uid);
 			if (session) {
 				session->NotifyOffline(uid);
-				//清除旧的连接
-				p_server->ClearSession(session->GetSessionId());
 			}
 		})) {
 		err = ErrorCodes::SERVER_BUSY;
@@ -266,11 +262,6 @@ Status ChatServiceImpl::NotifyKickUser(::grpc::ServerContext* context,
 	}
 
 	return Status::OK;
-}
-
-void ChatServiceImpl::RegisterServer(std::shared_ptr<CServer> pServer)
-{
-	_p_server = pServer;
 }
 
 Status ChatServiceImpl::NotifyChatResourceMsg(::grpc::ServerContext* context, const ::message::NotifyResourceReq* request, ::message::NotifyResourceRsp* response)

@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 #include <boost/asio.hpp>
@@ -47,6 +48,12 @@ public:
 	boost::asio::io_context& GetIOService();
 
 	/**
+	 * Wait until tasks already queued on every owned io_context have run.
+	 * Must be called from outside the pool's worker threads and before Stop().
+	 */
+	void Drain();
+
+	/**
 	 * @brief 幂等停止：停止所有 io_context、释放 work guard 并 join 全部线程
 	 *
 	 * 原子停止标志保证并发/重复调用只执行一次停止流程。
@@ -64,4 +71,6 @@ private:
 	std::size_t _nextIOService;
 	/// 停止标志，保证 Stop() 只生效一次
 	std::atomic<bool> _stopped{false};
+	/// Serializes Drain() with Stop() so a barrier cannot be stranded by stop().
+	std::mutex _stop_mutex;
 };

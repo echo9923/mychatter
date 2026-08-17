@@ -3,8 +3,6 @@
 #include <ctime>
 #include <cstdlib>
 #include "AsioIOServicePool.h"
-#include "UserMgr.h"
-#include "RedisMgr.h"
 #include "ConfigMgr.h"
 
 namespace {
@@ -30,24 +28,41 @@ _acceptor(io_context, tcp::endpoint(tcp::v4(),port)), _timer(_io_context, std::c
 }
 
 CServer::~CServer() {
+	Stop();
 	cout << "Server destruct listen on port : " << _port << endl;
-	
 }
 
 void CServer::HandleAccept(shared_ptr<CSession> new_session, const boost::system::error_code& error){
 	if (!error) {
-		new_session->Start();
-		lock_guard<mutex> lock(_mutex);
-		_sessions.insert(make_pair(new_session->GetSessionId(), new_session));
+		bool registered = false;
+		{
+			lock_guard<mutex> lock(_mutex);
+			if (!_stopped.load()) {
+				registered = _sessions.emplace(
+					new_session->GetSessionId(), new_session).second;
+			}
+		}
+		if (registered) {
+			//登记完成后才启动读取，避免极速断连先 Close、随后又被插回连接表。
+			new_session->Start();
+		}
+		else {
+			new_session->Close();
+		}
 	}
-	else {
+	else if (!_stopped.load()) {
 		cout << "session accept failed, error is " << error.what() << endl;
 	}
 
-	StartAccept();
+	if (!_stopped.load()) {
+		StartAccept();
+	}
 }
 
 void CServer::StartAccept() {
+	if (_stopped.load()) {
+		return;
+	}
 	auto &io_context = _pool->GetIOService();
 	shared_ptr<CSession> new_session = make_shared<CSession>(io_context, this);
 	_acceptor.async_accept(new_session->GetSocket(),
@@ -56,39 +71,16 @@ void CServer::StartAccept() {
 		});
 }
 
-//根据session 的id删除session，并移除用户和session的关联
-void CServer::ClearSession(std::string session_id) {
-	
-	lock_guard<mutex> lock(_mutex);
-	if (_sessions.find(session_id) != _sessions.end()) {
-		auto uid = _sessions[session_id]->GetUserId();
-
-		//移除用户和session的关联
-		UserMgr::GetInstance()->RmvUserSession(uid, session_id);
+void CServer::RemoveSession(const std::shared_ptr<CSession>& session) {
+	if (!session) {
+		return;
 	}
-
-	_sessions.erase(session_id);
-	
-}
-
-//根据用户获取session
-shared_ptr<CSession> CServer::GetSession(std::string uuid) {
 	lock_guard<mutex> lock(_mutex);
-	auto it = _sessions.find(uuid);
-	if (it != _sessions.end()) {
-		return it->second;
+	auto it = _sessions.find(session->GetSessionId());
+	if (it == _sessions.end() || it->second != session) {
+		return;
 	}
-	return nullptr;
-}
-
-bool CServer::CheckValid(std::string uuid)
-{
-	lock_guard<mutex> lock(_mutex);
-	auto it = _sessions.find(uuid);
-	if (it != _sessions.end()) {
-		return true;
-	}
-	return false;
+	_sessions.erase(it);
 }
 
 int CServer::GetAuthenticatedSessionCount() {
@@ -108,10 +100,11 @@ int CServer::GetAuthenticatedSessionCount() {
 
 void CServer::on_timer(const boost::system::error_code& ec) {
 	if (ec) {
-		std::cout << "timer error: " << ec.message() << std::endl;
+		if (ec != boost::asio::error::operation_aborted) {
+			std::cout << "timer error: " << ec.message() << std::endl;
+		}
 		return;
 	}
-	std::vector<std::shared_ptr<CSession>> _expired_sessions;
 	//此处加锁遍历session
 	std::map<std::string, shared_ptr<CSession>> sessions_copy;
 	{
@@ -123,21 +116,12 @@ void CServer::on_timer(const boost::system::error_code& ec) {
 	for (auto iter = sessions_copy.begin(); iter != sessions_copy.end(); iter++) {
 		auto b_expired = iter->second->IsHeartbeatExpired(now);
 		if (b_expired) {
-			//关闭socket, 其实这里也会触发async_read的错误处理
+			//所有终止原因只调用会话的幂等关闭入口。
 			iter->second->Close();
-			//收集过期信息
-			_expired_sessions.push_back(iter->second);
-			continue;
 		}
 	}
 
-	//处理过期session, 单独提出，防止死锁
-	for (auto &session : _expired_sessions) {
-		session->DealExceptionSession();
-	}
-
-	//再次设置，下一个60s检测
-	_timer.expires_after(std::chrono::seconds(60));
+	_timer.expires_after(std::chrono::seconds(HeartbeatSweepSeconds()));
 	_timer.async_wait([this](boost::system::error_code ec) {
 		on_timer(ec);
 	});
@@ -155,4 +139,32 @@ void CServer::StartTimer()
 void CServer::StopTimer()
 {
 	_timer.cancel();
+}
+
+void CServer::Stop()
+{
+	if (_stopped.exchange(true)) {
+		return;
+	}
+
+	boost::system::error_code ignored;
+	try {
+		_timer.cancel();
+	}
+	catch (const boost::system::system_error&) {
+		// Stop is also called from the destructor and must not throw.
+	}
+	_acceptor.cancel(ignored);
+	_acceptor.close(ignored);
+
+	std::map<std::string, shared_ptr<CSession>> sessions_copy;
+	{
+		lock_guard<mutex> lock(_mutex);
+		sessions_copy = _sessions;
+	}
+	for (const auto& entry : sessions_copy) {
+		if (entry.second) {
+			entry.second->Close();
+		}
+	}
 }

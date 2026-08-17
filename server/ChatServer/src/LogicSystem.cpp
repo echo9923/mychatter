@@ -6,7 +6,6 @@
 #include "ChatGrpcClient.h"
 #include "DistLock.h"
 #include <string>
-#include "CServer.h"
 #include "ConfigMgr.h"
 #include "utils.h"
 #include "Sha256.h"
@@ -123,7 +122,7 @@ std::uint64_t ReadResourceLimit(const std::string& key, std::uint64_t fallback) 
 }
 } // namespace
 
-LogicSystem::LogicSystem() : _p_server(nullptr) {
+LogicSystem::LogicSystem() {
 	RegisterCallBacks();
 	const std::size_t logic_count = ReadWorkerCount("LogicWorkers");
 	const std::size_t delivery_count = ReadWorkerCount("DeliveryWorkers");
@@ -141,10 +140,6 @@ LogicSystem::LogicSystem() : _p_server(nullptr) {
 
 LogicSystem::~LogicSystem() {
 	Stop();
-}
-
-void LogicSystem::SetServer(std::shared_ptr<CServer> pserver) {
-	_p_server = pserver;
 }
 
 bool LogicSystem::PostMsgToQue(std::size_t routing_key, std::shared_ptr<LogicNode> msg) {
@@ -198,6 +193,9 @@ void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
 	auto session = msg->_session;
 
 	cout << "recv_msg type is " << msg_type << endl;
+	if (!session->IsOpen()) {
+		return;
+	}
 
 	if (msg_type == MSG_CHAT_LOGIN) {
 		//登录一次性：已认证后再收登录包一律拒绝并关闭，避免 LoginHandler 踢掉本连接的自毁路径
@@ -410,7 +408,6 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_ty
 				auto old_session = UserMgr::GetInstance()->GetSession(uid);
 				if (old_session && old_session != session) {
 					old_session->NotifyOffline(uid);
-					_p_server->ClearSession(old_session->GetSessionId());
 				}
 			}
 			else {
@@ -421,8 +418,11 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_ty
 			}
 		}
 
-		//session 绑定用户 uid
-		session->SetUserId(uid);
+		//关闭可能与登录并发；只有仍为 Open 的会话才能完成身份绑定。
+		if (!session->TrySetUserId(uid)) {
+			rtvalue["error"] = ErrorCodes::RPCFailed;
+			return;
+		}
 		//为用户设置登录 ip server 的名字
 		std::string  ipkey = USERIPPREFIX + uid_str;
 		RedisMgr::GetInstance()->Set(ipkey, self_name);
