@@ -16,9 +16,6 @@ using json = nlohmann::json;
 #include <unordered_map>
 #include "data.h"
 
-/// 消息处理回调函数类型：接受会话指针、消息类型、消息数据
-typedef  function<void(shared_ptr<CSession>, const short &msg_type, const string &msg_data)> FunCallBack;
-
 /**
  * @brief 业务逻辑处理系统（单例）
  * 
@@ -248,7 +245,9 @@ private:
 	std::vector<std::unique_ptr<LogicWorker>> _logic_workers;
 	/// 按 sender uid 分片的跨服投递 worker 池（仅执行会阻塞的同步 gRPC）
 	std::vector<std::unique_ptr<LogicWorker>> _delivery_workers;
+	/// 消息处理回调：LogicSystem 的具名成员函数，注册处一行直达实现
+	typedef void (LogicSystem::*MsgHandler)(shared_ptr<CSession>, const short& msg_type, const string& msg_data);
 	/// 消息回调映射表，构造时注册后只读
-	std::map<short, FunCallBack> _fun_callbacks;
+	std::map<short, MsgHandler> _fun_callbacks;
 };
 
