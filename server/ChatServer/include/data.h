@@ -73,7 +73,7 @@ struct ChatThreadInfo {
  * status 收紧为纯阅读态（0 未读/1 发送失败/2 已读）。
  */
 enum class ResourceStatus {
-	Uploading = 0, ///< 待上传（1035 创建后，分片未收齐）
+	Uploading = 0, ///< 待上传（1503 创建后，分片未收齐）
 	Ready     = 1, ///< 就绪（分片收齐、整文件 SHA-256 校验通过、已进同步流）
 	Expired   = 2  ///< 失败/过期（7 天清理标记或整文件校验失败终态）
 };

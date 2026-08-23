@@ -163,7 +163,7 @@ public:
 	bool CreatePrivateChat(int user1_id, int user2_id, std::int64_t& thread_id);
 
 	/**
-	 * @brief 取私聊会话的两个成员（1035 资源消息创建的会话归属校验用）
+	 * @brief 取私聊会话的两个成员（1503 资源消息创建的会话归属校验用）
 	 *
 	 * @param thread_id 会话ID
 	 * @param user1 [out] 成员一（表中存储顺序，非大小序）

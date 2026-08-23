@@ -395,7 +395,7 @@ QWidget* ChatPage::makeResourceBubble(ChatMsgType type, const std::shared_ptr<Ms
         auto file_bubble = new FileBubble(info->_unique_name, info->_total_size, role);
         file_bubble->setMsgInfo(info);
         file_bubble->setState(info->_transfer_state);
-        //接收方向：下载按钮触发 1045；暂停/继续复用既有链路
+        //接收方向：下载按钮触发 1511；暂停/继续复用既有链路
         connect(file_bubble, &FileBubble::downloadRequested, this,
             [this](QString unique_name) {
                 auto info = UserMgr::GetInstance()->GetTransFileByName(unique_name);
@@ -610,7 +610,7 @@ void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto)
         if (thread_data) {
             thread_data->AppendUnRspMsg(dto.client_message_id, img_msg);
         }
-        //文件信息加入管理（1036 后 Dispatcher 复用同一 MsgInfo 启动上传）
+        //文件信息加入管理（1504 后 Dispatcher 复用同一 MsgInfo 启动上传）
         UserMgr::GetInstance()->AddTransFile(dto.content, file_info);
     }
 

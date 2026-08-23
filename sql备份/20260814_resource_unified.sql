@@ -10,7 +10,7 @@
  *       仅 msg_type 1(图片)/3(文件) 有意义；文本恒为 0。
  *       status 的 3=UN_UPLOAD 语义废弃，资源状态一律读本列。
  *   - content_hash CHAR(64) NULL
- *       整文件 SHA-256（小写 hex）。资源消息必填（1035 创建时随元数据写入），
+ *       整文件 SHA-256（小写 hex）。资源消息必填（1503 创建时随元数据写入），
  *       服务端在收齐分片后据此做整文件校验；文本消息为 NULL。
  *   - mime_type VARCHAR(128) NULL
  *       资源 MIME 类型（如 image/png、application/pdf），仅展示用。

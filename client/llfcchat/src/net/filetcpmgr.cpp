@@ -36,7 +36,7 @@ _bytes_sent(0), _pending(false), _authenticated(false), _cwnd_size(0)
     registerMetaType();
     QObject::connect(&_socket, &QTcpSocket::connected, this, [&]() {
         qDebug() << "Connected to server!";
-        //连接起点：新连接不允许继承上一连接的鉴权态，发 1053 登录帧前重置
+        //连接起点：新连接不允许继承上一连接的鉴权态，发 1501 登录帧前重置
         _authenticated = false;
         emit sig_con_success(true);
         });
@@ -211,7 +211,7 @@ void FileTcpMgr::handleMsg(ReqId id, int len, QByteArray data)
 
 void FileTcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
 {
-    //3.2 鉴权前禁止发送任何业务帧（仅允许 1053 登录请求），未鉴权直接丢弃并记日志
+    //3.2 鉴权前禁止发送任何业务帧（仅允许 1501 登录请求），未鉴权直接丢弃并记日志
     if (!_authenticated && reqId != ID_RESOURCE_LOGIN_REQ) {
         qWarning() << "[FileTcpMgr] dropping frame id=" << reqId
                    << " before resource authentication";
@@ -275,30 +275,30 @@ void FileTcpMgr::SendData(ReqId reqId, QByteArray data)
 
 void FileTcpMgr::initHandlers()
 {
-    //3.2 Resource 登录回复（1054）：鉴权成功后才允许发送业务帧
+    //3.2 Resource 登录回复（1502）：鉴权成功后才允许发送业务帧
     _handlers.insert(ID_RESOURCE_LOGIN_RSP, &FileTcpMgr::handleResourceLoginRsp);
 
-    // ---------- 头像通道（1031/1032/1033/1034，旧协议保持不变） ----------
+    // ---------- 头像通道（1601/1602/1603/1604，旧协议保持不变） ----------
     // 接收上传用户头像回复
     _handlers.insert(ID_UPLOAD_HEAD_ICON_RSP, &FileTcpMgr::handleUploadHeadIconRsp);
 
     _handlers.insert(ID_DOWN_LOAD_FILE_RSP, &FileTcpMgr::handleDownloadFileRsp);
 
-    // ---------- 资源上传通道（1037/1038 + 1041/1042，offset+SHA-256） ----------
+    // ---------- 资源上传通道（1507/1508 + 1509/1510，offset+SHA-256） ----------
 
-    //1038 上传分片回包：{error, message_id:"<str>", server_offset:"<str>", resource_status}
+    //1508 上传分片回包：{error, message_id:"<str>", server_offset:"<str>", resource_status}
     _handlers.insert(ID_RESOURCE_CHUNK_UPLOAD_RSP, &FileTcpMgr::handleResourceChunkUploadRsp);
 
-    //1042 上传进度查询回包（OutboxDispatcher 重启/重连恢复续传用）
+    //1510 上传进度查询回包（OutboxDispatcher 重启/重连恢复续传用）
     _handlers.insert(ID_RESOURCE_UPLOAD_PROGRESS_RSP, &FileTcpMgr::handleResourceUploadProgressRsp);
 
-    // ---------- 资源下载通道（1045/1046 + 1047/1048，offset+SHA-256） ----------
+    // ---------- 资源下载通道（1511/1512 + 1513/1514，offset+SHA-256） ----------
 
-    //1046 下载信息回包：{error, message_id, file_name, total_size, content_hash, mime_type,
+    //1512 下载信息回包：{error, message_id, file_name, total_size, content_hash, mime_type,
     //msg_type, resource_status}
     _handlers.insert(ID_RESOURCE_DOWN_INFO_RSP, &FileTcpMgr::handleResourceDownInfoRsp);
 
-    //1048 分片下载回包：{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
+    //1514 分片下载回包：{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
     _handlers.insert(ID_RESOURCE_CHUNK_DOWN_RSP, &FileTcpMgr::handleResourceChunkDownRsp);
 }
 
@@ -500,7 +500,7 @@ void FileTcpMgr::handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data
     }
     QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
     if (jsonDoc.isNull() || !jsonDoc.isObject()) {
-        qDebug() << "[FileTcpMgr] 1038 json parse failed";
+        qDebug() << "[FileTcpMgr] 1508 json parse failed";
         return;
     }
     QJsonObject recvObj = jsonDoc.object();
@@ -515,7 +515,7 @@ void FileTcpMgr::handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data
         ? recvObj["resource_status"].toInt() : -1;
     auto file_info = UserMgr::GetInstance()->GetTransFileByMsgId(message_id);
     if (!file_info) {
-        qDebug() << "[FileTcpMgr] 1038 for unknown message " << message_id;
+        qDebug() << "[FileTcpMgr] 1508 for unknown message " << message_id;
         return;
     }
     const QString name = file_info->_unique_name;
@@ -567,8 +567,8 @@ void FileTcpMgr::handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data
         return;
     }
 
-    //1018 偏移超前 / 1023 片或整文件哈希不符：一律按服务端 server_offset 对齐重发
-    //(整文件 1023 时服务端已删 .part，server_offset=0，即整文件重传)
+    //2107 偏移超前 / 2112 片或整文件哈希不符：一律按服务端 server_offset 对齐重发
+    //(整文件 2112 时服务端已删 .part，server_offset=0，即整文件重传)
     qWarning() << "[FileTcpMgr] upload chunk error=" << err << " msg=" << message_id
         << " server_offset=" << server_offset;
     const qint64 confirmed = OffsetToChunkIndex(server_offset,
@@ -625,7 +625,7 @@ void FileTcpMgr::handleResourceDownInfoRsp(ReqId id, int len, QByteArray data)
         return;
     }
     if (err != ErrorCodes::SUCCESS) {
-        //1026 无权 / 1027 已过期 / 1012 文件缺失：终态
+        //2115 无权 / 2116 已过期 / 2101 文件缺失：终态
         qWarning() << "[FileTcpMgr] down info failed msg=" << message_id << " err=" << err;
         file_info->_transfer_state = (err == ErrorCodes::RESOURCE_STATE_INVALID)
             ? TransferState::Expired : TransferState::Failed;
@@ -823,7 +823,7 @@ void FileTcpMgr::slot_start_resource_download(std::shared_ptr<MsgInfo> msg_info)
     if (!msg_info || msg_info->_msg_id <= 0) {
         return;
     }
-    //1045 查元数据（含权限/就绪校验），1046 回包里接续 1047 逐片下载
+    //1511 查元数据（含权限/就绪校验），1512 回包里接续 1513 逐片下载
     QJsonObject req;
     req["message_id"] = QString::number(msg_info->_msg_id);
     SendData(ID_RESOURCE_DOWN_INFO_REQ, QJsonDocument(req).toJson(QJsonDocument::Compact));
@@ -931,7 +931,7 @@ void FileTcpMgr::slot_tcp_close() {
 }
 
 void FileTcpMgr::slot_continue_upload_file(QString unique_name) {
-    //续传统一入口：向服务端查询真实偏移（1041），1038/1042 对齐后 BatchSend 继续
+    //续传统一入口：向服务端查询真实偏移（1509），1508/1510 对齐后 BatchSend 继续
     auto msg_info = UserMgr::GetInstance()->GetTransFileByName(unique_name);
     if (msg_info == nullptr || msg_info->_msg_id <= 0) {
         return;
@@ -944,7 +944,7 @@ void FileTcpMgr::slot_continue_upload_file(QString unique_name) {
 }
 
 void FileTcpMgr::slot_continue_download_file(QString unique_name) {
-    //续传统一入口：重走 1045 元数据（从本地 .part 大小续传）
+    //续传统一入口：重走 1511 元数据（从本地 .part 大小续传）
     auto file_info = UserMgr::GetInstance()->GetTransFileByName(unique_name);
     if (file_info == nullptr || file_info->_msg_id <= 0) {
         return;

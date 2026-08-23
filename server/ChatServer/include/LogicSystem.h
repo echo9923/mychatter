@@ -214,7 +214,7 @@ private:
 	void DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
-	 * @brief 增量消息同步处理器（1051/1052）
+	 * @brief 增量消息同步处理器（1405/1406）
 	 *
 	 * 在 receiver uid shard 上执行：校验 uid==session->GetUserId()；after_sync_seq 按
 	 * 十进制字符串解析为 uint64（缺省 "0"），limit clamp [1,200] 默认 100；
@@ -225,7 +225,7 @@ private:
 	void DealSyncMessage(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
-	 * @brief 将一条 ChatMessage 序列化为统一 envelope（1018/1019/1030/1052 共用）
+	 * @brief 将一条 ChatMessage 序列化为统一 envelope（1302/1303/1404/1406 共用）
 	 *
 	 * 固定字段：message_id,unique_id,thread_id,fromuid,touid,msg_type,content,
 	 * content_size,chat_time,status。message_id/thread_id/content_size 一律十进制

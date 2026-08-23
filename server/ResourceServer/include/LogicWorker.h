@@ -29,19 +29,19 @@ public:
 	void PostTask(std::shared_ptr<LogicNode> task);
 	void RegisterCallBacks();
 private:
-	// 1031 头像分片上传
+	// 1601 头像分片上传
 	void handleUploadHeadIcon(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1033 头像/旧文件下载
+	// 1603 头像/旧文件下载
 	void handleDownloadFile(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1037 资源分片上传
+	// 1507 资源分片上传
 	void handleResourceChunkUpload(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1041 上传进度查询
+	// 1509 上传进度查询
 	void handleResourceUploadProgress(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1045 资源下载元数据
+	// 1511 资源下载元数据
 	void handleResourceDownInfo(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1047 资源分片下载
+	// 1513 资源分片下载
 	void handleResourceChunkDown(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1053 Resource 登录鉴权
+	// 1501 Resource 登录鉴权
 	void handleResourceLogin(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 	void task_callback(std::shared_ptr<LogicNode>);
 	std::thread _work_thread;

@@ -5,7 +5,7 @@
 //               responses; the server accepts a brand-new connection while at
 //               least one handler is still in flight (overlap proof).
 //   order-n4:   LogicWorkers=4; uid A=1002 and B=1019 each send 1000 texts
-//               concurrently. Per uid, 1018 arrival order == submission order and
+//               concurrently. Per uid, 1302 arrival order == submission order and
 //               canonical message_id strictly increases; the two uids' global
 //               receipt-sequence ranges overlap (different shards, true parallel).
 //   order-n1:   LogicWorkers=1; same 1000-each send, order preserved; no overlap
@@ -13,14 +13,14 @@
 //   dedup:      pipelined re-send of an identical (sender_id,unique_id) yields the
 //               same message_id with exactly one DB row; a same-key different-
 //               content send returns MESSAGE_CONFLICT and leaves the original row.
-//   offline:    离线期间产生的消息，重连后经 1051/1052 增量同步按 sync_seq 升序补齐。
-//   lost-ack:   1050 丢失后重发同一 1049，服务端幂等成功（重复 ACK 不产生错误）。
+//   offline:    离线期间产生的消息，重连后经 1405/1406 增量同步按 sync_seq 升序补齐。
+//   lost-ack:   1408 丢失后重发同一 1407，服务端幂等成功（重复 ACK 不产生错误）。
 //   pull-bytes: 多页同步：超过一页的消息量逐页 after_sync_seq 推进，无遗漏无重复、
 //               sync_seq 严格递增、has_more 正确。
 //   sync-bootstrap: {bootstrap:true} 返回 checkpoint；checkpoint 之后的消息全部
 //               同步到、之前的不推。
 //   big-ids:    AUTO_INCREMENT 调到 2^32 以上后，>32 位 message_id 以十进制字符串
-//               在 1018/1052 全链路无损、同步游标正常推进（结束恢复原值）。
+//               在 1302/1406 全链路无损、同步游标正常推进（结束恢复原值）。
 #include "im_scenarios.h"
 
 #include <algorithm>
@@ -238,7 +238,7 @@ static bool LoginUserPinned(TcpClient& c, int uid, Redis& redis,
 	return false;
 }
 
-// Build a 1017 body carrying a single text message (单条化：content/unique_id 顶层平铺;
+// Build a 1301 body carrying a single text message (单条化：content/unique_id 顶层平铺;
 // 协议字符串化：thread_id 为十进制字符串).
 static std::string BuildTextReq(int fromuid, int touid, std::int64_t thread_id,
                                 const std::string& content, const std::string& unique_id) {
@@ -258,7 +258,7 @@ static std::int64_t JsonIdStr(const json& j, const char* key, std::int64_t dfl =
 	return ParseIdStr(j[key].get<std::string>(), dfl);
 }
 
-// Build a 1049 delivery-ACK body: {"uid":<receiver>,"message_ids":["<id>",...]}
+// Build a 1407 delivery-ACK body: {"uid":<receiver>,"message_ids":["<id>",...]}
 // （协议字符串化：message_ids 数组元素为十进制字符串）
 static std::string BuildAckReq(int uid, const std::vector<std::int64_t>& ids) {
 	json j;
@@ -269,7 +269,7 @@ static std::string BuildAckReq(int uid, const std::vector<std::int64_t>& ids) {
 	return j.dump();
 }
 
-// Build a 1051 incremental-sync body:
+// Build a 1405 incremental-sync body:
 //   {"uid":<uid>,"after_sync_seq":"<seq十进制字符串>","limit":<n>}
 static std::string BuildSyncReq(int uid, std::uint64_t after_sync_seq, int limit) {
 	json j;
@@ -279,7 +279,7 @@ static std::string BuildSyncReq(int uid, std::uint64_t after_sync_seq, int limit
 	return j.dump();
 }
 
-// Build a 1051 bootstrap body: {"uid":<uid>,"bootstrap":true}
+// Build a 1405 bootstrap body: {"uid":<uid>,"bootstrap":true}
 static std::string BuildSyncBootstrapReq(int uid) {
 	json j;
 	j["uid"] = uid;
@@ -287,7 +287,7 @@ static std::string BuildSyncBootstrapReq(int uid) {
 	return j.dump();
 }
 
-// 1052 增量同步响应的单条 envelope（共享约定：message_id/thread_id/sync_seq 为
+// 1406 增量同步响应的单条 envelope（共享约定：message_id/thread_id/sync_seq 为
 // 十进制字符串；fromuid/touid/msg_type/status 为数字；content_size/chat_time 维持字符串）。
 struct SyncEnvelope {
 	std::int64_t  message_id = 0;
@@ -304,7 +304,7 @@ struct SyncEnvelope {
 	std::string chat_time;
 };
 
-// Parse the messages array of a 1052 response into envelopes (order preserved).
+// Parse the messages array of a 1406 response into envelopes (order preserved).
 static std::vector<SyncEnvelope> ExtractSyncMessages(const json& j) {
 	std::vector<SyncEnvelope> out;
 	if (!j.is_object() || !j.contains("messages")) return out;
@@ -329,7 +329,7 @@ static std::vector<SyncEnvelope> ExtractSyncMessages(const json& j) {
 	return out;
 }
 
-// 发送 1051 增量同步请求并等待 1052；成功时填充 messages/next_sync_seq/has_more。
+// 发送 1405 增量同步请求并等待 1406；成功时填充 messages/next_sync_seq/has_more。
 static bool DoSyncPage(TcpClient& c, int uid, std::uint64_t after, int limit,
                        std::vector<SyncEnvelope>& msgs, std::uint64_t& next_seq,
                        bool& has_more) {
@@ -344,7 +344,7 @@ static bool DoSyncPage(TcpClient& c, int uid, std::uint64_t after, int limit,
 	return true;
 }
 
-// 发送 1051 bootstrap 请求并等待 1052；成功时填充 checkpoint（max_seq 十进制串解析）。
+// 发送 1405 bootstrap 请求并等待 1406；成功时填充 checkpoint（max_seq 十进制串解析）。
 static bool DoSyncBootstrap(TcpClient& c, int uid, std::uint64_t& checkpoint) {
 	if (!c.Send(ID_SYNC_MESSAGE_REQ, BuildSyncBootstrapReq(uid))) return false;
 	Frame f;
@@ -478,10 +478,10 @@ static void OrderConsumer(OrderSide& s, std::atomic<int>& gseq, int deadline_ms)
 			if (s.client->IsClosed()) { s.ok = false; return; }
 			continue;
 		}
-		if (f.type != ID_TEXT_CHAT_MSG_RSP) continue;  // drain 1019 etc.
+		if (f.type != ID_TEXT_CHAT_MSG_RSP) continue;  // drain 1303 etc.
 		auto j = ParseJson(f.body);
 		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { s.ok = false; return; }
-		//单条化：1018 成功响应为顶层拍平 envelope（message_id 为十进制字符串）
+		//单条化：1302 成功响应为顶层拍平 envelope（message_id 为十进制字符串）
 		const std::string uid = j.value("unique_id", "");
 		const std::int64_t mid = JsonIdStr(j, "message_id", 0);
 		if (uid.empty() || mid <= 0) { s.ok = false; return; }
@@ -587,14 +587,14 @@ static bool RunOrderScenario(int logic_workers, bool require_overlap, const std:
 	// (1) Both sides collected all 1000 and no protocol error.
 	Check(sA.ok.load() && sB.ok.load() &&
 		      sA.collected.load() == PER && sB.collected.load() == PER,
-		      label + ": both uids received 1000x 1018",
+		      label + ": both uids received 1000x 1302",
 		      ("A collected=" + std::to_string(sA.collected.load()) +
 	       " B collected=" + std::to_string(sB.collected.load()) +
 	       " okA=" + std::to_string(sA.ok.load()) + " okB=" + std::to_string(sB.ok.load())).c_str());
 	if (!(sA.ok.load() && sB.ok.load() &&
 	      sA.collected.load() == PER && sB.collected.load() == PER)) all_ok = false;
 
-	// (2) Per-uid: 1018 arrival order == submission order (same shard FIFO) and
+	// (2) Per-uid: 1302 arrival order == submission order (same shard FIFO) and
 	//     canonical message_id strictly increases.
 	auto check_side = [&](OrderSide& s, const std::string& who) -> bool {
 		long long prev_seq = -1; std::int64_t prev_mid = -1; bool ordered = true, increasing = true;
@@ -605,7 +605,7 @@ static bool RunOrderScenario(int logic_workers, bool require_overlap, const std:
 			if (s.message_ids[i] <= prev_mid) { increasing = false; }
 			prev_mid = s.message_ids[i];
 		}
-		Check(ordered, label + ": " + who + " 1018 order preserved",
+		Check(ordered, label + ": " + who + " 1302 order preserved",
 			"arrival sequence not monotonic in submission order");
 		Check(increasing, label + ": " + who + " message_id strictly increasing",
 			"canonical message_id not strictly increasing");
@@ -710,7 +710,7 @@ bool ScenarioDedup() {
 		Fail("dedup: login sender", "gate/chat login failed"); cleanup(); return false;
 	}
 
-	// --- Assertion A: identical (sender_id, unique_id) sent twice (pipelined) ->8740	//     two 1018 with the SAME message_id, exactly one DB row.
+	// --- Assertion A: identical (sender_id, unique_id) sent twice (pipelined) ->8740	//     two 1302 with the SAME message_id, exactly one DB row.
 	{
 		const std::string uid1 = "imtest-dedup-same-" + tag;
 		const std::string body = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
@@ -728,7 +728,7 @@ bool ScenarioDedup() {
 			if (err2 == 0) mid2 = JsonIdStr(j, "message_id", -1); }
 
 		Check(s1 && s2 && g1 && g2 && err1 == 0 && err2 == 0,
-			"dedup: both re-sends get 1018 success",
+			"dedup: both re-sends get 1302 success",
 			("send1=" + std::to_string(s1) + " send2=" + std::to_string(s2) +
 			 " err1=" + std::to_string(err1) + " err2=" + std::to_string(err2)).c_str());
 		Check(mid1 > 0 && mid1 == mid2, "dedup: identical message_id returned",
@@ -800,7 +800,7 @@ bool ScenarioDedup() {
 // bytes / cross-server / resource-offline)
 // ---------------------------------------------------------------------------
 
-// Build a 1035 create-resource-message body (图片/文件统一协议)。
+// Build a 1503 create-resource-message body (图片/文件统一协议)。
 // thread_id/content_size/message_id 按协议字符串化；msg_type 1=图片 3=文件。
 static std::string BuildResourceCreateReq(int fromuid, int touid, std::int64_t thread_id,
 	                                  const std::string& unique_id, int msg_type,
@@ -820,7 +820,7 @@ static std::string BuildResourceCreateReq(int fromuid, int touid, std::int64_t t
 	return j.dump();
 }
 
-// Build a 1037 resource-chunk-upload body: {message_id, offset, chunk_sha256, data}
+// Build a 1507 resource-chunk-upload body: {message_id, offset, chunk_sha256, data}
 // （message_id/offset 十进制字符串；data 为 <=32KiB 分片的 Base64）
 static std::string BuildChunkUploadReq(std::int64_t message_id, long long offset,
 	                               const std::string& chunk_sha256,
@@ -833,21 +833,21 @@ static std::string BuildChunkUploadReq(std::int64_t message_id, long long offset
 	return j.dump();
 }
 
-// Build a 1041 upload-progress query body: {message_id}
+// Build a 1509 upload-progress query body: {message_id}
 static std::string BuildUploadProgressReq(std::int64_t message_id) {
 	json j;
 	j["message_id"] = ToIdStr(message_id);
 	return j.dump();
 }
 
-// Build a 1045 download-info query body: {message_id}
+// Build a 1511 download-info query body: {message_id}
 static std::string BuildDownInfoReq(std::int64_t message_id) {
 	json j;
 	j["message_id"] = ToIdStr(message_id);
 	return j.dump();
 }
 
-// Build a 1047 chunk-download body: {message_id, offset}
+// Build a 1513 chunk-download body: {message_id, offset}
 static std::string BuildChunkDownReq(std::int64_t message_id, long long offset) {
 	json j;
 	j["message_id"] = ToIdStr(message_id);
@@ -1034,8 +1034,8 @@ private:
 // offline (Verification.6)
 //
 // receiver 离线期间 sender 发 100 条（MySQL 全 delivery_status=0、
-// user_message_sync 双方各写一行）；receiver 重连后经 1051/1052 增量同步按
-// sync_seq 升序补齐，每 ID 只出现一次；1049/1050 完成后 DB 全 1。
+// user_message_sync 双方各写一行）；receiver 重连后经 1405/1406 增量同步按
+// sync_seq 升序补齐，每 ID 只出现一次；1407/1408 完成后 DB 全 1。
 // ---------------------------------------------------------------------------
 bool ScenarioOffline() {
 	std::printf("\n=== scenario: offline ===\n");
@@ -1078,7 +1078,7 @@ bool ScenarioOffline() {
 			cleanup(); pm.StopAll(); return false;
 		}
 		if (!DoSyncBootstrap(cR0, RECEIVER_UID, checkpoint)) {
-			Fail("offline: bootstrap checkpoint", "1051/1052 bootstrap failed");
+			Fail("offline: bootstrap checkpoint", "1405/1406 bootstrap failed");
 			cR0.Close(); cleanup(); pm.StopAll(); return false;
 		}
 		cR0.Close();
@@ -1101,7 +1101,7 @@ bool ScenarioOffline() {
 			"offline-" + std::to_string(i), uid_str);
 		if (!cS.Send(ID_TEXT_CHAT_MSG_REQ, body)) { send_ok = false; break; }
 	}
-	// Collect all 1018 responses (message_id 为十进制字符串).
+	// Collect all 1302 responses (message_id 为十进制字符串).
 	for (int i = 0; i < MSG_COUNT && send_ok; ++i) {
 		Frame f;
 		if (!cS.Wait(ID_TEXT_CHAT_MSG_RSP, 15000, &f)) { send_ok = false; break; }
@@ -1110,7 +1110,7 @@ bool ScenarioOffline() {
 		sent_mids.push_back(JsonIdStr(j, "message_id", 0));
 	}
 	Check(send_ok && (int)sent_mids.size() == MSG_COUNT,
-		"offline: sender received 100x 1018",
+		"offline: sender received 100x 1302",
 		("sent=" + std::to_string(sent_mids.size())).c_str());
 	if (!send_ok || (int)sent_mids.size() != MSG_COUNT) all_ok = false;
 
@@ -1134,7 +1134,7 @@ bool ScenarioOffline() {
 		if ((int)rows.size() != MSG_COUNT) all_ok = false;
 	}
 
-	// Login receiver and sync all pending via 1051/1052.
+	// Login receiver and sync all pending via 1405/1406.
 	TcpClient cR;
 	if (!LoginUser(cR, RECEIVER_UID).ok) {
 		Fail("offline: login receiver", "gate/chat login failed"); cS.Close(); cleanup(); pm.StopAll(); return false;
@@ -1189,7 +1189,7 @@ bool ScenarioOffline() {
 		 " consistent=" + std::to_string(cursor_consistent)).c_str());
 	if (!(seq_increasing && cursor_consistent)) all_ok = false;
 
-	// (4) ACK all via 1049 → 1050（message_ids 为字符串数组）.
+	// (4) ACK all via 1407 → 1408（message_ids 为字符串数组）.
 	bool ack_ok = false;
 	{
 		std::vector<std::int64_t> ids_vec(pulled_set.begin(), pulled_set.end());
@@ -1202,7 +1202,7 @@ bool ScenarioOffline() {
 			}
 		}
 	}
-	Check(ack_ok, "offline: ACK 1049/1050 success", "ack failed");
+	Check(ack_ok, "offline: ACK 1407/1408 success", "ack failed");
 	if (!ack_ok) all_ok = false;
 
 	// (5) After ACK: MySQL all delivery_status=1（短暂轮询等服务端落库）。
@@ -1230,7 +1230,7 @@ bool ScenarioOffline() {
 // ---------------------------------------------------------------------------
 // lost-ack (Verification.6)
 //
-// 第一次 1049 的 1050 回包假设丢失：客户端重发同一 1049，服务端幂等成功
+// 第一次 1407 的 1408 回包假设丢失：客户端重发同一 1407，服务端幂等成功
 // （重复 ACK 不产生错误），DB delivery_status 保持 1 且无重复记录。
 // ---------------------------------------------------------------------------
 bool ScenarioLostAck() {
@@ -1302,7 +1302,7 @@ bool ScenarioLostAck() {
 		if (!(synced && found)) all_ok = false;
 	}
 
-	// First ACK round: 1049 → 1050 success, DB delivery_status=1.
+	// First ACK round: 1407 → 1408 success, DB delivery_status=1.
 	auto do_ack = [&]() -> bool {
 		if (!cR.Send(ID_CHAT_DELIVERY_ACK_REQ, BuildAckReq(RECEIVER_UID, {sent_mid}))) return false;
 		Frame af;
@@ -1324,7 +1324,7 @@ bool ScenarioLostAck() {
 		if (acked != 1) all_ok = false;
 	}
 
-	// 模拟 1050 丢失：重发同一 1049，服务端幂等成功（重复 ACK 不产生错误）。
+	// 模拟 1408 丢失：重发同一 1407，服务端幂等成功（重复 ACK 不产生错误）。
 	bool ack2 = do_ack();
 	Check(ack2, "lost-ack: duplicate ACK idempotent success", "duplicate ack failed");
 	if (!ack2) all_ok = false;
@@ -1400,17 +1400,17 @@ bool ScenarioPullBytes() {
 			"pullbytes-" + std::to_string(i), uid_str);
 		cS.Send(ID_TEXT_CHAT_MSG_REQ, body);
 	}
-	// Drain 1018 responses.
-	int got_1018 = 0;
+	// Drain 1302 responses.
+	int got_1302 = 0;
 	for (int i = 0; i < MSG_COUNT; ++i) {
 		Frame f;
 		if (!cS.Wait(ID_TEXT_CHAT_MSG_RSP, 15000, &f)) break;
 		auto j = ParseJson(f.body);
-		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS) ++got_1018;
+		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS) ++got_1302;
 	}
-	Check(got_1018 == MSG_COUNT, "pull-bytes: sender received all 1018",
-		("got=" + std::to_string(got_1018)).c_str());
-	if (got_1018 != MSG_COUNT) all_ok = false;
+	Check(got_1302 == MSG_COUNT, "pull-bytes: sender received all 1302",
+		("got=" + std::to_string(got_1302)).c_str());
+	if (got_1302 != MSG_COUNT) all_ok = false;
 
 	// Login receiver, sync page by page (limit=100 强制 3 页).
 	TcpClient cR;
@@ -1480,7 +1480,7 @@ bool ScenarioPullBytes() {
 //
 // 双 Chat 实例，receiver 登录到 chatserver2；在本节点 gRPC 端口放可控 proxy，
 // 只在第一次 NotifyTextChatMsg 断流并计数尝试次数；验证每次调用 ≤3s、最多 3
-// 次、sender 仍收 1018；kill/restart receiver ChatServer 后 receiver 经增量同步
+// 次、sender 仍收 1302；kill/restart receiver ChatServer 后 receiver 经增量同步
 // 补齐消息。
 // ---------------------------------------------------------------------------
 bool ScenarioCrossServer() {
@@ -1553,18 +1553,18 @@ bool ScenarioCrossServer() {
 	auto t_start = std::chrono::steady_clock::now();
 	cS.Send(ID_TEXT_CHAT_MSG_REQ, body);
 
-	// Sender still receives 1018 (MySQL commit before RPC).
+	// Sender still receives 1302 (MySQL commit before RPC).
 	Frame rsp;
-	bool got_1018 = cS.Wait(ID_TEXT_CHAT_MSG_RSP, 15000, &rsp);
+	bool got_1302 = cS.Wait(ID_TEXT_CHAT_MSG_RSP, 15000, &rsp);
 	std::int64_t sent_mid = -1;
-	if (got_1018) {
+	if (got_1302) {
 		auto j = ParseJson(rsp.body);
 		if (j.is_object() && j.value("error", -1) == ERR_SUCCESS)
 			sent_mid = JsonIdStr(j, "message_id", -1);
 	}
-	Check(got_1018 && sent_mid > 0, "cross-server: sender got 1018 despite broken RPC",
+	Check(got_1302 && sent_mid > 0, "cross-server: sender got 1302 despite broken RPC",
 		("mid=" + std::to_string(sent_mid)).c_str());
-	if (!(got_1018 && sent_mid > 0)) all_ok = false;
+	if (!(got_1302 && sent_mid > 0)) all_ok = false;
 
 	// Wait for chatserver1's delivery worker to exhaust retries against the proxy.
 	// Max 3 attempts × 3s deadline + backoff ≈ 9.5s; poll until connections stabilise.
@@ -1666,8 +1666,8 @@ bool ScenarioCrossServer() {
 // ---------------------------------------------------------------------------
 // resource-offline（原 image-offline，统一资源协议改造）
 //
-// 走 ResourceServer 分片上传：创建（1035）后 resource_status=Uploading 的行绝不
-// 出现在增量同步流；分片收齐且整文件 SHA-256 校验通过后（1038 resource_status=1），
+// 走 ResourceServer 分片上传：创建（1503）后 resource_status=Uploading 的行绝不
+// 出现在增量同步流；分片收齐且整文件 SHA-256 校验通过后（1508 resource_status=1），
 // sync 行写入，同步流出现 msg_type=PIC/content_hash 正确的消息，ACK 后清理。
 // ---------------------------------------------------------------------------
 bool ScenarioResourceOffline() {
@@ -1712,7 +1712,7 @@ bool ScenarioResourceOffline() {
 		Fail("resource-offline: login sender", "gate/chat login failed"); cleanup(); pm.StopAll(); return false;
 	}
 
-	// Step 1: send 1035 resource metadata to ChatServer.
+	// Step 1: send 1503 resource metadata to ChatServer.
 	const std::string uid_str = "imtest-res-" + tag;
 	const std::string file_name = "test_img_" + tag + ".png";
 	const long long file_size = 70000;  // >2 片（32KiB），覆盖多分片路径
@@ -1723,19 +1723,19 @@ bool ScenarioResourceOffline() {
 	std::string meta_body = BuildResourceCreateReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
 		uid_str, MSG_TYPE_PIC, file_name, file_size, content_hash, "image/png");
 	cS.Send(ID_CREATE_RESOURCE_MSG_REQ, meta_body);
-	Frame mrs; bool got_1036 = cS.Wait(ID_CREATE_RESOURCE_MSG_RSP, 10000, &mrs);
+	Frame mrs; bool got_1504 = cS.Wait(ID_CREATE_RESOURCE_MSG_RSP, 10000, &mrs);
 	std::int64_t msg_id = -1;
 	int create_err = -1;
-	if (got_1036) {
+	if (got_1504) {
 		auto j = ParseJson(mrs.body);
 		create_err = j.is_object() ? j.value("error", -1) : -1;
 		if (create_err == ERR_SUCCESS)
 			msg_id = JsonIdStr(j, "message_id", -1);
 	}
-	Check(got_1036 && create_err == ERR_SUCCESS && msg_id > 0,
-		"resource-offline: 1035/1036 metadata persisted",
+	Check(got_1504 && create_err == ERR_SUCCESS && msg_id > 0,
+		"resource-offline: 1503/1504 metadata persisted",
 		("err=" + std::to_string(create_err) + " msg_id=" + std::to_string(msg_id)).c_str());
-	if (!(got_1036 && create_err == ERR_SUCCESS && msg_id > 0)) {
+	if (!(got_1504 && create_err == ERR_SUCCESS && msg_id > 0)) {
 		cS.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
@@ -1783,15 +1783,15 @@ bool ScenarioResourceOffline() {
 		cursor = next_seq;
 	}
 
-	// Step 3: connect to ResourceServer, authenticate (1053), then upload all chunks
-	// via 1037（offset/chunk_sha256/data）。最后一片收齐后服务端做整文件 SHA-256
+	// Step 3: connect to ResourceServer, authenticate (1501), then upload all chunks
+	// via 1507（offset/chunk_sha256/data）。最后一片收齐后服务端做整文件 SHA-256
 	// 校验并通过 CompleteResourceUploadWithSync 置 Ready。
 	ResClient res;
 	if (!res.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
 		Fail("resource-offline: connect ResourceServer", "connect failed"); all_ok = false;
 	} else {
 		int ra = ResourceLogin(res, SENDER_UID, li.token);
-		Check(ra == ERR_SUCCESS, "resource-offline: ResourceLogin (1053) success",
+		Check(ra == ERR_SUCCESS, "resource-offline: ResourceLogin (1501) success",
 			("err=" + std::to_string(ra)).c_str());
 		if (ra != ERR_SUCCESS) all_ok = false;
 	}
@@ -2176,7 +2176,7 @@ bool ScenarioChatFailover() {
 	// 同步起点：故障前 receiver 的 bootstrap checkpoint（之后产生的消息才需补齐）。
 	std::uint64_t checkpoint = 0;
 	if (!DoSyncBootstrap(original_receiver, failover_uid, checkpoint)) {
-		Fail("chat-failover: bootstrap checkpoint before failure", "1051/1052 failed");
+		Fail("chat-failover: bootstrap checkpoint before failure", "1405/1406 failed");
 		original_receiver.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
@@ -2360,7 +2360,7 @@ bool ScenarioChatFailover() {
 		}
 	}
 	Check(ack_ok, "chat-failover: recovered message ACK succeeds",
-		ack_ok ? "" : "1049/1050 failed");
+		ack_ok ? "" : "1407/1408 failed");
 	if (!ack_ok) all_ok = false;
 
 	bool cleanup_after_ack = false;
@@ -2401,15 +2401,15 @@ bool ScenarioChatFailover() {
 // simple-auth
 //
 // End-to-end exercise of the shared per-user login token (utoken_<uid>), issued
-// by Status on password login and presented unchanged to Chat (1005) and
-// Resource (1053). Drives Gate /user_login and the Chat/Resource login frames
+// by Status on password login and presented unchanged to Chat (1101) and
+// Resource (1501). Drives Gate /user_login and the Chat/Resource login frames
 // via the headless clients. Asserts:
-//   a. a forged Chat token is rejected (1006 error TokenInvalid);
+//   a. a forged Chat token is rejected (1102 error TokenInvalid);
 //   b. a valid token from a real Gate /user_login authenticates on Chat;
-//   c. the 1006 response JSON carries no secret fields (pwd/token/session_token);
-//   d. an unauthenticated Resource business frame (1041) is rejected / closed;
-//   e. a forged Resource token yields 1054 TokenInvalid;
-//   f. a valid token yields 1054 error==0 and the uid echoed;
+//   c. the 1102 response JSON carries no secret fields (pwd/token/session_token);
+//   d. an unauthenticated Resource business frame (1509) is rejected / closed;
+//   e. a forged Resource token yields 1502 TokenInvalid;
+//   f. a valid token yields 1502 error==0 and the uid echoed;
 //   g. a second password login for the same uid overwrites utoken_<uid>: the
 //      old token can no longer authenticate on Chat or Resource, the new one can.
 // ---------------------------------------------------------------------------
@@ -2469,7 +2469,7 @@ bool ScenarioSimpleAuth() {
 	const std::string chat_host = gl.chat_host;
 	const unsigned short chat_port = gl.chat_port;
 
-	// (a) Forged Chat token → 1006 error TokenInvalid (no bind).
+	// (a) Forged Chat token → 1102 error TokenInvalid (no bind).
 	{
 		TcpClient c;
 		if (!c.Connect(chat_host, chat_port, 10000)) {
@@ -2485,7 +2485,7 @@ bool ScenarioSimpleAuth() {
 	}
 
 	// (b) Valid token → Chat login success.
-	// (c) 1006 response carries no secret fields (pwd/token/session_token).
+	// (c) 1102 response carries no secret fields (pwd/token/session_token).
 	{
 		TcpClient c;
 		if (!c.Connect(chat_host, chat_port, 10000)) {
@@ -2499,14 +2499,14 @@ bool ScenarioSimpleAuth() {
 				&& !lo.response.contains("pwd")
 				&& !lo.response.contains("token")
 				&& !lo.response.contains("session_token");
-			Check(clean, "simple-auth: 1006 response omits pwd/token/session_token",
+			Check(clean, "simple-auth: 1102 response omits pwd/token/session_token",
 				clean ? "" : "secret field present in response");
 			if (!clean) all_ok = false;
 			c.Close();
 		}
 	}
 
-	// (d) Unauthenticated Resource business frame (1041) → rejected / closed.
+	// (d) Unauthenticated Resource business frame (1509) → rejected / closed.
 	{
 		ResClient r0;
 		if (!r0.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
@@ -2528,7 +2528,7 @@ bool ScenarioSimpleAuth() {
 		}
 	}
 
-	// (e) Forged Resource token → 1054 TokenInvalid.
+	// (e) Forged Resource token → 1502 TokenInvalid.
 	{
 		ResClient r1;
 		if (!r1.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
@@ -2543,7 +2543,7 @@ bool ScenarioSimpleAuth() {
 		}
 	}
 
-	// (f) Valid token → 1054 error==0 and uid echoed. Done as a raw exchange so
+	// (f) Valid token → 1502 error==0 and uid echoed. Done as a raw exchange so
 	// both the error code and the echoed uid can be inspected (the ResourceLogin
 	// helper returns only the error code).
 	{
@@ -2564,7 +2564,7 @@ bool ScenarioSimpleAuth() {
 				}
 			}
 			Check(got && e == ERR_SUCCESS && echoed_uid == SENDER_UID,
-				"simple-auth: valid Resource token → 1054 error==0, uid echoed",
+				"simple-auth: valid Resource token → 1502 error==0, uid echoed",
 				("error=" + std::to_string(e) + " uid=" + std::to_string(echoed_uid)).c_str());
 			if (!(got && e == ERR_SUCCESS && echoed_uid == SENDER_UID)) all_ok = false;
 			r2.Close();
@@ -2773,7 +2773,7 @@ bool ScenarioSyncBootstrap() {
 // big-ids (64 位 message_id 链路)
 //
 // ALTER TABLE chat_message AUTO_INCREMENT=4294967300（>2^32）后收发一条文本，
-// 断言 >32 位 message_id 以十进制字符串在 1018/1052 全链路无损、同步游标正常
+// 断言 >32 位 message_id 以十进制字符串在 1302/1406 全链路无损、同步游标正常
 // 推进；场景结束（含失败路径）恢复原 AUTO_INCREMENT。
 // ---------------------------------------------------------------------------
 bool ScenarioBigIds() {
@@ -2826,11 +2826,11 @@ bool ScenarioBigIds() {
 	}
 	std::uint64_t checkpoint = 0;
 	if (!DoSyncBootstrap(cR, RECEIVER_UID, checkpoint)) {
-		Fail("big-ids: bootstrap checkpoint", "1051/1052 bootstrap failed");
+		Fail("big-ids: bootstrap checkpoint", "1405/1406 bootstrap failed");
 		cR.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
-	// sender 发一条文本，1018 的 message_id 必须是 >32 位的十进制字符串。
+	// sender 发一条文本，1302 的 message_id 必须是 >32 位的十进制字符串。
 	TcpClient cS;
 	if (!LoginUser(cS, SENDER_UID).ok) {
 		Fail("big-ids: login sender", "gate/chat login failed"); cR.Close(); cleanup(); pm.StopAll(); return false;
@@ -2849,17 +2849,17 @@ bool ScenarioBigIds() {
 		}
 	}
 	Check(got_rsp && mid_is_string && sent_mid >= BIG_BASE,
-		"big-ids: 1018 message_id is >32-bit decimal string",
+		"big-ids: 1302 message_id is >32-bit decimal string",
 		("mid=" + std::to_string(sent_mid) +
 		 " is_string=" + std::to_string(mid_is_string)).c_str());
 	if (!(got_rsp && sent_mid >= BIG_BASE)) { cS.Close(); cR.Close(); cleanup(); pm.StopAll(); return false; }
 
-	// 1018 的 thread_id 也是十进制字符串。
+	// 1302 的 thread_id 也是十进制字符串。
 	{
 		auto j = ParseJson(rsp.body);
 		const bool tid_ok = j.contains("thread_id") && j["thread_id"].is_string() &&
 			JsonIdStr(j, "thread_id", -1) == THREAD_ID;
-		Check(tid_ok, "big-ids: 1018 thread_id is decimal string",
+		Check(tid_ok, "big-ids: 1302 thread_id is decimal string",
 			tid_ok ? "ok" : "thread_id not string");
 		if (!tid_ok) all_ok = false;
 	}
@@ -2873,7 +2873,7 @@ bool ScenarioBigIds() {
 		if (!(rows.size() == 1 && rows[0].message_id == sent_mid)) all_ok = false;
 	}
 
-	// 1052 同步流：大 id envelope 无损，sync_seq 游标正常推进。
+	// 1406 同步流：大 id envelope 无损，sync_seq 游标正常推进。
 	{
 		std::vector<SyncEnvelope> msgs;
 		std::uint64_t next_seq = checkpoint;
@@ -2885,14 +2885,14 @@ bool ScenarioBigIds() {
 			if (m.message_id == sent_mid) { found = true; msg_seq = m.sync_seq; break; }
 		}
 		Check(synced && found && msg_seq > checkpoint && next_seq == msg_seq,
-			"big-ids: 1052 sync delivers big id, cursor advances",
+			"big-ids: 1406 sync delivers big id, cursor advances",
 			("synced=" + std::to_string(synced) + " found=" + std::to_string(found) +
 			 " seq=" + std::to_string(msg_seq) +
 			 " next=" + std::to_string(next_seq)).c_str());
 		if (!(synced && found && msg_seq > checkpoint)) all_ok = false;
 	}
 
-	// 1049 ACK 大 id（字符串数组元素）→ 1050 成功。
+	// 1407 ACK 大 id（字符串数组元素）→ 1408 成功。
 	{
 		bool ack_ok = cR.Send(ID_CHAT_DELIVERY_ACK_REQ, BuildAckReq(RECEIVER_UID, {sent_mid}));
 		if (ack_ok) {
@@ -2970,7 +2970,7 @@ std::shared_ptr<ResClient> ResLogin(const std::string& token, int uid, const cha
 	return res;
 }
 
-//发 1035 创建资源消息并回 message_id；失败返回 -1（err_out 带出服务端错误码）
+//发 1503 创建资源消息并回 message_id；失败返回 -1（err_out 带出服务端错误码）
 std::int64_t CreateResource(TcpClient& chat, int fromuid, int touid,
 	const std::string& unique_id, int msg_type, const std::string& file_name,
 	long long size, const std::string& content_hash, const std::string& mime,
@@ -2990,7 +2990,7 @@ std::int64_t CreateResource(TcpClient& chat, int fromuid, int touid,
 	return JsonIdStr(j, "message_id", -1);
 }
 
-//上传 [from_offset, total) 区间全部分片；返回最后一片 1038 的 error（ready_out
+//上传 [from_offset, total) 区间全部分片；返回最后一片 1508 的 error（ready_out
 //带回 resource_status）。遇到非 0 error 即停。
 int UploadChunks(ResClient& res, std::int64_t msg_id, const std::string& blob,
 	long long from_offset, int* ready_out) {
@@ -3033,7 +3033,7 @@ int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
 	return j.is_object() ? j.value("error", -6) : -6;
 }
 
-//1041 查询服务端偏移；失败返回 -1
+//1509 查询服务端偏移；失败返回 -1
 long long QueryServerOffset(ResClient& res, std::int64_t msg_id, int* status_out) {
 	res.Send(ID_RESOURCE_UPLOAD_PROGRESS_REQ, BuildUploadProgressReq(msg_id));
 	Frame f;
@@ -3065,8 +3065,8 @@ std::string DownloadWhole(ResClient& res, std::int64_t msg_id, long long total) 
 } // namespace
 
 // ---------------------------------------------------------------------------
-// resource-create：1035 校验链 —— 合法创建 / 超限 1020 / 坏哈希 1019 /
-// 重复 unique_id 幂等同 id / 内容冲突 1017 / 伪造 fromuid 拒绝 / 非成员会话拒绝
+// resource-create：1503 校验链 —— 合法创建 / 超限 2020 / 坏哈希 2019 /
+// 重复 unique_id 幂等同 id / 内容冲突 2017 / 伪造 fromuid 拒绝 / 非成员会话拒绝
 // ---------------------------------------------------------------------------
 bool ScenarioResourceCreate() {
 	std::printf("\n=== scenario: resource-create ===\n");
@@ -3113,27 +3113,27 @@ bool ScenarioResourceCreate() {
 			"imtest-ok-" + tag, MSG_TYPE_PIC, "other_" + name, 1234,
 			good_hash, "image/png", &err3);
 		Check(err3 == ERR_MESSAGE_CONFLICT && mid3 < 0,
-			"resource-create: same unique_id different content -> 1017 conflict",
+			"resource-create: same unique_id different content -> 2017 conflict",
 			("err=" + std::to_string(err3)).c_str());
 		if (err3 != ERR_MESSAGE_CONFLICT) all_ok = false;
 	}
 
-	//4) 坏哈希（非 64 位 hex）→ ResourceInvalid(1019)
+	//4) 坏哈希（非 64 位 hex）→ ResourceInvalid(2019)
 	{
 		int err4 = -1;
 		CreateResource(cS, SENDER_UID, RECEIVER_UID, "imtest-badhash-" + tag,
 			MSG_TYPE_PIC, name, (long long)blob.size(), "not-a-sha256", "image/png", &err4);
-		Check(err4 == ERR_RESOURCE_INVALID, "resource-create: bad hash -> 1019",
+		Check(err4 == ERR_RESOURCE_INVALID, "resource-create: bad hash -> 2019",
 			("err=" + std::to_string(err4)).c_str());
 		if (err4 != ERR_RESOURCE_INVALID) all_ok = false;
 	}
 
-	//5) 超限（图片 20MB+1）→ ResourceSizeExceeded(1020)
+	//5) 超限（图片 20MB+1）→ ResourceSizeExceeded(2020)
 	{
 		int err5 = -1;
 		CreateResource(cS, SENDER_UID, RECEIVER_UID, "imtest-oversize-" + tag,
 			MSG_TYPE_PIC, name, 20LL * 1024 * 1024 + 1, good_hash, "image/png", &err5);
-		Check(err5 == ERR_RESOURCE_SIZE_EXCEEDED, "resource-create: oversize -> 1020",
+		Check(err5 == ERR_RESOURCE_SIZE_EXCEEDED, "resource-create: oversize -> 2020",
 			("err=" + std::to_string(err5)).c_str());
 		if (err5 != ERR_RESOURCE_SIZE_EXCEEDED) all_ok = false;
 	}
@@ -3143,7 +3143,7 @@ bool ScenarioResourceCreate() {
 		int err6 = -1;
 		CreateResource(cS, RECEIVER_UID, SENDER_UID, "imtest-forge-" + tag,
 			MSG_TYPE_PIC, name, (long long)blob.size(), good_hash, "image/png", &err6);
-		Check(err6 == ERR_UID_INVALID, "resource-create: forged fromuid -> 1011",
+		Check(err6 == ERR_UID_INVALID, "resource-create: forged fromuid -> 2011",
 			("err=" + std::to_string(err6)).c_str());
 		if (err6 != ERR_UID_INVALID) all_ok = false;
 	}
@@ -3158,9 +3158,9 @@ bool ScenarioResourceCreate() {
 		Frame rsp;
 		bool got = cS.Wait(ID_CREATE_RESOURCE_MSG_RSP, 10000, &rsp);
 		int err7 = got ? ParseJson(rsp.body).value("error", -3) : -2;
-		Check(got && err7 == 1012, "resource-create: non-member thread -> 1012",
+		Check(got && err7 == 2012, "resource-create: non-member thread -> 2012",
 			("err=" + std::to_string(err7)).c_str());
-		if (err7 != 1012) all_ok = false;
+		if (err7 != 2012) all_ok = false;
 	}
 
 	cS.Close();
@@ -3169,7 +3169,7 @@ bool ScenarioResourceCreate() {
 }
 
 // ---------------------------------------------------------------------------
-// resource-upload：多分片上传 → 1041 查询进度 → 1045 下载信息 → 逐片下载
+// resource-upload：多分片上传 → 1509 查询进度 → 1511 下载信息 → 逐片下载
 // 逐字节一致（覆盖整文件 SHA-256 校验通过路径）
 // ---------------------------------------------------------------------------
 bool ScenarioResourceUpload() {
@@ -3203,17 +3203,17 @@ bool ScenarioResourceUpload() {
 		("err=" + std::to_string(up_err) + " rs=" + std::to_string(rs)).c_str());
 	if (rs != RESOURCE_READY) all_ok = false;
 
-	//1041：就绪后 server_offset == total
+	//1509：就绪后 server_offset == total
 	{
 		int st = -1;
 		const long long off = QueryServerOffset(*res, mid, &st);
 		Check(off == (long long)blob.size() && st == RESOURCE_READY,
-			"resource-upload: 1041 reports total_size & Ready",
+			"resource-upload: 1509 reports total_size & Ready",
 			("off=" + std::to_string(off) + " st=" + std::to_string(st)).c_str());
 		if (off != (long long)blob.size()) all_ok = false;
 	}
 
-	//1045（下载信息）：发送者与接收者都可查（接收方需先取得自己的 token，
+	//1511（下载信息）：发送者与接收者都可查（接收方需先取得自己的 token，
 	//ResourceLogin 校验 utoken_<uid>）
 	TcpClient cR;
 	auto lr = LoginUser(cR, RECEIVER_UID);
@@ -3230,12 +3230,12 @@ bool ScenarioResourceUpload() {
 		bool good = ok && j.is_object() && j.value("error", -1) == ERR_SUCCESS
 			&& j.value("content_hash", "") == hash
 			&& j.value("file_name", "") == "upload_" + tag + ".bin";
-		Check(good, "resource-upload: 1045 down info (name/hash match)",
+		Check(good, "resource-upload: 1511 down info (name/hash match)",
 			ok ? j.dump() : "no rsp");
 		if (!good) all_ok = false;
 	}
 
-	//1047：逐片下载并与源逐字节比对
+	//1513：逐片下载并与源逐字节比对
 	if (res_recv) {
 		const std::string got = DownloadWhole(*res_recv, mid, (long long)blob.size());
 		Check(got == blob, "resource-upload: downloaded bytes identical",
@@ -3253,7 +3253,7 @@ bool ScenarioResourceUpload() {
 
 // ---------------------------------------------------------------------------
 // resource-resume：上传中途 kill ResourceServer 重启 → .part 保留 →
-// 1041 返回非零偏移 → 从该偏移续传成功，已确认内容不重传
+// 1509 返回非零偏移 → 从该偏移续传成功，已确认内容不重传
 // ---------------------------------------------------------------------------
 bool ScenarioResourceResume() {
 	std::printf("\n=== scenario: resource-resume ===\n");
@@ -3296,11 +3296,11 @@ bool ScenarioResourceResume() {
 		cS.Close(); stack.StopAll(); return false;
 	}
 
-	//1041：重启后服务端按 .part 实际长度回 65536
+	//1509：重启后服务端按 .part 实际长度回 65536
 	auto res2 = ResLogin(li.token, SENDER_UID, "resource-resume");
 	if (!res2) { cS.Close(); stack.StopAll(); return false; }
 	const long long offset = QueryServerOffset(*res2, mid, nullptr);
-	Check(offset == 65536, "resource-resume: 1041 after restart reports 65536",
+	Check(offset == 65536, "resource-resume: 1509 after restart reports 65536",
 		("offset=" + std::to_string(offset)).c_str());
 	if (offset != 65536) all_ok = false;
 
@@ -3312,7 +3312,7 @@ bool ScenarioResourceResume() {
 		("err=" + std::to_string(err) + " rs=" + std::to_string(rs)).c_str());
 	if (rs != RESOURCE_READY) all_ok = false;
 
-	//整文件内容一致性（1047 全量下载比对）
+	//整文件内容一致性（1513 全量下载比对）
 	const std::string got = DownloadWhole(*res2, mid, (long long)blob.size());
 	Check(got == blob, "resource-resume: resumed upload is byte-identical",
 		("got=" + std::to_string(got.size())).c_str());
@@ -3325,7 +3325,7 @@ bool ScenarioResourceResume() {
 }
 
 // ---------------------------------------------------------------------------
-// resource-idempotent：模拟 1038 响应丢失后客户端重发已确认分片，
+// resource-idempotent：模拟 1508 响应丢失后客户端重发已确认分片，
 // 服务端幂等确认且不追加第二次（.part 长度不翻倍）
 // ---------------------------------------------------------------------------
 bool ScenarioResourceIdempotent() {
@@ -3368,9 +3368,9 @@ bool ScenarioResourceIdempotent() {
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
 	if (so != 32768) all_ok = false;
 
-	//1041 交叉验证磁盘真值
+	//1509 交叉验证磁盘真值
 	const long long disk_off = QueryServerOffset(*res, mid, nullptr);
-	Check(disk_off == 32768, "resource-idempotent: 1041 agrees (no double write)",
+	Check(disk_off == 32768, "resource-idempotent: 1509 agrees (no double write)",
 		("offset=" + std::to_string(disk_off)).c_str());
 
 	//第二片完成后整文件就绪
@@ -3388,7 +3388,7 @@ bool ScenarioResourceIdempotent() {
 }
 
 // ---------------------------------------------------------------------------
-// resource-corrupt：错误分片哈希被拒（1023，偏移不前进）；整文件哈希不符时
+// resource-corrupt：错误分片哈希被拒（2112，偏移不前进）；整文件哈希不符时
 // 服务端删 .part 并要求从 0 重传（响应 server_offset=0）
 // ---------------------------------------------------------------------------
 bool ScenarioResourceCorrupt() {
@@ -3416,20 +3416,20 @@ bool ScenarioResourceCorrupt() {
 	auto res = ResLogin(li.token, SENDER_UID, "resource-corrupt");
 	if (!res) { cS.Close(); stack.StopAll(); return false; }
 
-	//1) 分片哈希错误（数据与声明哈希不符）→ 1023 且 server_offset 不前进
+	//1) 分片哈希错误（数据与声明哈希不符）→ 2112 且 server_offset 不前进
 	long long so = -1;
 	int err = UploadOneChunk(*res, mid, 0, blob.substr(0, 32768),
 		llfc::Sha256Hex(MakeBlob(2)), &so);
 	Check(err == ERR_RS_HASH_MISMATCH && so == 0,
-		"resource-corrupt: bad chunk hash -> 1023, offset stays 0",
+		"resource-corrupt: bad chunk hash -> 2112, offset stays 0",
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
 	if (err != ERR_RS_HASH_MISMATCH) all_ok = false;
 
 	//2) 正确分片全部传完 → 完成点整文件 SHA-256 与 content_hash 不符 →
-	//   1023 且服务端清掉 .part（server_offset=0，客户端从 0 重传）
+	//   2112 且服务端清掉 .part（server_offset=0，客户端从 0 重传）
 	err = UploadChunks(*res, mid, blob, 0, nullptr);
 	Check(err == ERR_RS_HASH_MISMATCH,
-		"resource-corrupt: whole-file mismatch -> 1023",
+		"resource-corrupt: whole-file mismatch -> 2112",
 		("err=" + std::to_string(err)).c_str());
 	const long long after = QueryServerOffset(*res, mid, nullptr);
 	Check(after == 0, "resource-corrupt: server_offset reset to 0 after whole-file mismatch",
@@ -3443,10 +3443,10 @@ bool ScenarioResourceCorrupt() {
 }
 
 // ---------------------------------------------------------------------------
-// resource-perm：非 sender 会话上传被拒（1026）；越界偏移下载被拒（1018）。
-// 1045/1047 的会话成员校验由 ResourceServer 统一执行（sender/recv 之外的
+// resource-perm：非 sender 会话上传被拒（2115）；越界偏移下载被拒（2107）。
+// 1511/1513 的会话成员校验由 ResourceServer 统一执行（sender/recv 之外的
 // session uid 一律 ResourceForbidden）。注：fixture 只有 2 个用户，发送方/
-// 接收方之外的“纯第三方”下载拒绝由同一校验逻辑覆盖（上传侧 1026 已验证）。
+// 接收方之外的“纯第三方”下载拒绝由同一校验逻辑覆盖（上传侧 2115 已验证）。
 // ---------------------------------------------------------------------------
 bool ScenarioResourcePerm() {
 	std::printf("\n=== scenario: resource-perm ===\n");
@@ -3478,8 +3478,8 @@ bool ScenarioResourcePerm() {
 		("rs=" + std::to_string(rs)).c_str());
 	res->Close();
 
-	//权限校验覆盖：接收者 1045 允许（正向）；越界偏移 1047 → 1018；
-	//非 sender 会话向他人消息上传分片 → 1026（ResourceForbidden）。
+	//权限校验覆盖：接收者 1511 允许（正向）；越界偏移 1513 → 2107；
+	//非 sender 会话向他人消息上传分片 → 2115（ResourceForbidden）。
 	TcpClient cR;
 	auto lr = LoginUser(cR, RECEIVER_UID);
 	if (!lr.ok) {
@@ -3487,20 +3487,20 @@ bool ScenarioResourcePerm() {
 	}
 	auto res_r = ResLogin(lr.token, RECEIVER_UID, "resource-perm");
 	if (res_r) {
-		//合法接收者 1045 成功
+		//合法接收者 1511 成功
 		res_r->Send(ID_RESOURCE_DOWN_INFO_REQ, BuildDownInfoReq(mid));
 		Frame f;
 		bool ok = res_r->Wait(ID_RESOURCE_DOWN_INFO_RSP, 10000, &f);
 		const int err = ok ? ParseJson(f.body).value("error", -3) : -2;
-		Check(ok && err == ERR_SUCCESS, "resource-perm: receiver 1045 allowed",
+		Check(ok && err == ERR_SUCCESS, "resource-perm: receiver 1511 allowed",
 			("err=" + std::to_string(err)).c_str());
 
-		//越界偏移 1047（total 只有 32768，offset=65536）→ 1018
+		//越界偏移 1513（total 只有 32768，offset=65536）→ 2107
 		res_r->Send(ID_RESOURCE_CHUNK_DOWN_REQ, BuildChunkDownReq(mid, 65536));
 		ok = res_r->Wait(ID_RESOURCE_CHUNK_DOWN_RSP, 10000, &f);
 		const int err2 = ok ? ParseJson(f.body).value("error", -3) : -2;
 		Check(ok && err2 == ERR_RS_OFFSET_INVALID,
-			"resource-perm: out-of-range offset -> 1018",
+			"resource-perm: out-of-range offset -> 2107",
 			("err=" + std::to_string(err2)).c_str());
 		if (err2 != ERR_RS_OFFSET_INVALID) all_ok = false;
 		res_r->Close();
@@ -3508,7 +3508,7 @@ bool ScenarioResourcePerm() {
 
 	//接收者会话尝试向「发送者创建的消息」上传分片（session uid=RECEIVER != sender）
 	{
-		//先建一条 receiver 自己的未完成消息，再让 sender 会话来上传 → 1026
+		//先建一条 receiver 自己的未完成消息，再让 sender 会话来上传 → 2115
 		TcpClient cS2;
 		auto li2 = LoginUser(cS2, RECEIVER_UID);
 		std::int64_t mid2 = -1;
@@ -3529,7 +3529,7 @@ bool ScenarioResourcePerm() {
 				const int err3 = UploadOneChunk(*res_s, mid2, 0, chunk,
 					llfc::Sha256Hex(chunk), &so);
 				Check(err3 == ERR_RS_FORBIDDEN,
-					"resource-perm: non-sender upload -> 1026",
+					"resource-perm: non-sender upload -> 2115",
 					("err=" + std::to_string(err3)).c_str());
 				if (err3 != ERR_RS_FORBIDDEN) all_ok = false;
 				res_s->Close();
@@ -3544,7 +3544,7 @@ bool ScenarioResourcePerm() {
 }
 
 // ---------------------------------------------------------------------------
-// resource-offset：跳过中间分片直接发靠后 offset → 1018 且响应携带服务端
+// resource-offset：跳过中间分片直接发靠后 offset → 2107 且响应携带服务端
 // 真实 server_offset，客户端据此对齐后续传成功
 // ---------------------------------------------------------------------------
 bool ScenarioResourceOffset() {
@@ -3571,12 +3571,12 @@ bool ScenarioResourceOffset() {
 	auto res = ResLogin(li.token, SENDER_UID, "resource-offset");
 	if (!res) { cS.Close(); stack.StopAll(); return false; }
 
-	//跳片：第一片直接发 offset=32768 → 1018 + server_offset=0
+	//跳片：第一片直接发 offset=32768 → 2107 + server_offset=0
 	long long so = -1;
 	int err = UploadOneChunk(*res, mid, 32768, blob.substr(32768, 32768),
 		llfc::Sha256Hex(blob.substr(32768, 32768)), &so);
 	Check(err == ERR_RS_OFFSET_INVALID && so == 0,
-		"resource-offset: skip-ahead chunk -> 1018 with server_offset=0",
+		"resource-offset: skip-ahead chunk -> 2107 with server_offset=0",
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
 	if (err != ERR_RS_OFFSET_INVALID) all_ok = false;
 
@@ -3679,7 +3679,7 @@ bool ScenarioResourceExpiry() {
 		if (!present) all_ok = false;
 	}
 
-	//过期资源继续上传被拒（1027）
+	//过期资源继续上传被拒（2116）
 	auto res2 = ResLogin(li.token, SENDER_UID, "resource-expiry");
 	if (res2 && expired) {
 		const std::string chunk = blob.substr(0, 32768);
@@ -3687,7 +3687,7 @@ bool ScenarioResourceExpiry() {
 		const int err = UploadOneChunk(*res2, mid, 32768, chunk,
 			llfc::Sha256Hex(chunk), &so);
 		Check(err == ERR_RS_STATE_INVALID,
-			"resource-expiry: upload to expired resource -> 1027",
+			"resource-expiry: upload to expired resource -> 2116",
 			("err=" + std::to_string(err)).c_str());
 		if (err != ERR_RS_STATE_INVALID) all_ok = false;
 		res2->Close();

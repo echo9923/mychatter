@@ -33,7 +33,7 @@ ChatSyncManager::ChatSyncManager()
         this, &ChatSyncManager::slot_bootstrap_marked);
     connect(store.get(), &LocalChatStore::sig_sync_page_applied,
         this, &ChatSyncManager::slot_sync_page_applied);
-    //1019/1039 落库成功后兜底拉取（实时推送的可靠性兜底，拉取中会合并为一次补拉）
+    //1303/1505 落库成功后兜底拉取（实时推送的可靠性兜底，拉取中会合并为一次补拉）
     connect(store.get(), &LocalChatStore::sig_incoming_inserted,
         this, [this](bool ok, QList<LocalMessageDTO>, QList<qint64> insertedIds) {
             if (ok && !insertedIds.isEmpty()) {
@@ -114,7 +114,7 @@ void ChatSyncManager::slot_sync_message_rsp(QJsonObject rsp)
         //bootstrap 回包只带 checkpoint（十进制字符串）
         _checkpoint = rsp["checkpoint"].toString().toLongLong();
         _bootstrap_convs.clear();
-        //走 1025/1026 拿会话列表
+        //走 1401/1402 拿会话列表
         sendThreadListRequest(0);
         _state = SYNC_BOOTSTRAP_THREADS;
         return;

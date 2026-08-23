@@ -150,7 +150,7 @@ Status ChatServiceImpl::NotifyTextChatMsg(::grpc::ServerContext* context,
 		return Status::OK;
 	}
 
-	//统一顶层拍平 live envelope（计划5.5，单条化后与 1039 图片通知同构）：
+	//统一顶层拍平 live envelope（计划5.5，单条化后与 1505 图片通知同构）：
 	//textmsg proto 字段携带 unique_id/msg_id/msgcontent/chat_time，thread_id/fromuid/touid
 	//来自 req，msg_type=TEXT/status=UN_READ/content_size="0" 为常量。
 	//message_id/thread_id 一律十进制字符串，避免 Qt JSON number 对 64 位值丢精度。
@@ -286,7 +286,7 @@ Status ChatServiceImpl::NotifyChatResourceMsg(::grpc::ServerContext* context, co
 
 	//复制定位字段为值（闭包可能晚于 gRPC 调用执行，不可持有 request 指针），闭包在
 	//recipient shard 上重新查 session、按 message_id 回读 DB 真值组统一 envelope 后
-	//下发 1039；队列停止则返回 SERVER_BUSY
+	//下发 1505；队列停止则返回 SERVER_BUSY
 	const std::int64_t message_id = request->message_id();
 	if (!LogicSystem::GetInstance()->PostToUser(uid,
 		[uid, message_id]() {

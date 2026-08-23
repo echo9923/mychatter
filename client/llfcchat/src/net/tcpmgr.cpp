@@ -221,7 +221,7 @@ void TcpMgr::initHandlers()
     _handlers.insert(ID_NOTIFY_AUTH_FRIEND_REQ, &TcpMgr::handleNotifyAuthFriendReq);
     _handlers.insert(ID_ADD_FRIEND_RSP, &TcpMgr::handleAddFriendRsp);
     _handlers.insert(ID_AUTH_FRIEND_RSP, &TcpMgr::handleAuthFriendRsp);
-    //1018 文本回包：只解析 JSON 并转发 OutboxDispatcher（可靠语义移交）
+    //1302 文本回包：只解析 JSON 并转发 OutboxDispatcher（可靠语义移交）
     _handlers.insert(ID_TEXT_CHAT_MSG_RSP, &TcpMgr::handleTextChatMsgRsp);
     _handlers.insert(ID_NOTIFY_TEXT_CHAT_MSG_REQ, &TcpMgr::handleNotifyTextChatMsgReq);
     _handlers.insert(ID_NOTIFY_OFF_LINE_REQ, &TcpMgr::handleNotifyOfflineReq);
@@ -229,12 +229,12 @@ void TcpMgr::initHandlers()
     _handlers.insert(ID_LOAD_CHAT_THREAD_RSP, &TcpMgr::handleLoadChatThreadRsp);
     _handlers.insert(ID_CREATE_PRIVATE_CHAT_RSP, &TcpMgr::handleCreatePrivateChatRsp);
     _handlers.insert(ID_LOAD_CHAT_MSG_RSP, &TcpMgr::handleLoadChatMsgRsp);
-    //1036 资源消息创建回包：只解析 JSON 并转发 OutboxDispatcher（上传启动移交）
+    //1504 资源消息创建回包：只解析 JSON 并转发 OutboxDispatcher（上传启动移交）
     _handlers.insert(ID_CREATE_RESOURCE_MSG_RSP, &TcpMgr::handleCreateResourceMsgRsp);
     _handlers.insert(ID_NOTIFY_RESOURCE_MSG_REQ, &TcpMgr::handleNotifyResourceMsgReq);
-    //1050 ACK 回包：解析 message_ids（十进制字符串数组）转发 OutboxDispatcher
+    //1408 ACK 回包：解析 message_ids（十进制字符串数组）转发 OutboxDispatcher
     _handlers.insert(ID_CHAT_DELIVERY_ACK_RSP, &TcpMgr::handleDeliveryAckRsp);
-    //1052 增量同步回包：原始 JSON 对象转发 ChatSyncManager
+    //1406 增量同步回包：原始 JSON 对象转发 ChatSyncManager
     _handlers.insert(ID_SYNC_MESSAGE_RSP, &TcpMgr::handleSyncMessageRsp);
 }
 
@@ -554,7 +554,7 @@ void TcpMgr::handleTextChatMsgRsp(ReqId id, int len, QByteArray data)
 
     int err = jsonObj["error"].toInt();
     if (err != ErrorCodes::SUCCESS) {
-        //MESSAGE_CONFLICT/transient（1014/1016）原样转发，Dispatcher 判定
+        //MESSAGE_CONFLICT/transient（2014/2016）原样转发，Dispatcher 判定
         qDebug() << "Chat Msg Rsp error, forward to dispatcher: " << err;
         emit sig_text_msg_rsp_forward(err, jsonObj.value("unique_id").toString(), 0, QString());
         return;
@@ -887,7 +887,7 @@ void TcpMgr::handleCreateResourceMsgRsp(ReqId id, int len, QByteArray data)
 
     int err = jsonObj["error"].toInt();
     if (err != ErrorCodes::SUCCESS) {
-        //MESSAGE_CONFLICT/RESOURCE_*/transient（1014/1016）原样转发，Dispatcher 判定
+        //MESSAGE_CONFLICT/RESOURCE_*/transient（2014/2016）原样转发，Dispatcher 判定
         qDebug() << "create resource msg rsp error, forward to dispatcher: " << err;
         emit sig_resource_msg_meta_rsp_forward(err, jsonObj["unique_id"].toString(),
             QString(), 0, 0, 0, 0);
@@ -986,7 +986,7 @@ void TcpMgr::CreatePlaceholderResourceMsgL(QString cache_dir, QString msg_conten
     auto chat_data = std::make_shared<ImgChatData>(file_info, "", thread_id, ChatFormType::PRIVATE,
         msg_type, send_uid, status, chat_time);
     chat_datas.push_back(chat_data);
-    //加入下载列表；图片自动下载（1045 元数据先行，FileTcpMgr 内部投递）
+    //加入下载列表；图片自动下载（1511 元数据先行，FileTcpMgr 内部投递）
     UserMgr::GetInstance()->AddTransFile(msg_content, file_info);
     if (is_pic) {
         FileTcpMgr::GetInstance()->StartResourceDownload(file_info);
@@ -1101,7 +1101,7 @@ void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
     _socket.write(_current_block);
 }
 
-//统一 envelope 分发：1019/1039 共用。文本走 sig_text_chat_msg；图片走
+//统一 envelope 分发：1303/1505 共用。文本走 sig_text_chat_msg；图片走
 //sig_img_chat_msg+自动下载；文件走 sig_file_chat_msg（不自动下载，等用户点击）。
 //落库与 ACK 由接收方（ChatDialog/OutboxDispatcher）经 LocalChatStore 完成。
 void TcpMgr::dispatchIncomingMessage(qint64 message_id, const QString& unique_id,

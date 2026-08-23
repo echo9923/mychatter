@@ -29,8 +29,8 @@ public:
 	 *
 	 * 每次尝试创建新的 ClientContext，deadline = [Delivery] RpcDeadlineMs（回退 3000）；
 	 * 最多 [Delivery] RpcMaxAttempts 次（回退 3，至少 1）。只对 gRPC
-	 * UNAVAILABLE/DEADLINE_EXCEEDED/RESOURCE_EXHAUSTED 或对端应用层 SERVER_BUSY(1016)
-	 * 重试，间隔 RpcBackoffMs、2×RpcBackoffMs（回退 100/200ms）；RECIPIENT_OFFLINE(1015)/
+	 * UNAVAILABLE/DEADLINE_EXCEEDED/RESOURCE_EXHAUSTED 或对端应用层 SERVER_BUSY(2016)
+	 * 重试，间隔 RpcBackoffMs、2×RpcBackoffMs（回退 100/200ms）；RECIPIENT_OFFLINE(2015)/
 	 * 未知 server/参数类错误立即停止。重试耗尽不影响已激活的 pending（离线拉取兜底）。
 	 * @param message_id 图片消息的 message_id
 	 * @param chatserver 目标 ChatServer 节点名（_hash_channels 键）

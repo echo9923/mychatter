@@ -47,6 +47,7 @@ add_executable(StatusServer
 
 target_include_directories(StatusServer PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${LLFC_REPO_ROOT}/proto"
 )
 
 target_link_libraries(StatusServer PRIVATE
