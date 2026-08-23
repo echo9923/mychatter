@@ -48,7 +48,7 @@ public:
 		int64_t& nextLastId);
 	/// 创建私聊会话
 	bool CreatePrivateChat(int user1_id, int user2_id, std::int64_t &thread_id);
-	/// 取私聊会话两成员（1035 资源消息会话归属校验用）；会话不存在返回 false
+	/// 取私聊会话两成员（1503 资源消息会话归属校验用）；会话不存在返回 false
 	bool GetPrivateChatMembers(std::int64_t thread_id, int& user1, int& user2);
 	/// 分页加载历史聊天消息
 	std::shared_ptr<PageResult> LoadChatMsg(std::int64_t threadId, std::int64_t lastId, int pageSize);

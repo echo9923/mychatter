@@ -13,7 +13,7 @@ using json = nlohmann::json;
 class CSession;
 struct ChatMessage;
 
-// ---------- 头像通道任务（1031/1033 旧协议，保持不变） ----------
+// ---------- 头像通道任务（1601/1603 旧协议，保持不变） ----------
 struct FileTask {
 	FileTask(std::shared_ptr<CSession> session,  MSG_TYPES msg_type, int uid, std::string path, std::string name,
 		int seq, int total_size, int trans_size, int last,
@@ -58,8 +58,8 @@ struct DownloadTask {
 	std::function<void(const json&)>  _callback;  //添加回调函数
 };
 
-// ---------- 资源消息任务（1037 上传 / 1047 下载） ----------
-/// 上传一个分片（1037）：data 为 Base64，offset 为该分片在整文件中的字节偏移
+// ---------- 资源消息任务（1507 上传 / 1513 下载） ----------
+/// 上传一个分片（1507）：data 为 Base64，offset 为该分片在整文件中的字节偏移
 struct ResourceChunkTask {
 	ResourceChunkTask(std::shared_ptr<CSession> session, long long message_id,
 		long long offset, std::string chunk_sha256, std::string file_data,
@@ -76,7 +76,7 @@ struct ResourceChunkTask {
 	std::function<void(const json&)> _callback;
 };
 
-/// 下载一个分片（1047）：从最终文件（已通过 .part 原子改名）按 offset 读取
+/// 下载一个分片（1513）：从最终文件（已通过 .part 原子改名）按 offset 读取
 struct ResourceChunkDownTask {
 	ResourceChunkDownTask(std::shared_ptr<CSession> session, long long message_id,
 		long long offset, std::string file_path, unsigned long long total_size,
@@ -111,11 +111,11 @@ public:
 	FileWorker();
 	~FileWorker();
 	void RegisterHandlers();
-	/// 头像通道（1031）：按调用方给定的 index 投递
+	/// 头像通道（1601）：按调用方给定的 index 投递
 	void PostTask(std::shared_ptr<FileTask> task);
-	/// 资源分片上传（1037）：必须在 ResourceWorkerIndex 选定的 worker 上执行
+	/// 资源分片上传（1507）：必须在 ResourceWorkerIndex 选定的 worker 上执行
 	void PostChunkTask(std::shared_ptr<ResourceChunkTask> task);
-	/// 任意闭包（1041 进度查询等需访问 _upload_sessions 的操作，同 worker 串行化）
+	/// 任意闭包（1509 进度查询等需访问 _upload_sessions 的操作，同 worker 串行化）
 	void PostClosure(std::function<void()> fn);
 
 	/// 上传会话缓存（仅本 worker 线程内调用）：未命中返回 nullptr
@@ -126,7 +126,7 @@ public:
 
 private:
 	void task_callback(std::shared_ptr<FileTask>);
-	//资源上传分片状态机（1037）：校验-写入-完成判定
+	//资源上传分片状态机（1507）：校验-写入-完成判定
 	void HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task);
 	//完成点：整文件 SHA-256 校验 -> .part 原子改名 -> 事务置 Ready+同步行 -> gRPC 通知
 	void CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
@@ -150,7 +150,7 @@ public:
 	DownloadWorker();
 	~DownloadWorker();
 	void PostTask(std::shared_ptr<DownloadTask> task);
-	/// 资源分片下载（1047）：必须在 ResourceWorkerIndex 选定的 worker 上执行
+	/// 资源分片下载（1513）：必须在 ResourceWorkerIndex 选定的 worker 上执行
 	void PostChunkTask(std::shared_ptr<ResourceChunkDownTask> task);
 private:
 	void task_callback(std::shared_ptr<DownloadTask>);

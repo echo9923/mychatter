@@ -458,7 +458,7 @@ void CSession::NotifyResourceRecv(const std::shared_ptr<ChatMessage> &msg) {
     if (!msg) {
         return;
     }
-    // 1039 通用资源消息通知：与 1019/1052 同构的统一 envelope
+    // 1505 通用资源消息通知：与 1303/1406 同构的统一 envelope
     // （msg_type/content/hash/mime/resource_status 均取 DB 真值）
     json rtvalue;
     rtvalue["error"] = ErrorCodes::Success;

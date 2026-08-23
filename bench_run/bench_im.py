@@ -71,9 +71,9 @@ async def main():
         try:
             async with sem:
                 r, w = await asyncio.open_connection(info["chathost"], int(info["chatport"]))
-            await send_frame(w, 1005, {"uid": uid, "chat_ticket": info["chat_ticket"]})
+            await send_frame(w, 1101, {"uid": uid, "chat_ticket": info["chat_ticket"]})
             mid, rsp = await asyncio.wait_for(recv_frame(r), 30)
-            if mid == 1006 and rsp.get("error") == 0:
+            if mid == 1102 and rsp.get("error") == 0:
                 return uid, r, w, (time.perf_counter() - t) * 1000
             w.close(); return uid, None, None, None
         except Exception:
@@ -105,14 +105,14 @@ async def main():
         try:
             while True:
                 mid, body = await recv_frame(r)
-                # 单条化：1018/1019 均为顶层拍平 envelope，unique_id 直接在顶层
-                if mid == 1018:
+                # 单条化：1302/1303 均为顶层拍平 envelope，unique_id 直接在顶层
+                if mid == 1302:
                     if body.get("error", 0) != 0: ack_err[uid] = ack_err.get(uid, 0) + 1
                     uq = body.get("unique_id")
                     if uq in send_t0.get(uid, {}):
                         rtts.append((time.perf_counter() - send_t0[uid].pop(uq)) * 1000)
                         acked[uid].add(uq)
-                elif mid == 1019:
+                elif mid == 1303:
                     recv_got.setdefault(uid, set()).add(body.get("unique_id"))
         except (asyncio.IncompleteReadError, ConnectionError, OSError):
             pass
@@ -125,8 +125,8 @@ async def main():
             while len(send_t0[a]) >= args.window:
                 await asyncio.sleep(0.0005)
             send_t0[a][uq] = time.perf_counter()
-            # 协议字符串化：1017 请求 thread_id 为十进制字符串
-            await send_frame(w, 1017, {"fromuid": a, "touid": b, "thread_id": str(tid),
+            # 协议字符串化：1301 请求 thread_id 为十进制字符串
+            await send_frame(w, 1301, {"fromuid": a, "touid": b, "thread_id": str(tid),
                 "content": CONTENT, "unique_id": uq})
 
     readers = [asyncio.create_task(reader_loop(u)) for u in conns]

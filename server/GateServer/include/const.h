@@ -9,6 +9,7 @@
 using json = nlohmann::json;
 #include "Singleton.h"
 #include "Defer.h"
+#include "protocol_ids.h"
 #include <assert.h>
 #include <queue>
 #include <jdbc/mysql_driver.h>
@@ -29,20 +30,22 @@ namespace http = beast::http;           // from <boost/beast/http.hpp>
 namespace net = boost::asio;            // from <boost/asio.hpp>
 using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 
+// 错误码数值唯一来源 proto/protocol_ids.h 的 20xx 通用表
+// （GateServer/StatusServer/ChatServer 共用同一语义表）
 enum ErrorCodes {
-	Success = 0,
-	Error_Json = 1001,  //Json解析错误
-	RPCFailed = 1002,  //RPC请求错误
-	VarifyExpired = 1003, //验证码过期
-	VarifyCodeErr = 1004, //验证码错误
-	UserExist = 1005,       //用户已经存在
-	PasswdErr = 1006,    //密码错误
-	EmailNotMatch = 1007,  //邮箱不匹配
-	PasswdUpFailed = 1008,  //更新密码失败
-	PasswdInvalid = 1009,   //密码更新失败
-	TokenInvalid = 1010,   //Token失效
-	UidInvalid = 1011,  //uid无效
-	NoAvailableChatServer = 1018, //无可用ChatServer节点
+	Success = llfc_proto::ERR_SUCCESS,
+	Error_Json = llfc_proto::ERR_JSON,  //2001 Json解析错误
+	RPCFailed = llfc_proto::ERR_RPC_FAILED,  //2002 RPC请求错误
+	VarifyExpired = llfc_proto::ERR_VARIFY_EXPIRED, //2003 验证码过期
+	VarifyCodeErr = llfc_proto::ERR_VARIFY_CODE, //2004 验证码错误
+	UserExist = llfc_proto::ERR_USER_EXIST,       //2005 用户已经存在
+	PasswdErr = llfc_proto::ERR_PASSWD,    //2006 密码错误
+	EmailNotMatch = llfc_proto::ERR_EMAIL_NOT_MATCH,  //2007 邮箱不匹配
+	PasswdUpFailed = llfc_proto::ERR_PASSWD_UP_FAILED,  //2008 更新密码失败
+	PasswdInvalid = llfc_proto::ERR_PASSWD_INVALID,   //2009 密码更新失败
+	TokenInvalid = llfc_proto::ERR_TOKEN_INVALID,   //2010 Token失效
+	UidInvalid = llfc_proto::ERR_UID_INVALID,  //2011 uid无效
+	NoAvailableChatServer = llfc_proto::ERR_NO_CHAT_SERVER, //2018 无可用ChatServer节点
 };
 
 

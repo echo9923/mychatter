@@ -282,7 +282,7 @@ bool LocalChatDb::enqueueSend(LocalMessageDTO& dto)
     }
     dto.send_state = SEND_STATE_SENDING;
 
-    //组装重发所需原始请求 payload（与 ChatPage 既有 1017/1035 格式一致）
+    //组装重发所需原始请求 payload（与 ChatPage 既有 1301/1503 格式一致）
     //资源消息（图片/文件）要求 content_hash/mime_type 已由后台哈希填好（磁盘可能变化，落库时定格）
     const bool is_resource = dto.message_type == static_cast<int>(ChatMsgType::PIC)
         || dto.message_type == static_cast<int>(ChatMsgType::FILE);
@@ -345,7 +345,7 @@ bool LocalChatDb::enqueueSend(LocalMessageDTO& dto)
     ob.bindValue(":dedup", dto.client_message_id);
     ob.bindValue(":req", dto.client_message_id);
     ob.bindValue(":payload", payload_str);
-    //资源初始阶段 metadata（等待 1036），文本不需要阶段
+    //资源初始阶段 metadata（等待 1504），文本不需要阶段
     ob.bindValue(":stage", is_resource ? RESOURCE_STAGE_METADATA : QString());
     if (!ob.exec()) {
         qWarning() << "[LocalChatDb] enqueue outbox failed:" << ob.lastError().text();
@@ -412,7 +412,7 @@ bool LocalChatDb::updateResourceStage(const QString& clientMessageId, qint64 ser
         _db.rollback();
         return false;
     }
-    //只推进 outbox 阶段，不删 outbox（1038 完成才删）
+    //只推进 outbox 阶段，不删 outbox（1508 完成才删）
     QSqlQuery ob(_db);
     ob.prepare("UPDATE outbox SET stage = :stage WHERE dedup_key = :dedup");
     ob.bindValue(":stage", stage);

@@ -12,6 +12,7 @@
 #include <QVector>
 #include <set>
 #include <queue>
+#include "protocol_ids.h"
 
 //TCP文件上传包头长度
 #define FILE_UPLOAD_HEAD_LEN 6
@@ -29,84 +30,90 @@
  * @brief repolish用来根据属性刷新qss
  */
 extern std::function<void(QWidget*)> repolish;
-/**
- * @brief The ReqId enum 表示请求的id
- */
-
 extern std::function<QString(QString)> xorString;
 
+/**
+ * @brief The ReqId enum 表示请求的id
+ *
+ * 数值唯一来源为 proto/protocol_ids.h（llfc_proto 命名空间）。
+ * 编号规则：百位=功能域（10账户/11连接/12好友/13聊天/14同步/15资源/16头像），
+ * 奇数=发起方（请求或服务端通知），偶数=回包，同一动作 REQ→RSP→NOTIFY 连号。
+ */
 enum ReqId{
-    ID_GET_VARIFY_CODE = 1001, //获取验证码
-    ID_REG_USER = 1002, //注册用户
-    ID_RESET_PWD = 1003, //重置密码
-    ID_LOGIN_USER = 1004, //用户登录
-    ID_CHAT_LOGIN = 1005, //登陆聊天服务器
-    ID_CHAT_LOGIN_RSP= 1006, //登陆聊天服务器回包
-    ID_SEARCH_USER_REQ = 1007, //用户搜索请求
-    ID_SEARCH_USER_RSP = 1008, //搜索用户回包
-    ID_ADD_FRIEND_REQ = 1009,  //添加好友申请
-    ID_ADD_FRIEND_RSP = 1010, //申请添加好友回复
-    ID_NOTIFY_ADD_FRIEND_REQ = 1011,  //通知用户添加好友申请
-    ID_AUTH_FRIEND_REQ = 1013,  //认证好友请求
-    ID_AUTH_FRIEND_RSP = 1014,  //认证好友回复
-    ID_NOTIFY_AUTH_FRIEND_REQ = 1015, //通知用户认证好友申请
-    ID_TEXT_CHAT_MSG_REQ  = 1017,  //文本聊天信息请求
-    ID_TEXT_CHAT_MSG_RSP  = 1018,  //文本聊天信息回复
-    ID_NOTIFY_TEXT_CHAT_MSG_REQ = 1019, //通知用户文本聊天信息
-    ID_NOTIFY_OFF_LINE_REQ = 1021, //通知用户下线
-    ID_HEART_BEAT_REQ = 1023,      //心跳请求
-    ID_HEARTBEAT_RSP = 1024,       //心跳回复
-    ID_LOAD_CHAT_THREAD_REQ = 1025,      //加载聊天线程
-    ID_LOAD_CHAT_THREAD_RSP = 1026,      //加载聊天线程回复
-    ID_CREATE_PRIVATE_CHAT_REQ = 1027, //创建私聊请求
-    ID_CREATE_PRIVATE_CHAT_RSP = 1028, //创建私聊回复
-    ID_LOAD_CHAT_MSG_REQ = 1029,      //加载聊天消息
-    ID_LOAD_CHAT_MSG_RSP = 1030,      //加载聊天消息
-    ID_UPLOAD_HEAD_ICON_REQ  = 1031,      //上传头像请求
-    ID_UPLOAD_HEAD_ICON_RSP  = 1032,      //上传头像回复
-    ID_DOWN_LOAD_FILE_REQ = 1033,             //下载文件请求
-    ID_DOWN_LOAD_FILE_RSP = 1034,           //下载文件回复
-    ID_CREATE_RESOURCE_MSG_REQ = 1035,            //图片聊天消息请求
-    ID_CREATE_RESOURCE_MSG_RSP = 1036,           //图片聊天信息回复
-    ID_RESOURCE_CHUNK_UPLOAD_REQ = 1037,        //上传聊天图片资源
-    ID_RESOURCE_CHUNK_UPLOAD_RSP = 1038,        //上传聊天图片资源回复
-
-    ID_NOTIFY_RESOURCE_MSG_REQ = 1039,   //通知用户图片聊天信息
-    ID_RESOURCE_UPLOAD_PROGRESS_REQ = 1041,    //文件信息同步请求
-    ID_RESOURCE_UPLOAD_PROGRESS_RSP = 1042,     //文件信息同步回复
-    //1043/1044 续传分支已废弃：首传/续传统一 1037+1041
-    ID_RESOURCE_DOWN_INFO_REQ = 1045,      //查询资源下载信息请求
-    ID_RESOURCE_DOWN_INFO_RSP = 1046,      //查询资源下载信息回复
-    ID_RESOURCE_CHUNK_DOWN_REQ = 1047,     //按偏移量下载资源分片请求
-    ID_RESOURCE_CHUNK_DOWN_RSP = 1048,     //按偏移量下载资源分片回复
-    ID_CHAT_DELIVERY_ACK_REQ      =  1049,    //聊天消息投递ACK请求
-    ID_CHAT_DELIVERY_ACK_RSP      =  1050,    //聊天消息投递ACK回复
-    ID_SYNC_MESSAGE_REQ           =  1051,    //增量同步消息请求
-    ID_SYNC_MESSAGE_RSP           =  1052,    //增量同步消息回复
-    ID_RESOURCE_LOGIN_REQ         =  1053,    //资源服务器登录请求
-    ID_RESOURCE_LOGIN_RSP         =  1054,    //资源服务器登录回复
-    ID_REASSIGN_CHAT              =  1055     //复用当前 token 获取新的 ChatServer
+    ID_GET_VARIFY_CODE = llfc_proto::MSG_GET_VARIFY_CODE,     //1001 获取验证码
+    ID_REG_USER = llfc_proto::MSG_REG_USER,                   //1002 注册用户
+    ID_RESET_PWD = llfc_proto::MSG_RESET_PWD,                 //1003 重置密码
+    ID_LOGIN_USER = llfc_proto::MSG_LOGIN_USER,               //1004 用户登录
+    ID_CHAT_LOGIN = llfc_proto::MSG_CHAT_LOGIN,               //1101 登陆聊天服务器
+    ID_CHAT_LOGIN_RSP= llfc_proto::MSG_CHAT_LOGIN_RSP,        //1102 登陆聊天服务器回包
+    ID_HEART_BEAT_REQ = llfc_proto::MSG_HEART_BEAT_REQ,       //1103 心跳请求
+    ID_HEARTBEAT_RSP = llfc_proto::MSG_HEARTBEAT_RSP,         //1104 心跳回复
+    ID_NOTIFY_OFF_LINE_REQ = llfc_proto::MSG_NOTIFY_OFF_LINE, //1105 通知用户下线
+    ID_SEARCH_USER_REQ = llfc_proto::MSG_SEARCH_USER_REQ,     //1201 用户搜索请求
+    ID_SEARCH_USER_RSP = llfc_proto::MSG_SEARCH_USER_RSP,     //1202 搜索用户回包
+    ID_ADD_FRIEND_REQ = llfc_proto::MSG_ADD_FRIEND_REQ,       //1203 添加好友申请
+    ID_ADD_FRIEND_RSP = llfc_proto::MSG_ADD_FRIEND_RSP,       //1204 申请添加好友回复
+    ID_NOTIFY_ADD_FRIEND_REQ = llfc_proto::MSG_NOTIFY_ADD_FRIEND, //1205 通知用户添加好友申请
+    ID_AUTH_FRIEND_REQ = llfc_proto::MSG_AUTH_FRIEND_REQ,     //1207 认证好友请求
+    ID_AUTH_FRIEND_RSP = llfc_proto::MSG_AUTH_FRIEND_RSP,     //1208 认证好友回复
+    ID_NOTIFY_AUTH_FRIEND_REQ = llfc_proto::MSG_NOTIFY_AUTH_FRIEND, //1209 通知用户认证好友申请
+    ID_TEXT_CHAT_MSG_REQ  = llfc_proto::MSG_TEXT_CHAT_REQ,    //1301 文本聊天信息请求
+    ID_TEXT_CHAT_MSG_RSP  = llfc_proto::MSG_TEXT_CHAT_RSP,    //1302 文本聊天信息回复
+    ID_NOTIFY_TEXT_CHAT_MSG_REQ = llfc_proto::MSG_NOTIFY_TEXT_CHAT, //1303 通知用户文本聊天信息
+    ID_CREATE_PRIVATE_CHAT_REQ = llfc_proto::MSG_CREATE_PRIVATE_CHAT_REQ,   //1305 创建私聊请求
+    ID_CREATE_PRIVATE_CHAT_RSP = llfc_proto::MSG_CREATE_PRIVATE_CHAT_RSP,   //1306 创建私聊回复
+    ID_LOAD_CHAT_THREAD_REQ = llfc_proto::MSG_LOAD_CHAT_THREAD_REQ,  //1401 加载聊天会话列表
+    ID_LOAD_CHAT_THREAD_RSP = llfc_proto::MSG_LOAD_CHAT_THREAD_RSP,  //1402 加载聊天会话列表回复
+    ID_LOAD_CHAT_MSG_REQ = llfc_proto::MSG_LOAD_CHAT_MSG_REQ,        //1403 加载聊天消息
+    ID_LOAD_CHAT_MSG_RSP = llfc_proto::MSG_LOAD_CHAT_MSG_RSP,        //1404 加载聊天消息回复
+    ID_SYNC_MESSAGE_REQ = llfc_proto::MSG_SYNC_MESSAGE_REQ,          //1405 增量同步消息请求
+    ID_SYNC_MESSAGE_RSP = llfc_proto::MSG_SYNC_MESSAGE_RSP,          //1406 增量同步消息回复
+    ID_CHAT_DELIVERY_ACK_REQ = llfc_proto::MSG_DELIVERY_ACK_REQ,     //1407 聊天消息投递ACK请求
+    ID_CHAT_DELIVERY_ACK_RSP = llfc_proto::MSG_DELIVERY_ACK_RSP,     //1408 聊天消息投递ACK回复
+    ID_RESOURCE_LOGIN_REQ = llfc_proto::MSG_RESOURCE_LOGIN_REQ,      //1501 资源服务器登录请求
+    ID_RESOURCE_LOGIN_RSP = llfc_proto::MSG_RESOURCE_LOGIN_RSP,      //1502 资源服务器登录回复
+    ID_CREATE_RESOURCE_MSG_REQ = llfc_proto::MSG_CREATE_RESOURCE_REQ,   //1503 创建资源消息请求
+    ID_CREATE_RESOURCE_MSG_RSP = llfc_proto::MSG_CREATE_RESOURCE_RSP,   //1504 创建资源消息回复
+    ID_NOTIFY_RESOURCE_MSG_REQ = llfc_proto::MSG_NOTIFY_RESOURCE,        //1505 通知用户资源聊天信息
+    ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ,   //1507 上传资源分片
+    ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP,   //1508 上传资源分片回复
+    ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ,  //1509 查询上传进度
+    ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP, //1510 查询上传进度回复
+    ID_RESOURCE_DOWN_INFO_REQ = llfc_proto::MSG_RESOURCE_DOWN_INFO_REQ,      //1511 查询资源下载信息请求
+    ID_RESOURCE_DOWN_INFO_RSP = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP,      //1512 查询资源下载信息回复
+    ID_RESOURCE_CHUNK_DOWN_REQ = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ,    //1513 按偏移量下载资源分片请求
+    ID_RESOURCE_CHUNK_DOWN_RSP = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP,    //1514 按偏移量下载资源分片回复
+    ID_UPLOAD_HEAD_ICON_REQ  = llfc_proto::MSG_UPLOAD_HEAD_ICON_REQ,  //1601 上传头像请求
+    ID_UPLOAD_HEAD_ICON_RSP  = llfc_proto::MSG_UPLOAD_HEAD_ICON_RSP,  //1602 上传头像回复
+    ID_DOWN_LOAD_FILE_REQ = llfc_proto::MSG_DOWN_LOAD_FILE_REQ,      //1603 下载文件请求（旧头像链路）
+    ID_DOWN_LOAD_FILE_RSP = llfc_proto::MSG_DOWN_LOAD_FILE_RSP,      //1604 下载文件回复
+    ID_REASSIGN_CHAT = llfc_proto::MSG_REASSIGN_CHAT                  //1005 复用当前 token 获取新的 ChatServer
 };
 Q_DECLARE_METATYPE(ReqId)
 
+/**
+ * @brief 服务端错误码（数值唯一来源 proto/protocol_ids.h：20xx 通用 / 21xx 资源）
+ *
+ * ERR_JSON/ERR_NETWORK 为客户端本地错误（小值），与服务端 20xx 表不同语境。
+ */
 enum ErrorCodes{
-    SUCCESS = 0,
-    ERR_JSON = 1, //Json解析失败
-    ERR_NETWORK = 2,
-    //服务端投递错误码（镜像 ChatServer const.h）
-    MESSAGE_STORE_FAILED = 1014, //消息存储失败（transient，继续重传）
-    RECIPIENT_OFFLINE    = 1015, //接收方离线
-    SERVER_BUSY          = 1016, //服务器繁忙（transient，继续重传）
-    MESSAGE_CONFLICT     = 1017, //消息冲突（permanent，停止重传标 SEND_FAILED）
-    RESOURCE_INVALID     = 1019, //资源元数据非法（ChatServer；permanent）
-    RESOURCE_SIZE_EXCEEDED = 1020, //资源超过类型上限（ChatServer；permanent）
-    //资源链路错误码（镜像 ResourceServer const.h）
-    FILE_OFFSET_INVALID  = 1018, //分片偏移超前（按响应 server_offset 对齐重发）
-    MSG_ID_ERR           = 1022, //消息不存在（permanent，标失败）
-    FILE_HASH_MISMATCH   = 1023, //分片/整文件 SHA-256 校验失败（重传该片/整文件）
-    RESOURCE_NOT_READY   = 1025, //资源未就绪（稍后重试或提示）
-    RESOURCE_FORBIDDEN   = 1026, //无权访问该资源（permanent）
-    RESOURCE_STATE_INVALID = 1027 //资源已过期/终态（permanent，标 Expired）
+    SUCCESS = llfc_proto::ERR_SUCCESS,
+    ERR_JSON = 1, //Json解析失败（本地）
+    ERR_NETWORK = 2, //网络错误（本地）
+    //服务端投递错误码（20xx 通用表）
+    MESSAGE_STORE_FAILED = llfc_proto::ERR_MESSAGE_STORE_FAILED, //2014 消息存储失败（transient，继续重传）
+    RECIPIENT_OFFLINE    = llfc_proto::ERR_RECIPIENT_OFFLINE,    //2015 接收方离线
+    SERVER_BUSY          = llfc_proto::ERR_SERVER_BUSY,          //2016 服务器繁忙（transient，继续重传）
+    MESSAGE_CONFLICT     = llfc_proto::ERR_MESSAGE_CONFLICT,     //2017 消息冲突（permanent，停止重传标 SEND_FAILED）
+    RESOURCE_INVALID     = llfc_proto::ERR_RESOURCE_INVALID,     //2019 资源元数据非法（permanent）
+    RESOURCE_SIZE_EXCEEDED = llfc_proto::ERR_RESOURCE_SIZE_EXCEEDED, //2020 资源超过类型上限（permanent）
+    //资源链路错误码（21xx 资源表）
+    FILE_OFFSET_INVALID  = llfc_proto::RS_FILE_OFFSET_INVALID,   //2107 分片偏移超前（按响应 server_offset 对齐重发）
+    MSG_ID_ERR           = llfc_proto::RS_MSG_ID_ERR,            //2111 消息不存在（permanent，标失败）
+    FILE_HASH_MISMATCH   = llfc_proto::RS_FILE_HASH_MISMATCH,    //2112 分片/整文件 SHA-256 校验失败（重传该片/整文件）
+    RESOURCE_NOT_READY   = llfc_proto::RS_RESOURCE_NOT_READY,    //2114 资源未就绪（稍后重试或提示）
+    RESOURCE_FORBIDDEN   = llfc_proto::RS_RESOURCE_FORBIDDEN,    //2115 无权访问该资源（permanent）
+    RESOURCE_STATE_INVALID = llfc_proto::RS_RESOURCE_STATE_INVALID //2116 资源已过期/终态（permanent，标 Expired）
 };
 
 enum Modules{
@@ -307,7 +314,7 @@ extern bool calculateFileSha256(const QString& filePath, QString& content_hash,
 //整文件 SHA-256（校验下载结果用）
 extern QString calculateFileSha256Only(const QString& filePath);
 extern     QPixmap CreateLoadingPlaceholder(int width = 200, int height = 200);
-//根据扩展名猜测 MIME 类型（1035 创建请求的 mime_type 字段）
+//根据扩展名猜测 MIME 类型（1503 创建请求的 mime_type 字段）
 extern QString guessMimeType(const QString& fileName);
 
 #endif // GLOBAL_H

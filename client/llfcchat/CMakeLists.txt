@@ -204,6 +204,7 @@ target_include_directories(llfcchat PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/store"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/protocol"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util"
+  "${LLFC_REPO_ROOT}/proto"
 )
 
 target_compile_definitions(llfcchat PRIVATE QT_DEPRECATED_WARNINGS)

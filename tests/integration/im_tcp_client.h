@@ -2,9 +2,9 @@
 //
 // One TcpClient = one logged-in connection to a ChatServer. A background
 // reader thread drains [type][len][body] frames into a mutex-guarded queue; the
-// test thread sends 1017/1049/1051 frames with Send() and consumes inbound
-// frames (1018/1019/1050/1052/...) with Wait(). This mirrors the production Qt
-// TcpMgr receive model and lets senders pump requests while 1018s stream back,
+// test thread sends 1301/1407/1405 frames with Send() and consumes inbound
+// frames (1302/1303/1408/1406/...) with Wait(). This mirrors the production Qt
+// TcpMgr receive model and lets senders pump requests while 1302s stream back,
 // avoiding TCP receive-buffer back-pressure that a strict request/response
 // client would hit under 1000-message bursts.
 #pragma once
@@ -120,21 +120,21 @@ private:
 // send the login frame and parse the response; callers wire the TCP transport.
 // ---------------------------------------------------------------------------
 
-// Outcome of a Chat login (1005→1006). `ok` is true only when error==0. The
-// parsed 1006 body is kept in `response` so scenarios can assert the server did
+// Outcome of a Chat login (1101→1102). `ok` is true only when error==0. The
+// parsed 1102 body is kept in `response` so scenarios can assert the server did
 // not leak secret fields (pwd/token/session_token).
 struct ChatLoginOutcome {
 	bool ok      = false;
-	int  error   = -1;     // 1006 error field (-1 = transport/parse fail)
-	json response;         // parsed 1006 body (object on success)
+	int  error   = -1;     // 1102 error field (-1 = transport/parse fail)
+	json response;         // parsed 1102 body (object on success)
 };
 
-// Chat login: sends 1005 {uid, token}, waits for 1006. out.ok = (error==0).
+// Chat login: sends 1101 {uid, token}, waits for 1102. out.ok = (error==0).
 // The token is the value Gate returned from /user_login (== Redis utoken_<uid>).
 ChatLoginOutcome ChatLogin(TcpClient& c, int uid, const std::string& token);
 
-// Resource login (1053→1054): sends 1053 {uid, token}, returns the 1054 error
-// field (0 = authed, 1010 = TokenInvalid), or -1 on transport/parse failure.
+// Resource login (1501→1502): sends 1501 {uid, token}, returns the 1502 error
+// field (0 = authed, 2010 = TokenInvalid), or -1 on transport/parse failure.
 int ResourceLogin(ResClient& r, int uid, const std::string& token);
 
 } // namespace imt

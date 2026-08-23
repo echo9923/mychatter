@@ -249,12 +249,12 @@ void Group3_CrashRecovery()
 }
 
 // ---------------------------------------------------------------------------
-// Group 4 — 资源链路：updateResourceStage(1036) 只推进 outbox.stage 不删条目，
-//           confirmResourceSent(1038 resource_status=Ready) 才置 sent 并删 outbox。
+// Group 4 — 资源链路：updateResourceStage(1504) 只推进 outbox.stage 不删条目，
+//           confirmResourceSent(1508 resource_status=Ready) 才置 sent 并删 outbox。
 // ---------------------------------------------------------------------------
 void Group4_ImageChain()
 {
-    std::printf("\n== Group 4: resource send chain (1036/1038) ==\n");
+    std::printf("\n== Group 4: resource send chain (1504/1508) ==\n");
     QTemporaryDir dir;
     Check(dir.isValid(), "temporary dir created");
     const QString dbPath = dir.path() + "/chat.db";
@@ -306,16 +306,16 @@ void Group4_ImageChain()
     LocalMessageDTO staged;
     Check(db.updateResourceStage(cid, kSid, RESOURCE_STAGE_UPLOADING, &staged),
           "updateResourceStage returns true");
-    Check(staged.server_message_id == kSid, "1036 writes server_message_id");
-    Check(staged.send_state == SEND_STATE_SENDING, "still sending after 1036");
+    Check(staged.server_message_id == kSid, "1504 writes server_message_id");
+    Check(staged.send_state == SEND_STATE_SENDING, "still sending after 1504");
     Check(db.loadOutbox(&outbox) && outbox.size() == 1
           && outbox.first().stage == RESOURCE_STAGE_UPLOADING,
           "updateResourceStage advances stage without deleting outbox entry");
 
     LocalMessageDTO done;
     Check(db.confirmResourceSent(cid, &done), "confirmResourceSent returns true");
-    Check(done.send_state == SEND_STATE_SENT, "send_state=sent after 1038");
-    Check(done.server_message_id == kSid, "server_message_id kept after 1038");
+    Check(done.send_state == SEND_STATE_SENT, "send_state=sent after 1508");
+    Check(done.server_message_id == kSid, "server_message_id kept after 1508");
     Check(db.loadOutbox(&outbox) && outbox.isEmpty(),
           "confirmResourceSent deletes the outbox entry");
 }

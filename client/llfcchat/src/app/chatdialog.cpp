@@ -252,14 +252,14 @@ void ChatDialog::slot_item_clicked(QListWidgetItem* item)
 		//跳转到聊天界面
 		ui->chat_page->SetChatData(chat_data);
 		_cur_chat_thread_id = chat_data->GetThreadId();
-		//会话打开：从 SQLite 加载最近 50 条渲染，本地不足才发 1029 拉历史
+		//会话打开：从 SQLite 加载最近 50 条渲染，本地不足才发 1403 拉历史
 		LocalChatStore::GetInstance()->loadRecentMessages(_cur_chat_thread_id, 50);
 		return;
 	}
 }
 
 //收端文本消息：先 insertIncoming 落库，实际插入的消息由 sig_incoming_inserted 上屏；
-//落库失败什么都不做（不发 1049、不上屏）
+//落库失败什么都不做（不发 1407、不上屏）
 void ChatDialog::slot_text_chat_msg(std::shared_ptr<TextChatData> msg)
 {
 	LocalMessageDTO dto;
@@ -364,7 +364,7 @@ QListWidgetItem* ChatDialog::createPrivateChatItem(int other_id, qint64 thread_i
 	return item;
 }
 
-//1030 历史消息页到达：转换为本地 DTO 交给本地库事务写入，
+//1404 历史消息页到达：转换为本地 DTO 交给本地库事务写入，
 //完成后由 sig_history_page_inserted 触发重载会话窗口（自动衔接形成翻页链）
 void ChatDialog::slot_load_chat_msg(qint64 thread_id, qint64 msg_id, bool load_more,
 	std::vector<std::shared_ptr<ChatDataBase>> msglists)
@@ -393,7 +393,7 @@ void ChatDialog::slot_load_chat_msg(qint64 thread_id, qint64 msg_id, bool load_m
 		}
 		dto.message_type = static_cast<int>(chat_msg->GetMsgType());
 		if (chat_msg->GetMsgType() == ChatMsgType::PIC) {
-			//图片 content 为文件唯一名（下载已由 1030 解析处占位并触发）
+			//图片 content 为文件唯一名（下载已由 1404 解析处占位并触发）
 			auto img_data = std::dynamic_pointer_cast<ImgChatData>(chat_msg);
 			if (img_data != nullptr && img_data->_msg_info) {
 				dto.content = img_data->_msg_info->_unique_name;
@@ -454,7 +454,7 @@ void ChatDialog::slot_conversations_loaded(bool ok, QList<LocalConversationDTO> 
 	}
 }
 
-//最近消息到达：重建窗口消息模型并渲染；本地不足一屏且历史未完整时自动衔接 1029
+//最近消息到达：重建窗口消息模型并渲染；本地不足一屏且历史未完整时自动衔接 1403
 void ChatDialog::slot_recent_messages_loaded(bool ok, qint64 threadId,
 	QList<LocalMessageDTO> msgs, bool historyComplete, qint64 oldestLoadedMessageId)
 {
@@ -493,7 +493,7 @@ void ChatDialog::slot_recent_messages_loaded(bool ok, qint64 threadId,
 	}
 }
 
-//1029 历史页落库完成：重载最近消息（本地仍不足会自动衔接下一次 1029）
+//1403 历史页落库完成：重载最近消息（本地仍不足会自动衔接下一次 1403）
 void ChatDialog::slot_history_page_inserted(bool ok, qint64 threadId)
 {
 	if (!ok) {
@@ -526,7 +526,7 @@ void ChatDialog::slot_sync_page_applied(bool ok, qint64 newSyncSeq,
 	displayInsertedMessages(msgs, insertedIds);
 }
 
-//1018 文本确认：未回复消息转为已送达（unrsp → base）
+//1302 文本确认：未回复消息转为已送达（unrsp → base）
 void ChatDialog::slot_send_confirmed(bool ok, LocalMessageDTO dto)
 {
 	if (!ok) {
@@ -589,7 +589,7 @@ void ChatDialog::slot_send_failed_marked(bool ok, LocalMessageDTO dto)
 	ui->chat_page->UpdateChatStatus(msg);
 }
 
-//1036 资源元数据确认：回填 server_message_id，气泡转为已送达（上传继续由 Dispatcher 驱动）
+//1504 资源元数据确认：回填 server_message_id，气泡转为已送达（上传继续由 Dispatcher 驱动）
 void ChatDialog::slot_resource_stage_updated(bool ok, LocalMessageDTO dto)
 {
 	if (!ok) {
@@ -619,7 +619,7 @@ void ChatDialog::slot_resource_stage_updated(bool ok, LocalMessageDTO dto)
 }
 
 //本地 DTO → 窗口消息对象。文本直接构造；资源消息（图片/文件）复用/新建 MsgInfo，
-//接收端缺本地缓存时用占位图，图片自动下载、文件等用户点击（1045 元数据先行）
+//接收端缺本地缓存时用占位图，图片自动下载、文件等用户点击（1511 元数据先行）
 std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(const LocalMessageDTO& dto)
 {
 	auto self_info = UserMgr::GetInstance()->GetUserInfo();
@@ -695,7 +695,7 @@ std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(const LocalMessageDTO& d
 			UserMgr::GetInstance()->AddTransFile(dto.content, file_info);
 
 			if (!is_self && is_pic && dto.server_message_id > 0) {
-				//图片自动下载（1045 元数据先行，内部经信号投递到 File 线程）
+				//图片自动下载（1511 元数据先行，内部经信号投递到 File 线程）
 				FileTcpMgr::GetInstance()->StartResourceDownload(file_info);
 			}
 		}
@@ -745,7 +745,7 @@ void ChatDialog::displayInsertedMessages(const QList<LocalMessageDTO>& msgs,
 	}
 }
 
-//本地不足时发 1029 拉更早历史；oldest_loaded<=0 表示拉该会话全部历史
+//本地不足时发 1403 拉更早历史；oldest_loaded<=0 表示拉该会话全部历史
 void ChatDialog::requestOlderHistory(qint64 thread_id, qint64 oldest_loaded)
 {
 	QJsonObject jsonObj;

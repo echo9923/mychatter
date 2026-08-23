@@ -154,7 +154,7 @@ void LocalChatWorker::slot_load_recent_messages(qint64 threadId, int limit)
     bool history_complete = false;
     qint64 oldest_loaded = 0;
     if (ok) {
-        //回读会话行（供 GUI 判断是否需要发 1029 拉更早历史）
+        //回读会话行（供 GUI 判断是否需要发 1403 拉更早历史）
         QList<LocalConversationDTO> convs;
         if (_db.loadConversations(&convs)) {
             for (const LocalConversationDTO& conv : convs) {
@@ -175,7 +175,7 @@ void LocalChatWorker::slot_load_older_messages(qint64 threadId, qint64 beforeMes
     bool ok = _db.loadOlderMessages(threadId, beforeMessageId, limit, &msgs);
     bool history_complete = false;
     if (ok) {
-        //回读会话行判断历史是否已拉全（供 GUI 决定是否继续发 1029）
+        //回读会话行判断历史是否已拉全（供 GUI 决定是否继续发 1403）
         QList<LocalConversationDTO> convs;
         if (_db.loadConversations(&convs)) {
             for (const LocalConversationDTO& conv : convs) {

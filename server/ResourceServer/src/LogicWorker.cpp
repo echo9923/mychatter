@@ -113,16 +113,16 @@ void LogicWorker::RegisterCallBacks()
 {
 	_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = &LogicWorker::handleUploadHeadIcon;
 	_fun_callbacks[ID_DOWN_LOAD_FILE_REQ] = &LogicWorker::handleDownloadFile;
-	//1037 上传资源分片：{message_id:"<str>", offset:"<str>", chunk_sha256, data:"<base64>"}
+	//1507 上传资源分片：{message_id:"<str>", offset:"<str>", chunk_sha256, data:"<base64>"}
 	//固定路由 message_id % FILE_WORKER_COUNT：同一 .part 只被一个线程写
 	_fun_callbacks[ID_RESOURCE_CHUNK_UPLOAD_REQ] = &LogicWorker::handleResourceChunkUpload;
-	//1041 查询上传进度：{message_id:"<str>"} -> {error, message_id, server_offset, total_size,
-	//resource_status, content_hash}。与 1037 同 worker 串行化，server_offset 为磁盘 .part 真值
+	//1509 查询上传进度：{message_id:"<str>"} -> {error, message_id, server_offset, total_size,
+	//resource_status, content_hash}。与 1507 同 worker 串行化，server_offset 为磁盘 .part 真值
 	_fun_callbacks[ID_RESOURCE_UPLOAD_PROGRESS_REQ] = &LogicWorker::handleResourceUploadProgress;
-	//1045 查询资源下载信息：{message_id:"<str>"} -> {error, message_id, file_name, total_size,
+	//1511 查询资源下载信息：{message_id:"<str>"} -> {error, message_id, file_name, total_size,
 	//content_hash, mime_type, msg_type, resource_status}。权限：请求者必须是 sender 或 recv
 	_fun_callbacks[ID_RESOURCE_DOWN_INFO_REQ] = &LogicWorker::handleResourceDownInfo;
-	//1047 按偏移量下载资源分片：{message_id:"<str>", offset:"<str>"} ->
+	//1513 按偏移量下载资源分片：{message_id:"<str>", offset:"<str>"} ->
 	//{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
 	_fun_callbacks[ID_RESOURCE_CHUNK_DOWN_REQ] = &LogicWorker::handleResourceChunkDown;
 	_fun_callbacks[ID_RESOURCE_LOGIN_REQ] = &LogicWorker::handleResourceLogin;

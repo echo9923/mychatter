@@ -38,9 +38,9 @@ int ReadDeliveryInt(const std::string& key, int fallback) {
 	return fallback;
 }
 
-/// 对端 ChatServer 应用层错误码（ResourceServer const.h 未定义这些语义，用字面量常量，计划5.7）
-constexpr int kAppRecipientOffline = 1015;  // RECIPIENT_OFFLINE：只记录 pending，不重试
-constexpr int kAppServerBusy = 1016;        // SERVER_BUSY：可重试
+/// 对端 ChatServer 应用层错误码（20xx 通用表，proto/protocol_ids.h 单一来源）
+constexpr int kAppRecipientOffline = llfc_proto::ERR_RECIPIENT_OFFLINE;  // 2015：只记录 pending，不重试
+constexpr int kAppServerBusy = llfc_proto::ERR_SERVER_BUSY;              // 2016：可重试
 
 bool ResolveRpcEndpoint(const std::string& server_name, std::string& endpoint) {
 	std::string lease;
@@ -136,7 +136,7 @@ NotifyResult ChatServerGrpcClient::NotifyChatResourceMsg(long long message_id,
 		if (status.ok()) {
 			result.grpc_code = grpc::StatusCode::OK;
 			result.app_error = reply.error();
-			//仅对端 SERVER_BUSY(1016) 重试；Success/RECIPIENT_OFFLINE(1015)/未知应用错误立即停止
+			//仅对端 SERVER_BUSY(2016) 重试；Success/RECIPIENT_OFFLINE(2015)/未知应用错误立即停止
 			if (reply.error() == kAppServerBusy && attempt < max_attempts) {
 				//退避：RpcBackoffMs、2×RpcBackoffMs（100/200ms）；位移限幅防溢出
 				int shift = attempt - 1;

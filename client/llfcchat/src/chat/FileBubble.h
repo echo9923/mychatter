@@ -29,7 +29,7 @@ public:
     QString fileName() const { return m_file_name; }
 
 signals:
-    void downloadRequested(QString unique_name);                       // 请求下载（1045）
+    void downloadRequested(QString unique_name);                       // 请求下载（1511）
     void pauseRequested(QString unique_name, TransferType type);       // 请求暂停
     void resumeRequested(QString unique_name, TransferType type);      // 请求继续
     void openRequested(QString file_path);                             // 打开本地文件

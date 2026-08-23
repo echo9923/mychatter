@@ -116,7 +116,7 @@ void OutboxDispatcher::slot_outbox_loaded(bool ok, QList<OutboxEntryDTO> entries
     for (const OutboxEntryDTO& entry : entries) {
         _entries.insert(entry.dedup_key, entry);
     }
-    //重启恢复：uploading 阶段条目回查 server_message_id 后统一走 1041 对齐续传
+    //重启恢复：uploading 阶段条目回查 server_message_id 后统一走 1509 对齐续传
     for (const OutboxEntryDTO& entry : entries) {
         if (entry.operation_type != OUTBOX_OP_SEND_RESOURCE
             || entry.stage != RESOURCE_STAGE_UPLOADING) {
@@ -159,7 +159,7 @@ void OutboxDispatcher::dispatchDueEntries()
         return;
     }
     qint64 now = QDateTime::currentMSecsSinceEpoch();
-    //DELIVERY_ACK 聚合为一个 1049 帧（message_ids 元素为十进制字符串）
+    //DELIVERY_ACK 聚合为一个 1407 帧（message_ids 元素为十进制字符串）
     QJsonArray ack_ids;
     QStringList ack_keys;
     for (auto iter = _entries.begin(); iter != _entries.end(); ++iter) {
@@ -204,7 +204,7 @@ void OutboxDispatcher::dispatchDueEntries()
 
 void OutboxDispatcher::dispatchResourceEntry(const OutboxEntryDTO& entry)
 {
-    //uploading 阶段由 1042/1038 事件推进（或重启恢复续传），扫描不重发 1035
+    //uploading 阶段由 1510/1508 事件推进（或重启恢复续传），扫描不重发 1503
     if (entry.stage != RESOURCE_STAGE_METADATA) {
         return;
     }
@@ -258,7 +258,7 @@ void OutboxDispatcher::startResourceUpload(const OutboxEntryDTO& entry, qint64 s
     file_info->_transfer_state = TransferState::Uploading;
     _uploading.insert(name, entry.request_id);
 
-    //首传/续传统一入口：1041 查服务端真实偏移（.part 长度），1042 回包对齐后窗口续发
+    //首传/续传统一入口：1509 查服务端真实偏移（.part 长度），1510 回包对齐后窗口续发
     QJsonObject req;
     req["message_id"] = QString::number(server_message_id);
     FileTcpMgr::GetInstance()->SendData(ID_RESOURCE_UPLOAD_PROGRESS_REQ,
@@ -342,7 +342,7 @@ void OutboxDispatcher::slot_text_msg_rsp(int error, QString unique_id, qint64 me
     QString chat_time)
 {
     if (error == ErrorCodes::SUCCESS) {
-        //1018 成功：确认入库 + 删 outbox
+        //1302 成功：确认入库 + 删 outbox
         LocalChatStore::GetInstance()->confirmTextSent(unique_id, message_id, chat_time);
         removeEntry(unique_id);
         return;
@@ -353,7 +353,7 @@ void OutboxDispatcher::slot_text_msg_rsp(int error, QString unique_id, qint64 me
         removeEntry(unique_id);
         return;
     }
-    //transient（1014/1016）：更新退避等待扫描重试
+    //transient（2014/2016）：更新退避等待扫描重试
     auto iter = _entries.find(unique_id);
     if (iter != _entries.end()) {
         scheduleRetry(iter.value());
@@ -377,7 +377,7 @@ void OutboxDispatcher::slot_resource_msg_meta_rsp(int error, QString unique_id, 
         return;
     }
     if (error != ErrorCodes::SUCCESS) {
-        //transient（1014/1016）：更新退避等待扫描重试
+        //transient（2014/2016）：更新退避等待扫描重试
         if (iter != _entries.end()) {
             scheduleRetry(iter.value());
         }
@@ -386,7 +386,7 @@ void OutboxDispatcher::slot_resource_msg_meta_rsp(int error, QString unique_id, 
     if (iter == _entries.end()) {
         return;
     }
-    //1036 成功：推进 outbox 阶段 uploading（不删条目）并启动上传（1041 对齐）
+    //1504 成功：推进 outbox 阶段 uploading（不删条目）并启动上传（1509 对齐）
     LocalChatStore::GetInstance()->updateResourceStage(unique_id, message_id,
         RESOURCE_STAGE_UPLOADING);
     iter.value().stage = RESOURCE_STAGE_UPLOADING;
@@ -402,7 +402,7 @@ void OutboxDispatcher::slot_resource_upload_done(QString unique_name)
     }
     QString client_message_id = iter.value();
     _uploading.erase(iter);
-    //1038 resource_status=Ready：send_state=sent + 删 outbox
+    //1508 resource_status=Ready：send_state=sent + 删 outbox
     LocalChatStore::GetInstance()->confirmResourceSent(client_message_id);
     removeEntry(client_message_id);
 }
@@ -417,7 +417,7 @@ void OutboxDispatcher::slot_upload_progress_rsp(qint64 message_id, int error,
     qint64 server_offset, int resource_status)
 {
     if (error != ErrorCodes::SUCCESS) {
-        //1022 消息不存在（DB 行缺失）等：按失败收尾；transient 错误交由重连恢复兜底
+        //2111 消息不存在（DB 行缺失）等：按失败收尾；transient 错误交由重连恢复兜底
         if (error == ErrorCodes::MSG_ID_ERR) {
             auto file_info = UserMgr::GetInstance()->GetTransFileByMsgId(message_id);
             if (file_info) {
@@ -450,7 +450,7 @@ void OutboxDispatcher::slot_incoming_inserted(bool ok, QList<LocalMessageDTO> ms
     if (!ok || insertedIds.isEmpty()) {
         return;
     }
-    //新 DELIVERY_ACK 条目已落库，立即刷新镜像并派发 1049
+    //新 DELIVERY_ACK 条目已落库，立即刷新镜像并派发 1407
     LocalChatStore::GetInstance()->loadOutbox();
 }
 

@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <string>
 
+#include "protocol_ids.h"  // 协议号单一来源（proto/protocol_ids.h）
+
 namespace imt {
 
 // ---- Fixture users / data (plan Verification.5) ----------------------------
@@ -55,34 +57,36 @@ inline constexpr const char* REDIS_HOST   = "127.0.0.1";
 inline constexpr int         REDIS_PORT   = 6380;
 inline constexpr const char* REDIS_PASSWD = "123456";
 
-// ---- TCP/JSON protocol message IDs (mirror server const.h) -----------------
-inline constexpr short ID_CHAT_LOGIN              = 1005;
-inline constexpr short ID_CHAT_LOGIN_RSP          = 1006;
-inline constexpr short ID_TEXT_CHAT_MSG_REQ       = 1017;
-inline constexpr short ID_TEXT_CHAT_MSG_RSP       = 1018;
-inline constexpr short ID_NOTIFY_TEXT_CHAT_MSG    = 1019;
+// ---- TCP/JSON protocol message IDs (数值来源 proto/protocol_ids.h) ----------
+// 编号规则：百位=功能域（11连接/12好友/13聊天/14同步/15资源/16头像），
+// 奇数=发起方（请求/通知），偶数=回包，同一动作 REQ→RSP→NOTIFY 连号。
+inline constexpr short ID_CHAT_LOGIN              = llfc_proto::MSG_CHAT_LOGIN;         // 1101
+inline constexpr short ID_CHAT_LOGIN_RSP          = llfc_proto::MSG_CHAT_LOGIN_RSP;     // 1102
+inline constexpr short ID_TEXT_CHAT_MSG_REQ       = llfc_proto::MSG_TEXT_CHAT_REQ;      // 1301
+inline constexpr short ID_TEXT_CHAT_MSG_RSP       = llfc_proto::MSG_TEXT_CHAT_RSP;      // 1302
+inline constexpr short ID_NOTIFY_TEXT_CHAT_MSG    = llfc_proto::MSG_NOTIFY_TEXT_CHAT;   // 1303
 // 资源消息（图片/文件统一传输）：创建-分片上传-进度查询-下载信息-分片下载
-inline constexpr short ID_CREATE_RESOURCE_MSG_REQ   = 1035;
-inline constexpr short ID_CREATE_RESOURCE_MSG_RSP   = 1036;
-inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_REQ = 1037;
-inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_RSP = 1038;
-inline constexpr short ID_NOTIFY_RESOURCE_MSG       = 1039;
-inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_REQ = 1041;
-inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_RSP = 1042;
-// 1043/1044 续传分支已废弃：首传/续传统一 1037+1041
-inline constexpr short ID_RESOURCE_DOWN_INFO_REQ    = 1045;
-inline constexpr short ID_RESOURCE_DOWN_INFO_RSP    = 1046;
-inline constexpr short ID_RESOURCE_CHUNK_DOWN_REQ   = 1047;
-inline constexpr short ID_RESOURCE_CHUNK_DOWN_RSP   = 1048;
-inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = 1049;
-inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = 1050;
-// 1051/1052 数值不变，语义由离线拉取改为 user_message_sync 增量同步。
-inline constexpr short ID_SYNC_MESSAGE_REQ        = 1051;
-inline constexpr short ID_SYNC_MESSAGE_RSP        = 1052;
+inline constexpr short ID_CREATE_RESOURCE_MSG_REQ   = llfc_proto::MSG_CREATE_RESOURCE_REQ;   // 1503
+inline constexpr short ID_CREATE_RESOURCE_MSG_RSP   = llfc_proto::MSG_CREATE_RESOURCE_RSP;  // 1504
+inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ;   // 1507
+inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP;  // 1508
+inline constexpr short ID_NOTIFY_RESOURCE_MSG       = llfc_proto::MSG_NOTIFY_RESOURCE;     // 1505
+inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ;  // 1509
+inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP; // 1510
+// 旧 1043/1044 续传分支已废弃：首传/续传统一 1507+1509
+inline constexpr short ID_RESOURCE_DOWN_INFO_REQ    = llfc_proto::MSG_RESOURCE_DOWN_INFO_REQ;   // 1511
+inline constexpr short ID_RESOURCE_DOWN_INFO_RSP    = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP;  // 1512
+inline constexpr short ID_RESOURCE_CHUNK_DOWN_REQ   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ; // 1513
+inline constexpr short ID_RESOURCE_CHUNK_DOWN_RSP   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP; // 1514
+inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = llfc_proto::MSG_DELIVERY_ACK_REQ;   // 1407
+inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = llfc_proto::MSG_DELIVERY_ACK_RSP;   // 1408
+// 1405/1406 增量同步（按 sync_seq 游标，含 bootstrap 变体）。
+inline constexpr short ID_SYNC_MESSAGE_REQ        = llfc_proto::MSG_SYNC_MESSAGE_REQ;   // 1405
+inline constexpr short ID_SYNC_MESSAGE_RSP        = llfc_proto::MSG_SYNC_MESSAGE_RSP;   // 1406
 // Resource auth: client presents the login token once per connection;
 // all subsequent file frames are authorized against the bound session.
-inline constexpr short ID_RESOURCE_LOGIN_REQ       = 1053;
-inline constexpr short ID_RESOURCE_LOGIN_RSP       = 1054;
+inline constexpr short ID_RESOURCE_LOGIN_REQ       = llfc_proto::MSG_RESOURCE_LOGIN_REQ;   // 1501
+inline constexpr short ID_RESOURCE_LOGIN_RSP       = llfc_proto::MSG_RESOURCE_LOGIN_RSP;  // 1502
 
 // ---- MsgStatus / ChatMsgType / ResourceStatus (mirror const.h / data.h) ----
 inline constexpr int MSG_STATUS_UN_READ   = 0;
@@ -99,27 +103,28 @@ inline constexpr int RESOURCE_EXPIRED     = 2;   // 失败/过期终态
 // chatserver2's gRPC endpoint to deterministically break the live RPC.
 inline constexpr int CHAT2_PROXY_GRPC_PORT = 15057;
 
-// ---- Server-side ErrorCodes (mirror const.h; subset used by tests) ---------
-inline constexpr int ERR_SUCCESS             = 0;
-inline constexpr int ERR_RPC_FAILED          = 1002;
-inline constexpr int ERR_TOKEN_INVALID       = 1010;  // TokenInvalid
-inline constexpr int ERR_UID_INVALID         = 1011;
-inline constexpr int ERR_MESSAGE_STORE_FAILED = 1014;
-inline constexpr int ERR_RECIPIENT_OFFLINE   = 1015;
-inline constexpr int ERR_SERVER_BUSY         = 1016;
-inline constexpr int ERR_MESSAGE_CONFLICT    = 1017;
-inline constexpr int ERR_NO_AVAILABLE_CHAT_SERVER = 1018;
-inline constexpr int ERR_RESOURCE_INVALID    = 1019;  // ChatServer：资源元数据非法
-inline constexpr int ERR_RESOURCE_SIZE_EXCEEDED = 1020; // ChatServer：超类型上限
-// ResourceServer 侧（同一数值段，不同语义表）
-inline constexpr int ERR_RS_FILE_NOT_EXISTS  = 1012;
-inline constexpr int ERR_RS_OFFSET_INVALID   = 1018;  // 偏移超前（响应带 server_offset）
-inline constexpr int ERR_RS_MSG_ID_ERR       = 1022;
-inline constexpr int ERR_RS_HASH_MISMATCH    = 1023;  // 分片/整文件 SHA-256 不符
-inline constexpr int ERR_RS_SIZE_EXCEEDED    = 1024;
-inline constexpr int ERR_RS_NOT_READY        = 1025;  // resource_status != Ready
-inline constexpr int ERR_RS_FORBIDDEN        = 1026;  // 非收发双方
-inline constexpr int ERR_RS_STATE_INVALID    = 1027;  // 已过期/终态
+// ---- Server-side ErrorCodes (数值来源 proto/protocol_ids.h) ----------------
+// 20xx 通用表（Gate/Status/Chat）+ 21xx 资源表（ResourceServer 专属语义）
+inline constexpr int ERR_SUCCESS             = llfc_proto::ERR_SUCCESS;              // 0
+inline constexpr int ERR_RPC_FAILED          = llfc_proto::ERR_RPC_FAILED;          // 2002
+inline constexpr int ERR_TOKEN_INVALID       = llfc_proto::ERR_TOKEN_INVALID;       // 2010
+inline constexpr int ERR_UID_INVALID         = llfc_proto::ERR_UID_INVALID;         // 2011
+inline constexpr int ERR_MESSAGE_STORE_FAILED = llfc_proto::ERR_MESSAGE_STORE_FAILED; // 2014
+inline constexpr int ERR_RECIPIENT_OFFLINE   = llfc_proto::ERR_RECIPIENT_OFFLINE;   // 2015
+inline constexpr int ERR_SERVER_BUSY         = llfc_proto::ERR_SERVER_BUSY;         // 2016
+inline constexpr int ERR_MESSAGE_CONFLICT    = llfc_proto::ERR_MESSAGE_CONFLICT;    // 2017
+inline constexpr int ERR_NO_AVAILABLE_CHAT_SERVER = llfc_proto::ERR_NO_CHAT_SERVER; // 2018
+inline constexpr int ERR_RESOURCE_INVALID    = llfc_proto::ERR_RESOURCE_INVALID;    // 2019 资源元数据非法
+inline constexpr int ERR_RESOURCE_SIZE_EXCEEDED = llfc_proto::ERR_RESOURCE_SIZE_EXCEEDED; // 2020 超类型上限
+// ResourceServer 侧（21xx 资源表）
+inline constexpr int ERR_RS_FILE_NOT_EXISTS  = llfc_proto::RS_FILE_NOT_EXISTS;        // 2101
+inline constexpr int ERR_RS_OFFSET_INVALID   = llfc_proto::RS_FILE_OFFSET_INVALID;    // 2107 偏移超前（响应带 server_offset）
+inline constexpr int ERR_RS_MSG_ID_ERR       = llfc_proto::RS_MSG_ID_ERR;             // 2111
+inline constexpr int ERR_RS_HASH_MISMATCH    = llfc_proto::RS_FILE_HASH_MISMATCH;     // 2112 分片/整文件 SHA-256 不符
+inline constexpr int ERR_RS_SIZE_EXCEEDED    = llfc_proto::RS_FILE_SIZE_EXCEEDED;     // 2113
+inline constexpr int ERR_RS_NOT_READY        = llfc_proto::RS_RESOURCE_NOT_READY;     // 2114 resource_status != Ready
+inline constexpr int ERR_RS_FORBIDDEN        = llfc_proto::RS_RESOURCE_FORBIDDEN;     // 2115 非收发双方
+inline constexpr int ERR_RS_STATE_INVALID    = llfc_proto::RS_RESOURCE_STATE_INVALID; // 2116 已过期/终态
 
 // ---- Process-wide failure counter ------------------------------------------
 inline std::atomic<int> g_failures{0};

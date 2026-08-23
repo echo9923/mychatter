@@ -45,7 +45,7 @@ private:
     //只对实际插入的消息上屏（insertedIds 去重保证推送与同步只展示一次）
     void displayInsertedMessages(const QList<LocalMessageDTO>& msgs,
         const QList<qint64>& insertedIds);
-    //本地不足时发 1029 拉更早历史（before_message_id 十进制字符串）
+    //本地不足时发 1403 拉更早历史（before_message_id 十进制字符串）
     void requestOlderHistory(qint64 thread_id, qint64 oldest_loaded);
     Ui::ChatDialog *ui;
     bool _b_loading;
