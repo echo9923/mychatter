@@ -228,70 +228,22 @@ void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
 		std::cout << "msg type [" << msg_type << "] handler not found" << std::endl;
 		return;
 	}
-	call_back_iter->second(session, msg_type, msg_data);
+	(this->*call_back_iter->second)(session, msg_type, msg_data);
 }
 
 void LogicSystem::RegisterCallBacks() {
-	_fun_callbacks[MSG_CHAT_LOGIN] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			LoginHandler(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_SEARCH_USER_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			SearchInfo(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_ADD_FRIEND_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			AddFriendApply(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_AUTH_FRIEND_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			AuthFriendApply(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_TEXT_CHAT_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			DealChatTextMsg(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_HEART_BEAT_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			HeartBeatHandler(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			GetUserThreadsHandler(session, msg_type, msg_data);
-		};
-	
-	_fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			CreatePrivateChat(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			LoadChatMsg(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_CREATE_RESOURCE_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			DealCreateResourceMsg(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_CHAT_DELIVERY_ACK_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			DealDeliveryAck(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_SYNC_MESSAGE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			DealSyncMessage(session, msg_type, msg_data);
-		};
-
+	_fun_callbacks[MSG_CHAT_LOGIN] = &LogicSystem::LoginHandler;
+	_fun_callbacks[ID_SEARCH_USER_REQ] = &LogicSystem::SearchInfo;
+	_fun_callbacks[ID_ADD_FRIEND_REQ] = &LogicSystem::AddFriendApply;
+	_fun_callbacks[ID_AUTH_FRIEND_REQ] = &LogicSystem::AuthFriendApply;
+	_fun_callbacks[ID_TEXT_CHAT_MSG_REQ] = &LogicSystem::DealChatTextMsg;
+	_fun_callbacks[ID_HEART_BEAT_REQ] = &LogicSystem::HeartBeatHandler;
+	_fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = &LogicSystem::GetUserThreadsHandler;
+	_fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = &LogicSystem::CreatePrivateChat;
+	_fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = &LogicSystem::LoadChatMsg;
+	_fun_callbacks[ID_CREATE_RESOURCE_MSG_REQ] = &LogicSystem::DealCreateResourceMsg;
+	_fun_callbacks[ID_CHAT_DELIVERY_ACK_REQ] = &LogicSystem::DealDeliveryAck;
+	_fun_callbacks[ID_SYNC_MESSAGE_REQ] = &LogicSystem::DealSyncMessage;
 }
 
 void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {

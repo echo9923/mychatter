@@ -15,8 +15,11 @@ public:
 	shared_ptr<RecvNode> _recvnode;
 };
 
-typedef  function<void(shared_ptr<CSession>,
-	const short& msg_type, const string& msg_data)> FunCallBack;
+class LogicWorker;
+
+/// 消息处理回调：LogicWorker 的具名成员函数，注册处一行直达实现
+typedef void (LogicWorker::*MsgHandler)(shared_ptr<CSession>,
+	const short& msg_type, const string& msg_data);
 
 class LogicWorker
 {
@@ -26,12 +29,26 @@ public:
 	void PostTask(std::shared_ptr<LogicNode> task);
 	void RegisterCallBacks();
 private:
+	// 1031 头像分片上传
+	void handleUploadHeadIcon(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
+	// 1033 头像/旧文件下载
+	void handleDownloadFile(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
+	// 1037 资源分片上传
+	void handleResourceChunkUpload(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
+	// 1041 上传进度查询
+	void handleResourceUploadProgress(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
+	// 1045 资源下载元数据
+	void handleResourceDownInfo(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
+	// 1047 资源分片下载
+	void handleResourceChunkDown(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
+	// 1053 Resource 登录鉴权
+	void handleResourceLogin(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 	void task_callback(std::shared_ptr<LogicNode>);
 	std::thread _work_thread;
 	std::queue<std::shared_ptr<LogicNode>> _task_que;
 	std::atomic<bool> _b_stop;
 	std::mutex  _mtx;
 	std::condition_variable _cv;
-	std::unordered_map<short, FunCallBack> _fun_callbacks;
+	std::unordered_map<short, MsgHandler> _fun_callbacks;
 };
 

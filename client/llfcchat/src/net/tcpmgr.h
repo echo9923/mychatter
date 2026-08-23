@@ -35,6 +35,40 @@ private:
     TcpMgr();
     void registerMetaType();
     void initHandlers();
+    // 1006 Chat 登录/重连回包
+    void handleChatLoginRsp(ReqId id, int len, QByteArray data);
+    // 1008 搜索用户回包
+    void handleSearchUserRsp(ReqId id, int len, QByteArray data);
+    // 1011 收到好友申请通知
+    void handleNotifyAddFriendReq(ReqId id, int len, QByteArray data);
+    // 1015 对方认证好友通知
+    void handleNotifyAuthFriendReq(ReqId id, int len, QByteArray data);
+    // 1010 添加好友回包
+    void handleAddFriendRsp(ReqId id, int len, QByteArray data);
+    // 1014 认证好友回包
+    void handleAuthFriendRsp(ReqId id, int len, QByteArray data);
+    // 1018 文本消息发送回包
+    void handleTextChatMsgRsp(ReqId id, int len, QByteArray data);
+    // 1019 收到文本消息通知
+    void handleNotifyTextChatMsgReq(ReqId id, int len, QByteArray data);
+    // 1021 被踢下线通知
+    void handleNotifyOfflineReq(ReqId id, int len, QByteArray data);
+    // 1024 心跳回包
+    void handleHeartbeatRsp(ReqId id, int len, QByteArray data);
+    // 1026 会话列表回包
+    void handleLoadChatThreadRsp(ReqId id, int len, QByteArray data);
+    // 1028 创建私聊回包
+    void handleCreatePrivateChatRsp(ReqId id, int len, QByteArray data);
+    // 1030 历史消息回包
+    void handleLoadChatMsgRsp(ReqId id, int len, QByteArray data);
+    // 1036 资源消息创建回包
+    void handleCreateResourceMsgRsp(ReqId id, int len, QByteArray data);
+    // 1039 收到图片/文件资源消息通知
+    void handleNotifyResourceMsgReq(ReqId id, int len, QByteArray data);
+    // 1050 投递 ACK 回包
+    void handleDeliveryAckRsp(ReqId id, int len, QByteArray data);
+    // 1052 增量同步回包
+    void handleSyncMessageRsp(ReqId id, int len, QByteArray data);
     void handleMsg(ReqId id, int len, QByteArray data);
     void finishReconnectFailure();
     void CreatePlaceholderResourceMsgL(QString cache_dir, QString msg_content,
@@ -57,7 +91,8 @@ private:
     bool _b_recv_pending;
     quint16 _message_type;
     quint16 _message_len;
-    QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handlers;
+    typedef void (TcpMgr::*ChatHandler)(ReqId id, int len, QByteArray data);
+    QMap<ReqId, ChatHandler> _handlers;
     //发送队列
     QQueue<QByteArray> _send_queue;
     //正在发送的包

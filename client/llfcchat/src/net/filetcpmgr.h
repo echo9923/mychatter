@@ -51,6 +51,20 @@ public:
     void CopyFile(QString src_path, QString dst_path, QString dst_dir);
 private:
     void initHandlers();
+    // 1054 Resource 登录回包
+    void handleResourceLoginRsp(ReqId id, int len, QByteArray data);
+    // 1032 头像上传回包
+    void handleUploadHeadIconRsp(ReqId id, int len, QByteArray data);
+    // 1034 头像/旧文件下载回包
+    void handleDownloadFileRsp(ReqId id, int len, QByteArray data);
+    // 1038 资源分片上传回包
+    void handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data);
+    // 1042 上传进度查询回包
+    void handleResourceUploadProgressRsp(ReqId id, int len, QByteArray data);
+    // 1046 资源下载元数据回包
+    void handleResourceDownInfoRsp(ReqId id, int len, QByteArray data);
+    // 1048 资源分片下载回包
+    void handleResourceChunkDownRsp(ReqId id, int len, QByteArray data);
     explicit FileTcpMgr(QObject *parent = nullptr);
 
     void registerMetaType();
@@ -65,7 +79,8 @@ private:
     bool _b_recv_pending;
     quint16 _message_type;
     quint32 _message_len;
-    QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handlers;
+    typedef void (FileTcpMgr::*FileHandler)(ReqId id, int len, QByteArray data);
+    QMap<ReqId, FileHandler> _handlers;
     //发送队列
     QQueue<QByteArray> _send_queue;
     //正在发送的包
