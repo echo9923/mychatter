@@ -163,7 +163,7 @@ NotifyResult ChatGrpcClient::NotifyTextChatMsg(const std::string& server_ip, con
 		if (status.ok()) {
 			result.grpc_code = grpc::StatusCode::OK;
 			result.app_error = rsp.error();
-			//仅对端 SERVER_BUSY(1016) 重试；Success/RECIPIENT_OFFLINE(1015)/未知应用错误立即停止（计划5.6）
+			//仅对端 SERVER_BUSY(2016) 重试；Success/RECIPIENT_OFFLINE(2015)/未知应用错误立即停止（计划5.6）
 			if (rsp.error() == ErrorCodes::SERVER_BUSY && attempt < max_attempts) {
 				//退避：RpcBackoffMs、2×RpcBackoffMs（100/200ms）；位移限幅防溢出
 				int shift = attempt - 1;

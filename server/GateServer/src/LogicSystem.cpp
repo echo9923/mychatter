@@ -584,7 +584,8 @@ LogicSystem::DispatchResult LogicSystem::Dispatch(http::verb method, std::string
 				}
 				con->_response.result(http::status::internal_server_error);
 				con->_response.set(http::field::content_type, "text/json");
-				boost::beast::ostream(con->_response.body()) << R"({"error":1002})";
+				boost::beast::ostream(con->_response.body())
+					<< R"({"error":)" << ErrorCodes::RPCFailed << R"(})";
 				con->WriteResponse();
 			});
 			return;

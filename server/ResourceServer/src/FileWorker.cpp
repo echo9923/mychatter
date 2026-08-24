@@ -11,8 +11,8 @@
 #include <fstream>
 
 namespace {
-/// 对端 ChatServer RECIPIENT_OFFLINE 应用层错误码（只记录不重试，增量同步兜底）
-constexpr int kAppRecipientOffline = 1015;
+	/// 对端 ChatServer RECIPIENT_OFFLINE 应用层错误码（20xx 通用表；只记录不重试，增量同步兜底）
+	constexpr int kAppRecipientOffline = llfc_proto::ERR_RECIPIENT_OFFLINE;
 /// UploadSession 空闲逐出阈值
 constexpr auto kSessionIdleTimeout = std::chrono::minutes(30);
 
@@ -587,7 +587,7 @@ void DownloadWorker::PostChunkTask(std::shared_ptr<ResourceChunkDownTask> task)
 
 void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 {
-	//头像下载（1033）：旧 seq + Redis 断点协议保持不变
+	//头像下载（1603）：旧 seq + Redis 断点协议保持不变
 	auto file_path_str = task->_file_path;
 
 	boost::filesystem::path file_path(file_path_str);
@@ -719,7 +719,7 @@ void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 }
 
 void DownloadWorker::HandleResourceChunkDown(std::shared_ptr<ResourceChunkDownTask> task) {
-	//1048 统一响应：{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
+	//1514 统一响应：{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
 	auto respond = [task](int error, const std::string& data, unsigned long long bytes,
 		const std::string& chunk_hash, bool is_last) {
 		json result;

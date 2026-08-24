@@ -16,9 +16,6 @@ using json = nlohmann::json;
 #include <unordered_map>
 #include "data.h"
 
-/// 消息处理回调函数类型：接受会话指针、消息类型、消息数据
-typedef  function<void(shared_ptr<CSession>, const short &msg_type, const string &msg_data)> FunCallBack;
-
 /**
  * @brief 业务逻辑处理系统（单例）
  * 
@@ -217,7 +214,7 @@ private:
 	void DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
-	 * @brief 增量消息同步处理器（1051/1052）
+	 * @brief 增量消息同步处理器（1405/1406）
 	 *
 	 * 在 receiver uid shard 上执行：校验 uid==session->GetUserId()；after_sync_seq 按
 	 * 十进制字符串解析为 uint64（缺省 "0"），limit clamp [1,200] 默认 100；
@@ -228,7 +225,7 @@ private:
 	void DealSyncMessage(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
-	 * @brief 将一条 ChatMessage 序列化为统一 envelope（1018/1019/1030/1052 共用）
+	 * @brief 将一条 ChatMessage 序列化为统一 envelope（1302/1303/1404/1406 共用）
 	 *
 	 * 固定字段：message_id,unique_id,thread_id,fromuid,touid,msg_type,content,
 	 * content_size,chat_time,status。message_id/thread_id/content_size 一律十进制
@@ -248,7 +245,9 @@ private:
 	std::vector<std::unique_ptr<LogicWorker>> _logic_workers;
 	/// 按 sender uid 分片的跨服投递 worker 池（仅执行会阻塞的同步 gRPC）
 	std::vector<std::unique_ptr<LogicWorker>> _delivery_workers;
+	/// 消息处理回调：LogicSystem 的具名成员函数，注册处一行直达实现
+	typedef void (LogicSystem::*MsgHandler)(shared_ptr<CSession>, const short& msg_type, const string& msg_data);
 	/// 消息回调映射表，构造时注册后只读
-	std::map<short, FunCallBack> _fun_callbacks;
+	std::map<short, MsgHandler> _fun_callbacks;
 };
 

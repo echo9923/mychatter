@@ -37,13 +37,13 @@ public:
     //INSERT messages(sending) + INSERT outbox，回填 dto.local_id；
     //资源消息（type 1/3）要求 content_hash/mime_type 已由后台哈希填好
     bool enqueueSend(LocalMessageDTO& dto);
-    //1018 到达：UPDATE messages(server_message_id/sent/chat_time) + 删 outbox
+    //1302 到达：UPDATE messages(server_message_id/sent/chat_time) + 删 outbox
     bool confirmTextSent(const QString& clientMessageId, qint64 serverMessageId,
         const QString& chatTime, LocalMessageDTO* out);
-    //1036 到达：回写 server_message_id + outbox.stage=uploading（不删 outbox）
+    //1504 到达：回写 server_message_id + outbox.stage=uploading（不删 outbox）
     bool updateResourceStage(const QString& clientMessageId, qint64 serverMessageId,
         const QString& stage, LocalMessageDTO* out);
-    //1038 上传完成（resource_status=Ready）：send_state=sent + 删 outbox
+    //1508 上传完成（resource_status=Ready）：send_state=sent + 删 outbox
     bool confirmResourceSent(const QString& clientMessageId, LocalMessageDTO* out);
     //冲突/源文件丢失/资源终态：send_state=failed + 删 outbox
     bool markSendFailed(const QString& clientMessageId, LocalMessageDTO* out);
@@ -56,7 +56,7 @@ public:
     //整页 + 推进 sync_state 游标，同一事务；失败整体回滚游标不动
     bool applySyncPage(const QList<LocalMessageDTO>& msgs, qint64 newSyncSeq,
         QList<qint64>* insertedIds);
-    //1029/1030 历史页回写：不产生 ACK、不计未读；更新 oldest_loaded_message_id/history_complete
+    //1403/1404 历史页回写：不产生 ACK、不计未读；更新 oldest_loaded_message_id/history_complete
     bool insertHistoryPage(qint64 threadId, const QList<LocalMessageDTO>& msgs,
         bool historyComplete);
     bool upsertConversations(const QList<LocalConversationDTO>& convs);

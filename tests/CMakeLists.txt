@@ -124,6 +124,7 @@ target_include_directories(local_store_tests PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/store"
   "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/protocol"
   "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/util"
+  "${LLFC_REPO_ROOT}/proto"
 )
 
 target_link_libraries(local_store_tests PRIVATE
@@ -197,6 +198,7 @@ if(LLFC_RUN_INTEGRATION_TESTS)
   target_include_directories(im_integration_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../server/common/include"
+    "${LLFC_REPO_ROOT}/proto"
   )
 
   target_link_libraries(im_integration_tests PRIVATE

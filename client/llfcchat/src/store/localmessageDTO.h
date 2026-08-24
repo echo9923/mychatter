@@ -31,7 +31,7 @@ struct LocalConversationDTO {
     qint64 last_server_message_id = 0;      //最后一条服务端 message_id
     QString last_message_preview;
     int unread_count = 0;
-    qint64 oldest_loaded_message_id = 0;    //本地已加载的最旧 message_id（1029 游标）
+    qint64 oldest_loaded_message_id = 0;    //本地已加载的最旧 message_id（1403 游标）
     bool history_complete = false;          //历史是否已全部拉取
     QString updated_at;
 };

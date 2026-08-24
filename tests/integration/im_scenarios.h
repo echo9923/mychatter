@@ -19,20 +19,20 @@ bool ScenarioOrderN1();
 bool ScenarioDedup();
 
 // --- Verification.6 second half (plan §2-3 后半) ---
-bool ScenarioOffline();     // offline: 离线消息重连后经 1051/1052 增量同步按 sync_seq 补齐
-bool ScenarioLostAck();    // lost-ack: 1050 丢失重发 1049，服务端幂等成功
+bool ScenarioOffline();     // offline: 离线消息重连后经 1405/1406 增量同步按 sync_seq 补齐
+bool ScenarioLostAck();    // lost-ack: 1408 丢失重发 1407，服务端幂等成功
 bool ScenarioPullBytes();  // pull-bytes: 多页同步，无遗漏无重复、sync_seq 严格递增
 bool ScenarioCrossServer();// cross-server: gRPC proxy break, retry bounded, restart sync
-bool ScenarioResourceOffline(); // resource-offline: 上传完成前同步流不含该资源，1038 Ready 后出现
+bool ScenarioResourceOffline(); // resource-offline: 上传完成前同步流不含该资源，1508 Ready 后出现
 
-// --- 统一资源传输（1035/1037/1041/1045/1047 新协议）---
-bool ScenarioResourceCreate();     // resource-create: 1035 校验链（超限/坏哈希/幂等/冲突/伪造/非成员）
+// --- 统一资源传输（1503/1507/1509/1511/1513 新协议）---
+bool ScenarioResourceCreate();     // resource-create: 1503 校验链（超限/坏哈希/幂等/冲突/伪造/非成员）
 bool ScenarioResourceUpload();     // resource-upload: 多分片上传-下载逐字节一致
 bool ScenarioResourceResume();     // resource-resume: 杀 ResourceServer 重启后从非零偏移续传
 bool ScenarioResourceIdempotent(); // resource-idempotent: 重复分片幂等不双写
-bool ScenarioResourceCorrupt();    // resource-corrupt: 坏分片/整文件哈希 1023 与重置
-bool ScenarioResourcePerm();       // resource-perm: 非会话成员上传 1026、越界下载 1018
-bool ScenarioResourceOffset();     // resource-offset: 跳片 1018 + server_offset 对齐
+bool ScenarioResourceCorrupt();    // resource-corrupt: 坏分片/整文件哈希 2112 与重置
+bool ScenarioResourcePerm();       // resource-perm: 非会话成员上传 2115、越界下载 2107
+bool ScenarioResourceOffset();     // resource-offset: 跳片 2107 + server_offset 对齐
 bool ScenarioResourceExpiry();     // resource-expiry: 7 天清理标记失败并回收磁盘
 
 // --- Plan 3.1: StatusServer lease-based least-loaded discovery ---

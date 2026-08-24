@@ -228,70 +228,22 @@ void LogicSystem::DispatchClientMessage(std::shared_ptr<LogicNode> msg) {
 		std::cout << "msg type [" << msg_type << "] handler not found" << std::endl;
 		return;
 	}
-	call_back_iter->second(session, msg_type, msg_data);
+	(this->*call_back_iter->second)(session, msg_type, msg_data);
 }
 
 void LogicSystem::RegisterCallBacks() {
-	_fun_callbacks[MSG_CHAT_LOGIN] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			LoginHandler(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_SEARCH_USER_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			SearchInfo(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_ADD_FRIEND_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			AddFriendApply(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_AUTH_FRIEND_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			AuthFriendApply(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_TEXT_CHAT_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			DealChatTextMsg(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_HEART_BEAT_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			HeartBeatHandler(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			GetUserThreadsHandler(session, msg_type, msg_data);
-		};
-	
-	_fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			CreatePrivateChat(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			LoadChatMsg(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_CREATE_RESOURCE_MSG_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			DealCreateResourceMsg(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_CHAT_DELIVERY_ACK_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			DealDeliveryAck(session, msg_type, msg_data);
-		};
-
-	_fun_callbacks[ID_SYNC_MESSAGE_REQ] = [this](shared_ptr<CSession> session, const short& msg_type,
-		const string& msg_data) {
-			DealSyncMessage(session, msg_type, msg_data);
-		};
-
+	_fun_callbacks[MSG_CHAT_LOGIN] = &LogicSystem::LoginHandler;
+	_fun_callbacks[ID_SEARCH_USER_REQ] = &LogicSystem::SearchInfo;
+	_fun_callbacks[ID_ADD_FRIEND_REQ] = &LogicSystem::AddFriendApply;
+	_fun_callbacks[ID_AUTH_FRIEND_REQ] = &LogicSystem::AuthFriendApply;
+	_fun_callbacks[ID_TEXT_CHAT_MSG_REQ] = &LogicSystem::DealChatTextMsg;
+	_fun_callbacks[ID_HEART_BEAT_REQ] = &LogicSystem::HeartBeatHandler;
+	_fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = &LogicSystem::GetUserThreadsHandler;
+	_fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = &LogicSystem::CreatePrivateChat;
+	_fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = &LogicSystem::LoadChatMsg;
+	_fun_callbacks[ID_CREATE_RESOURCE_MSG_REQ] = &LogicSystem::DealCreateResourceMsg;
+	_fun_callbacks[ID_CHAT_DELIVERY_ACK_REQ] = &LogicSystem::DealDeliveryAck;
+	_fun_callbacks[ID_SYNC_MESSAGE_REQ] = &LogicSystem::DealSyncMessage;
 }
 
 void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_type, const string &msg_data) {
@@ -710,7 +662,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	//Stored/Duplicate：canonical 持久值 envelope 拍平到响应顶层（计划5.4/5.3）
 	rtvalue.update(BuildMessageEnvelope(chat_msg));
 
-	//【关键顺序】事务已提交 → 先发 1018（语义固定为“服务端已持久化”），再做 live delivery。
+	//【关键顺序】事务已提交 → 先发 1302（语义固定为“服务端已持久化”），再做 live delivery。
 	//不得用 Defer 延后：那会让 live 先于 sender ACK（计划5.4）
 	std::string sender_rsp = rtvalue.dump(4);
 	session->Send(sender_rsp, ID_TEXT_CHAT_MSG_RSP);
@@ -735,7 +687,7 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	auto& cfg = ConfigMgr::Inst();
 	auto self_name = cfg["SelfServer"]["Name"];
 	if (to_ip_value == self_name) {
-		//本机 recipient：顶层拍平 envelope（与 1039 图片通知同构），纳入 recipient uid 分片（计划1.5/5.5）
+		//本机 recipient：顶层拍平 envelope（与 1505 图片通知同构），纳入 recipient uid 分片（计划1.5/5.5）
 		json notify = BuildMessageEnvelope(chat_msg);
 		notify["error"] = ErrorCodes::Success;
 		std::string notify_str = notify.dump(4);
@@ -1126,7 +1078,7 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 
 void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 	const short& msg_type, const string& msg_data) {
-	//1035 创建资源消息（图片/文件统一）：只登记元数据，不含文件体。
+	//1503 创建资源消息（图片/文件统一）：只登记元数据，不含文件体。
 	//请求：{fromuid, touid, thread_id:"<str>", unique_id, msg_type:1|3,
 	//       file_name, content_size:"<str>", content_hash:"<64hex>", mime_type}
 	//响应：{error, message_id:"<str>", unique_id, thread_id, chat_time,
@@ -1272,7 +1224,7 @@ void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 	rtvalue["content_size"] = std::to_string(chat_msg->content_size);
 	rtvalue["resource_status"] = static_cast<int>(chat_msg->resource_status);
 
-	//【关键顺序】事务已提交 → 发 1036 sender response（语义固定为“服务端已持久化”）
+	//【关键顺序】事务已提交 → 发 1504 sender response（语义固定为“服务端已持久化”）
 	session->Send(rtvalue.dump(4), ID_CREATE_RESOURCE_MSG_RSP);
 
 	//Uploading 资源不写同步行、不实时通知，待 ResourceServer 上传完成点
@@ -1294,7 +1246,7 @@ json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) 
 	env["content_size"] = std::to_string(msg->content_size);
 	env["chat_time"] = msg->chat_time;
 	env["status"] = msg->status;
-	//资源消息三件套（1019/1030/1039/1052 共用；文本消息 hash/mime 为空串）
+	//资源消息三件套（1303/1404/1505/1406 共用；文本消息 hash/mime 为空串）
 	env["resource_status"] = static_cast<int>(msg->resource_status);
 	env["content_hash"] = msg->content_hash;
 	env["mime_type"] = msg->mime_type;
@@ -1302,7 +1254,7 @@ json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) 
 }
 
 void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
-	//1049 {"uid":<receiver>,"message_ids":["<id>",...]} -> 1050 {"error":0,"message_ids":["<id>",...]}
+	//1407 {"uid":<receiver>,"message_ids":["<id>",...]} -> 1408 {"error":0,"message_ids":["<id>",...]}
 	//严格校验：JSON 对象、uid 正整数且 == session->GetUserId()、message_ids 非空数组且每项
 	//为十进制字符串（协议字符串化），解析为 uint64 后去重升序
 	auto root = json::parse(msg_data, nullptr, false);
@@ -1378,10 +1330,10 @@ void LogicSystem::DealDeliveryAck(std::shared_ptr<CSession> session, const short
 }
 
 void LogicSystem::DealSyncMessage(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
-	//1051 增量 {"uid":<数字>,"after_sync_seq":"500","limit":100}
-	//    -> 1052 {"error":0,"messages":[envelope+sync_seq],"next_sync_seq":"<seq>","has_more":<bool>}
-	//1051 bootstrap {"uid":<数字>,"bootstrap":true}
-	//    -> 1052 {"error":0,"checkpoint":"<max_seq>"}（首启 checkpoint，不带消息）
+	//1405 增量 {"uid":<数字>,"after_sync_seq":"500","limit":100}
+	//    -> 1406 {"error":0,"messages":[envelope+sync_seq],"next_sync_seq":"<seq>","has_more":<bool>}
+	//1405 bootstrap {"uid":<数字>,"bootstrap":true}
+	//    -> 1406 {"error":0,"checkpoint":"<max_seq>"}（首启 checkpoint，不带消息）
 	auto root = json::parse(msg_data, nullptr, false);
 
 	auto reject = [&session](ErrorCodes code) {

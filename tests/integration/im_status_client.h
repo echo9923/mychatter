@@ -22,7 +22,7 @@ public:
 
 	// Call GetChatServer(uid). On RPC success fills out_* and returns true.
 	// out_error mirrors the server ErrorCodes field (0 = Success,
-	// 1018 = NoAvailableChatServer when host is empty). out_token is the
+	// 1302 = NoAvailableChatServer when host is empty). out_token is the
 	// per-user login token Status writes to Redis utoken_<uid> (TTL 86400).
 	// Returns false only when the gRPC call itself fails (channel down /
 	// deadline).
