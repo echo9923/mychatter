@@ -8,8 +8,6 @@ FriendInfoPage::FriendInfoPage(QWidget *parent) :
 {
     ui->setupUi(this);
     ui->msg_chat->SetState("normal","hover","press");
-    ui->video_chat->SetState("normal","hover","press");
-    ui->voice_chat->SetState("normal","hover","press");
 }
 
 FriendInfoPage::~FriendInfoPage()

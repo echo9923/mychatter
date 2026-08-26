@@ -75,3 +75,6 @@ ipch/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local agent tool working dirs
+.zcode/
