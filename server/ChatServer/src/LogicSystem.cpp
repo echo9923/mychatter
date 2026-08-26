@@ -1154,7 +1154,7 @@ void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 		return;
 	}
 
-	//3. 类型：仅图片(1)/文件(3)；视频(2)本期拒绝
+	//3. 类型：仅图片(1)/文件(3)
 	const bool is_pic = msg_type_value == static_cast<int>(ChatMsgType::PIC);
 	const bool is_file = msg_type_value == static_cast<int>(ChatMsgType::FILE);
 	if (!is_pic && !is_file) {

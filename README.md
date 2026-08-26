@@ -99,10 +99,6 @@ C++ 聊天项目实战案例，涵盖grpc，并发线程，网络编程，qt开�
 
 [day43-用户登录加载聊天资源](https://gitee.com/secondtonone1/llfcchat/blob/Season_2/%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3/day42-%E7%94%A8%E6%88%B7%E5%8A%A0%E8%BD%BD%E8%81%8A%E5%A4%A9%E8%B5%84%E6%BA%90.md)
 
-[day44-webrtc的coturn服务器搭建](https://gitee.com/secondtonone1/llfcchat/blob/Season_2/%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3/day43-webrtc%E7%9A%84coturn%E6%9C%8D%E5%8A%A1%E6%90%AD%E5%BB%BA.md)
-
-[day45-信令服务器实现视频通信](https://gitee.com/secondtonone1/llfcchat/blob/Season_2/%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3/day44-webrtc%E4%BF%A1%E4%BB%A4%E6%9C%8D%E5%8A%A1%E5%99%A8%E5%AE%9E%E7%8E%B0.md)
-
 #### 赞赏
 
 您的赞赏是我更新的动力，谢谢支持！

@@ -4,7 +4,7 @@
 //
 // 编号规则（三句话）：
 //   1. 百位 = 功能域：10 账户 / 11 连接保活 / 12 好友 / 13 聊天 /
-//      14 历史同步 / 15 资源 / 16 头像；17xx 预留群聊、18xx 预留音视频
+//      14 历史同步 / 15 资源 / 16 头像 / 17 统一用户消息；18xx 预留群聊
 //   2. 奇数 = 发起方（请求或服务端推送通知），偶数 = 回包
 //   3. 同一动作连号：REQ → RSP → NOTIFY（带推送的动作占 3 个号，
 //      下一动作跳到下一个奇数，故全表仅 1206/1304/1506 为空号）
@@ -40,15 +40,12 @@ enum MsgId {
 	MSG_SEARCH_USER_RSP     = 1202, ///< 搜索用户响应
 	MSG_ADD_FRIEND_REQ      = 1203, ///< 申请添加好友请求
 	MSG_ADD_FRIEND_RSP      = 1204, ///< 申请添加好友响应
-	MSG_NOTIFY_ADD_FRIEND   = 1205, ///< 服务端通知目标用户收到好友申请（gRPC NotifyAddFriend 触发）
-	MSG_AUTH_FRIEND_REQ     = 1207, ///< 认证好友请求（同意/拒绝）
-	MSG_AUTH_FRIEND_RSP     = 1208, ///< 认证好友响应
-	MSG_NOTIFY_AUTH_FRIEND  = 1209, ///< 服务端通知申请者认证结果（gRPC NotifyAuthFriend 触发）
+	MSG_HANDLE_FRIEND_REQ   = 1207, ///< 处理好友申请请求（action=accept/reject）
+	MSG_HANDLE_FRIEND_RSP   = 1208, ///< 处理好友申请响应
 
 	// --- 13xx 聊天域（ChatServer TCP）
 	MSG_TEXT_CHAT_REQ          = 1301, ///< 发送文本聊天消息请求
 	MSG_TEXT_CHAT_RSP          = 1302, ///< 文本聊天消息发送响应
-	MSG_NOTIFY_TEXT_CHAT       = 1303, ///< 服务端通知接收者收到文本消息（gRPC NotifyTextChatMsg 触发）
 	MSG_CREATE_PRIVATE_CHAT_REQ = 1305, ///< 创建私聊会话请求
 	MSG_CREATE_PRIVATE_CHAT_RSP = 1306, ///< 创建私聊会话响应
 
@@ -57,17 +54,14 @@ enum MsgId {
 	MSG_LOAD_CHAT_THREAD_RSP = 1402, ///< 加载聊天会话列表响应
 	MSG_LOAD_CHAT_MSG_REQ    = 1403, ///< 加载历史聊天消息请求（分页）
 	MSG_LOAD_CHAT_MSG_RSP    = 1404, ///< 加载历史聊天消息响应
-	MSG_SYNC_MESSAGE_REQ     = 1405, ///< 增量消息同步请求（按 sync_seq 游标分页，含 bootstrap 变体）
-	MSG_SYNC_MESSAGE_RSP     = 1406, ///< 增量消息同步响应
-	MSG_DELIVERY_ACK_REQ     = 1407, ///< 应用层投递 ACK 请求（receiver 确认已收到 message_ids）
-	MSG_DELIVERY_ACK_RSP     = 1408, ///< 应用层投递 ACK 响应
+	MSG_SYNC_USER_MESSAGE_REQ = 1405, ///< 按接收者 recv_seq 游标增量同步统一消息
+	MSG_SYNC_USER_MESSAGE_RSP = 1406, ///< 统一消息增量同步响应
 
-	// --- 15xx 资源域（ResourceServer TCP；1503/1504/1505 创建与通知由 ChatServer 处理）
+	// --- 15xx 资源域（ResourceServer TCP；1503/1504 创建元数据由 ChatServer 处理）
 	MSG_RESOURCE_LOGIN_REQ   = 1501, ///< 资源服务器登录鉴权请求（每连接一次，Gate token）
 	MSG_RESOURCE_LOGIN_RSP   = 1502, ///< 资源服务器登录鉴权响应
 	MSG_CREATE_RESOURCE_REQ  = 1503, ///< 创建资源消息请求（图片/文件统一，元数据先行）
 	MSG_CREATE_RESOURCE_RSP  = 1504, ///< 创建资源消息响应（返回 message_id，resource_status=0）
-	MSG_NOTIFY_RESOURCE      = 1505, ///< 服务端通知接收者收到资源消息（gRPC NotifyChatResourceMsg 触发）
 	MSG_RESOURCE_CHUNK_UPLOAD_REQ     = 1507, ///< 上传资源分片请求（message_id/offset/chunk_sha256）
 	MSG_RESOURCE_CHUNK_UPLOAD_RSP     = 1508, ///< 上传资源分片响应（带 server_offset/resource_status）
 	MSG_RESOURCE_UPLOAD_PROGRESS_REQ  = 1509, ///< 查询上传进度请求（返回服务端 .part 实际字节数）
@@ -82,6 +76,9 @@ enum MsgId {
 	MSG_UPLOAD_HEAD_ICON_RSP = 1602, ///< 上传头像响应
 	MSG_DOWN_LOAD_FILE_REQ   = 1603, ///< 下载文件请求（旧头像下载链路）
 	MSG_DOWN_LOAD_FILE_RSP   = 1604, ///< 下载文件响应
+
+	// --- 17xx 统一用户消息域（ChatServer TCP）
+	MSG_NOTIFY_USER_MESSAGE  = 1701, ///< 服务端推送完整统一消息；客户端不回 ACK
 };
 
 // ===== 错误码：20xx 通用表 ==================================================
@@ -109,6 +106,11 @@ enum CommonErrCode {
 	ERR_NO_CHAT_SERVER        = 2018, ///< 无可用 ChatServer 节点（所有 lease 缺失或过期）
 	ERR_RESOURCE_INVALID      = 2019, ///< 资源元数据非法（文件名/SHA-256/MIME 不合规，permanent）
 	ERR_RESOURCE_SIZE_EXCEEDED = 2020, ///< 资源超过类型上限（图片 20MB/文件 100MB，permanent）
+	ERR_FRIEND_REQUEST_NOT_FOUND = 2021, ///< 好友申请不存在或不属于当前处理人
+	ERR_FRIEND_REQUEST_HANDLED   = 2022, ///< 好友申请已被其他动作处理
+	ERR_ALREADY_FRIENDS          = 2023, ///< 双方已经是好友
+	ERR_FRIEND_ACTION_INVALID    = 2024, ///< 好友申请处理动作不是 accept/reject
+	ERR_SYNC_CURSOR_INVALID      = 2025, ///< 客户端 recv_seq 游标超过服务端序号头
 };
 
 // ===== 错误码：21xx 资源文件表 ==============================================

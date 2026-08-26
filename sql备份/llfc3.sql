@@ -30,7 +30,7 @@ CREATE TABLE `chat_message`  (
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `status` tinyint NOT NULL DEFAULT 0 COMMENT '0=未读 1=发送失败 2=已读 3=资源未上传完成',
-  `msg_type` tinyint NOT NULL DEFAULT 0 COMMENT '0=文本 1=图片 2=视频 3=文件',
+  `msg_type` tinyint NOT NULL DEFAULT 0 COMMENT '0=文本 1=图片 3=文件',
   `unique_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '客户端去重标识，历史/系统消息为NULL',
   `content_size` bigint UNSIGNED NOT NULL DEFAULT 0 COMMENT '文本为0，图片为字节数',
   `delivery_status` tinyint NOT NULL DEFAULT 0 COMMENT '0=待投递 1=已投递(ACK)',

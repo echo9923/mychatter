@@ -170,7 +170,6 @@ enum class ChatRole
 enum class MsgType {
     TEXT_MSG = 0, //文本消息
     IMG_MSG = 1,  //图片消息
-    VIDEO_MSG = 2, //视频消息
     FILE_MSG = 3//文件消息,
 };
 
@@ -201,7 +200,7 @@ struct MsgInfo{
         _max_seq = ((total_size + MAX_FILE_LEN - 1) / MAX_FILE_LEN);
     }
 
-    MsgType _msg_type;   //消息类型, 文本，图片，视频，文件
+    MsgType _msg_type;   //消息类型, 文本，图片，文件
     QString _text_or_url;//表示文件和图像的本地路径,文本信息
     QPixmap _preview_pix;//文件和图片的缩略图
     QString _unique_name; //展示文件名（原始文件名；磁盘缓存按 message_id 隔离）
@@ -289,7 +288,6 @@ enum class ChatFormType {
 enum class ChatMsgType {
     TEXT = 0,
     PIC = 1,
-    VIDEO = 2,
     FILE = 3
 };
 

@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 /**
  * @brief 用户基本信息结构体
@@ -39,14 +40,21 @@ struct ApplyInfo {
 	 * @param sex 申请者性别
 	 * @param status 申请状态（0:待处理, 1:已同意, 2:已拒绝）
 	 */
-	ApplyInfo(int uid, std::string name, std::string desc,
+	ApplyInfo(std::int64_t message_id, int from_uid, int to_uid,
+		std::string name, std::string desc, std::string requester_remark,
 		std::string icon, std::string nick, int sex, int status)
-		:_uid(uid),_name(name),_desc(desc),
-		_icon(icon),_nick(nick),_sex(sex),_status(status){}
+		:_message_id(message_id), _from_uid(from_uid), _to_uid(to_uid),
+		_uid(from_uid), _name(std::move(name)), _desc(std::move(desc)),
+		_requester_remark(std::move(requester_remark)), _icon(std::move(icon)),
+		_nick(std::move(nick)), _sex(sex), _status(status){}
 
+	std::int64_t _message_id;
+	int _from_uid;
+	int _to_uid;
 	int _uid;           ///< 申请者用户ID
 	std::string _name;  ///< 申请者用户名
 	std::string _desc;  ///< 申请附言/描述
+	std::string _requester_remark; ///< 申请人希望给对方设置的备注
 	std::string _icon;  ///< 申请者头像URL
 	std::string _nick;  ///< 申请者昵称
 	int _sex;           ///< 申请者性别
@@ -78,15 +86,12 @@ enum class ResourceStatus {
 	Expired   = 2  ///< 失败/过期（7 天清理标记或整文件校验失败终态）
 };
 
-/**
- * @brief 消息投递状态枚举
- *
- * 与数据库 delivery_status 列对应，表示应用层“至少一次投递”的进展。
- * 与展示状态(status)分离：status 描述阅读状态，delivery_status 描述是否已被接收方 ACK。
- */
-enum class DeliveryStatus {
-	Pending = 0, ///< 待投递（新写入默认值，进入离线 pending 集合）
-	Acked   = 1  ///< 已投递（接收方已 ACK；历史/系统消息也固定为已投递，不重推）
+/// 好友申请业务状态；普通聊天和资源消息固定为 None。
+enum class BusinessStatus {
+	None = 0,
+	Pending = 1,
+	Accepted = 2,
+	Rejected = 3
 };
 
 /**
@@ -97,6 +102,7 @@ enum class DeliveryStatus {
 struct ChatMessage {
 	std::int64_t message_id{0}; ///< 消息ID（主键，自增，64 位）
 	std::int64_t thread_id{0};  ///< 所属会话线程ID（64 位）
+	std::uint64_t recv_seq{0};  ///< 接收者维度连续序号；未发布资源为 0/NULL
 	int sender_id;          ///< 发送者用户ID
 	int recv_id;            ///< 接收者用户ID
 	std::string unique_id;  ///< 消息唯一标识（客户端生成，用于去重，历史/系统消息为空串）
@@ -108,17 +114,19 @@ struct ChatMessage {
 	std::uint64_t content_size{0};                ///< 内容字节大小（文本为0，资源为字节数）
 	std::string content_hash;                     ///< 整文件 SHA-256 小写 hex（资源消息必填，文本为空）
 	std::string mime_type;                         ///< 资源 MIME 类型（如 image/png，仅展示用）
-	DeliveryStatus delivery_status{DeliveryStatus::Pending}; ///< 应用层投递状态（参见DeliveryStatus枚举）
+	BusinessStatus business_status{BusinessStatus::None}; ///< 好友申请业务状态
+	std::int64_t related_message_id{0}; ///< 好友同意/拒绝结果关联的申请消息
+	std::string handled_at;             ///< 好友申请处理时间
+	std::string requester_remark;       ///< 好友申请人给目标用户设置的备注
 };
 
 /**
  * @brief 增量同步结果项
  *
- * user_message_sync 与 chat_message JOIN 的一行：sync_seq 为该用户的同步序号，
- * 同一 uid 下严格递增，客户端据此推进同步游标。
+ * chat_message 的一行；recv_seq 在同一接收者下严格连续。
  */
 struct SyncedMessage {
-	std::uint64_t sync_seq{0};              ///< 用户维度同步序号（user_message_sync 主键）
+	std::uint64_t recv_seq{0};              ///< 接收者维度连续序号
 	std::shared_ptr<ChatMessage> msg;       ///< 消息本体
 };
 
@@ -141,6 +149,8 @@ struct PageResult {
 enum class ChatMsgType {
 	TEXT = 0,   ///< 文本消息
 	PIC = 1,    ///< 图片消息
-	VIDEO = 2,  ///< 视频消息
-	FILE = 3    ///< 文件消息
+	FILE = 3,   ///< 文件消息
+	FRIEND_APPLY = 10,
+	FRIEND_ACCEPT = 11,
+	FRIEND_REJECT = 12
 };
