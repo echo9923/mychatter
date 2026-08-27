@@ -80,7 +80,7 @@ enum class ResourceStatus {
  * @brief TCP消息类型枚举（ResourceServer 侧）
  *
  * 数值唯一来源 proto/protocol_ids.h（llfc_proto 命名空间）。
- * 15xx 资源域（1503/1504/1505 创建与通知由 ChatServer 处理）、
+ * 15xx 资源域（1503/1504 创建由 ChatServer 处理）、
  * 16xx 头像域（旧 seq+MD5 协议保留）。
  */
 enum MSG_TYPES {
@@ -91,7 +91,7 @@ enum MSG_TYPES {
 
 	ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ,   //1507 上传资源分片（message_id/offset/chunk_sha256）
 	ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP,   //1508 上传资源分片回复
-	//1505 通用资源消息通知由 ChatServer 下发，ResourceServer 不处理
+	//资源就绪后通过 1701 统一用户消息通知，ResourceServer 不直接下发客户端通知
 	ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ, //1509 查询上传进度（返回服务端 .part 实际字节数）
 	ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP, //1510 查询上传进度回复
 	//旧 1043/1044 续传分支已废弃删除：首传/续传统一 1507+1509

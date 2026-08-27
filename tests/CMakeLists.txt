@@ -233,8 +233,8 @@ if(LLFC_RUN_INTEGRATION_TESTS)
   # One CTest entry per scenario (gtest_discover-style split), all labelled
   # "integration" so `ctest -L integration` selects exactly these.
   set(_im_scenarios
-    gate-smoke order-n4 order-n1 dedup
-    offline lost-ack pull-bytes cross-server resource-offline
+    gate-smoke order-n4 order-n1 dedup friend-workflow
+    offline pull-bytes cross-server resource-offline
     status-discovery chat-failover simple-auth
     sync-bootstrap big-ids
     resource-create resource-upload resource-resume resource-idempotent

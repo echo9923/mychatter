@@ -15,11 +15,11 @@
 using grpc::ClientContext;
 using grpc::Status;
 using message::ChatService;
-using message::NotifyResourceReq;
-using message::NotifyResourceRsp;
+using message::NotifyUserMessageReq;
+using message::NotifyUserMessageRsp;
 
 namespace {
-/// 从 [Delivery] 读取整数配置；非法/缺失时回退 fallback（与 ChatServer 同一模式，计划4.2/5.7）
+/// 从 [Delivery] 读取整数配置；非法或缺失时回退 fallback。
 int ReadDeliveryInt(const std::string& key, int fallback) {
 	try {
 		auto val = ConfigMgr::Inst().GetValue("Delivery", key);
@@ -39,7 +39,6 @@ int ReadDeliveryInt(const std::string& key, int fallback) {
 }
 
 /// 对端 ChatServer 应用层错误码（20xx 通用表，proto/protocol_ids.h 单一来源）
-constexpr int kAppRecipientOffline = llfc_proto::ERR_RECIPIENT_OFFLINE;  // 2015：只记录 pending，不重试
 constexpr int kAppServerBusy = llfc_proto::ERR_SERVER_BUSY;              // 2016：可重试
 
 bool ResolveRpcEndpoint(const std::string& server_name, std::string& endpoint) {
@@ -95,8 +94,8 @@ std::shared_ptr<Channel> ChatServerGrpcClient::ResolveChannel(
 	return channel;
 }
 
-NotifyResult ChatServerGrpcClient::NotifyChatResourceMsg(long long message_id,
-	long long thread_id, int from_uid, int to_uid, std::string chatserver)
+NotifyResult ChatServerGrpcClient::NotifyUserMessage(long long message_id,
+	int to_uid, std::string chatserver)
 {
 	NotifyResult result{ grpc::StatusCode::OK, ErrorCodes::Success };
 
@@ -118,10 +117,8 @@ NotifyResult ChatServerGrpcClient::NotifyChatResourceMsg(long long message_id,
 
 	//只传定位字段：ChatServer 按 message_id 回读 DB 组统一 envelope，
 	//避免展示字段在 gRPC 层与 DB 真值分叉
-	NotifyResourceReq request;
+	NotifyUserMessageReq request;
 	request.set_message_id(message_id);
-	request.set_thread_id(thread_id);
-	request.set_from_uid(from_uid);
 	request.set_to_uid(to_uid);
 
 	for (int attempt = 1; attempt <= max_attempts; ++attempt) {
@@ -130,8 +127,8 @@ NotifyResult ChatServerGrpcClient::NotifyChatResourceMsg(long long message_id,
 		ClientContext context;
 		context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(deadline_ms));
 
-		NotifyResourceRsp reply;
-		Status status = stub->NotifyChatResourceMsg(&context, request, &reply);
+		NotifyUserMessageRsp reply;
+		Status status = stub->NotifyUserMessage(&context, request, &reply);
 
 		if (status.ok()) {
 			result.grpc_code = grpc::StatusCode::OK;

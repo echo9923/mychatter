@@ -25,9 +25,10 @@ protected:
 private:
     void loadApplyList();
     Ui::ApplyFriendPage *ui;
-    std::unordered_map<int, ApplyFriendItem*> _unauth_items;
+    std::unordered_map<qint64, ApplyFriendItem*> _unauth_items;
 public slots:
     void slot_auth_rsp(std::shared_ptr<AuthRsp> );
+	void slot_request_handled(qint64 messageId, int businessStatus);
 signals:
     void sig_show_search(bool);
 };

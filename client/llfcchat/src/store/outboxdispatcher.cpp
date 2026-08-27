@@ -30,8 +30,6 @@ OutboxDispatcher::OutboxDispatcher()
         this, &OutboxDispatcher::slot_text_msg_rsp);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_resource_msg_meta_rsp_forward,
         this, &OutboxDispatcher::slot_resource_msg_meta_rsp);
-    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_delivery_ack_rsp_forward,
-        this, &OutboxDispatcher::slot_delivery_ack_rsp);
     //FileTcpMgr 上传事件（File 线程 → queued 到 TCP 线程）
     connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_upload_done,
         this, &OutboxDispatcher::slot_resource_upload_done);
@@ -45,8 +43,6 @@ OutboxDispatcher::OutboxDispatcher()
         this, &OutboxDispatcher::slot_outbox_loaded);
     connect(store.get(), &LocalChatStore::sig_message_loaded,
         this, &OutboxDispatcher::slot_message_loaded);
-    connect(store.get(), &LocalChatStore::sig_incoming_inserted,
-        this, &OutboxDispatcher::slot_incoming_inserted);
     //250ms 扫描定时器，parent 到 this，随 moveToThread 迁移到 TCP 线程
     _scan_timer = new QTimer(this);
     _scan_timer->setInterval(250);
@@ -159,31 +155,6 @@ void OutboxDispatcher::dispatchDueEntries()
         return;
     }
     qint64 now = QDateTime::currentMSecsSinceEpoch();
-    //DELIVERY_ACK 聚合为一个 1407 帧（message_ids 元素为十进制字符串）
-    QJsonArray ack_ids;
-    QStringList ack_keys;
-    for (auto iter = _entries.begin(); iter != _entries.end(); ++iter) {
-        OutboxEntryDTO& entry = iter.value();
-        if (entry.operation_type != OUTBOX_OP_DELIVERY_ACK
-            || entry.next_retry_at > now) {
-            continue;
-        }
-        QJsonObject payload = QJsonDocument::fromJson(entry.payload.toUtf8()).object();
-        ack_ids.append(payload["message_id"].toString());
-        ack_keys.append(entry.dedup_key);
-    }
-    if (!ack_ids.isEmpty()) {
-        QJsonObject obj;
-        obj["uid"] = UserMgr::GetInstance()->GetUid();
-        obj["message_ids"] = ack_ids;
-        emit TcpMgr::GetInstance()->sig_send_data(ID_CHAT_DELIVERY_ACK_REQ,
-            QJsonDocument(obj).toJson(QJsonDocument::Compact));
-        for (const QString& key : ack_keys) {
-            scheduleRetry(_entries[key]);
-        }
-        qDebug() << "[Outbox] sent ACK batch" << ack_keys.size();
-    }
-
     for (auto iter = _entries.begin(); iter != _entries.end(); ++iter) {
         OutboxEntryDTO& entry = iter.value();
         if (entry.next_retry_at > now) {
@@ -427,31 +398,6 @@ void OutboxDispatcher::slot_upload_progress_rsp(qint64 message_id, int error,
         return;
     }
     resumeUploadByProgress(message_id, server_offset, resource_status);
-}
-
-void OutboxDispatcher::slot_delivery_ack_rsp(int error, QList<qint64> message_ids)
-{
-    if (error != ErrorCodes::SUCCESS) {
-        //transient：保留条目等待扫描重发
-        qDebug() << "[Outbox] ACK transient rsp error" << error << "keeping pending";
-        return;
-    }
-    for (qint64 message_id : message_ids) {
-        QString dedup_key = "ack_" + QString::number(message_id);
-        removeEntry(dedup_key);
-        LocalChatStore::GetInstance()->deleteOutboxEntry(dedup_key);
-    }
-}
-
-void OutboxDispatcher::slot_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs,
-    QList<qint64> insertedIds)
-{
-    Q_UNUSED(msgs);
-    if (!ok || insertedIds.isEmpty()) {
-        return;
-    }
-    //新 DELIVERY_ACK 条目已落库，立即刷新镜像并派发 1407
-    LocalChatStore::GetInstance()->loadOutbox();
 }
 
 void OutboxDispatcher::slot_connection_closed()

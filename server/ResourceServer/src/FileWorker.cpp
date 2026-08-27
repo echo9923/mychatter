@@ -272,13 +272,15 @@ void FileWorker::EvictIdleUploadSessions() {
 void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 	EvictIdleUploadSessions();
 
-	//统一响应格式：{error, message_id:"<str>", server_offset:"<str>", resource_status}
-	auto respond = [task](int error, unsigned long long server_offset, int resource_status) {
+	//统一响应格式；资源 Ready 时附带接收者序号。
+	auto respond = [task](int error, unsigned long long server_offset,
+		int resource_status, unsigned long long recv_seq = 0) {
 		json result;
 		result["error"] = error;
 		result["message_id"] = std::to_string(task->_message_id);
 		result["server_offset"] = std::to_string(server_offset);
 		result["resource_status"] = resource_status;
+		if (recv_seq > 0) result["recv_seq"] = std::to_string(recv_seq);
 		if (task->_callback) {
 			task->_callback(result);
 		}
@@ -295,10 +297,18 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 			respond(ErrorCodes::MsgIdErr, 0, -1);
 			return;
 		}
+		if (uid == 0 || uid != msg->sender_id) {
+			respond(ErrorCodes::ResourceForbidden, 0, -1);
+			return;
+		}
+		if (msg->msg_type != 1 && msg->msg_type != 3) {
+			respond(ErrorCodes::ResourceStateInvalid, 0, -1);
+			return;
+		}
 		if (msg->resource_status == static_cast<int>(ResourceStatus::Ready)) {
 			//已完成（重发末片/响应丢失重试）：幂等成功
 			respond(ErrorCodes::Success, msg->content_size,
-				static_cast<int>(ResourceStatus::Ready));
+				static_cast<int>(ResourceStatus::Ready), msg->recv_seq);
 			return;
 		}
 		if (msg->resource_status == static_cast<int>(ResourceStatus::Expired)) {
@@ -466,37 +476,54 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 		respond_error(ErrorCodes::FileWritePermissionFailed, session->received);
 		return;
 	}
+	auto restore_part_after_publish_failure = [&]() -> unsigned long long {
+		boost::system::error_code exists_ec;
+		if (boost::filesystem::exists(part_path, exists_ec) && !exists_ec) {
+			return session->received;
+		}
+		boost::system::error_code restore_ec;
+		if (boost::filesystem::exists(base_path, restore_ec) && !restore_ec) {
+			boost::filesystem::rename(base_path, part_path, restore_ec);
+			if (!restore_ec) return session->received;
+		}
+		std::cerr << "CompleteResourceUpload: cannot restore .part for message_id="
+			<< task->_message_id << ", client must realign from offset 0" << std::endl;
+		session->received = 0;
+		_upload_sessions.erase(task->_message_id);
+		return 0;
+	};
 
 	//MySQL 是真值：按 message_id 读 canonical ChatMessage 取 sender/recv，
 	//不信任会话字段（可能与 canonical 分叉，污染错误用户的同步流）
 	auto canonical_msg = MysqlMgr::GetInstance()->GetChatMsgById(task->_message_id);
 	if (canonical_msg == nullptr) {
 		std::cerr << "CompleteResourceUpload: canonical ChatMessage not found for message_id="
-			<< task->_message_id << ", sync rows not written, peer not notified" << std::endl;
-		//最终文件保留：客户端重发末片可再触发完成（rename 后重复触发幂等）
-		respond_error(ErrorCodes::RPCFailed, session->received);
+			<< task->_message_id << ", recv_seq not assigned, peer not notified" << std::endl;
+		respond_error(ErrorCodes::RPCFailed, restore_part_after_publish_failure());
 		return;
 	}
 
-	//只有 DB 状态迁移 + 双方同步行写入（单事务）成功才尝试 live RPC（顺序不变式）
-	if (!MysqlMgr::GetInstance()->CompleteResourceUploadWithSync(task->_message_id,
-		canonical_msg->sender_id, canonical_msg->recv_id)) {
-		//DB 失败：回送失败响应；绝不 RPC；最终文件保留（重发末片再触发）
+	//只有 DB 状态迁移和 recv_seq 分配（单事务）成功才尝试 live RPC。
+	unsigned long long recv_seq = 0;
+	if (!MysqlMgr::GetInstance()->CompleteResourceUpload(task->_message_id,
+		canonical_msg->sender_id, canonical_msg->recv_id, recv_seq)) {
+		//DB 失败：回送失败响应；绝不 RPC；尽量恢复为 .part 供末片重试。
 		std::cerr << "CompleteResourceUpload: DB transaction failed for message_id="
-			<< task->_message_id << ", sync rows not written, peer not notified" << std::endl;
-		respond_error(ErrorCodes::RPCFailed, session->received);
+			<< task->_message_id << ", recv_seq not assigned, peer not notified" << std::endl;
+		respond_error(ErrorCodes::RPCFailed, restore_part_after_publish_failure());
 		return;
 	}
 
 	//上传完成，移除会话缓存
 	_upload_sessions.erase(task->_message_id);
 
-	//先回送上传成功响应（文件已持久化、同步行已随事务提交）
+	//先回送上传成功响应（文件、READY 状态和 recv_seq 均已提交）。
 	json result;
 	result["error"] = ErrorCodes::Success;
 	result["message_id"] = std::to_string(task->_message_id);
 	result["server_offset"] = std::to_string(session->received);
 	result["resource_status"] = static_cast<int>(ResourceStatus::Ready);
+	result["recv_seq"] = std::to_string(recv_seq);
 	if (task->_callback) {
 		task->_callback(result);
 	}
@@ -507,20 +534,19 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 	auto uid_ip_key = USERIPPREFIX + receiver_str;
 	bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
 	if (!b_ip) {
-		//接收者未登录：同步行已记录，由增量同步兜底，不做 live 推送
+		//接收者未登录：消息已带 recv_seq，由增量同步兜底。
 		return;
 	}
 
-	auto notify = ChatServerGrpcClient::GetInstance()->NotifyChatResourceMsg(
-		task->_message_id, canonical_msg->thread_id,
-		canonical_msg->sender_id, canonical_msg->recv_id, uid_ip_value);
+	auto notify = ChatServerGrpcClient::GetInstance()->NotifyUserMessage(
+		task->_message_id, canonical_msg->recv_id, uid_ip_value);
 	if (notify.app_error == kAppRecipientOffline) {
 		//RECIPIENT_OFFLINE：只记录，不重复重试（增量同步兜底）
 		std::cout << "CompleteResourceUpload: recipient offline msg_id="
-			<< task->_message_id << ", sync rows committed for incremental sync" << std::endl;
+			<< task->_message_id << ", recv_seq committed for incremental sync" << std::endl;
 	}
 	else if (notify.app_error != ErrorCodes::Success) {
-		std::cerr << "CompleteResourceUpload: NotifyChatResourceMsg failed msg_id="
+		std::cerr << "CompleteResourceUpload: NotifyUserMessage failed msg_id="
 			<< task->_message_id << " grpc_code=" << notify.grpc_code
 			<< " app_error=" << notify.app_error << " (incremental sync will deliver)" << std::endl;
 	}

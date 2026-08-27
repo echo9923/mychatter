@@ -259,7 +259,7 @@ void ChatDialog::slot_item_clicked(QListWidgetItem* item)
 }
 
 //收端文本消息：先 insertIncoming 落库，实际插入的消息由 sig_incoming_inserted 上屏；
-//落库失败什么都不做（不发 1407、不上屏）
+//落库失败不推进游标，也不上屏，等待下一次补拉重试。
 void ChatDialog::slot_text_chat_msg(std::shared_ptr<TextChatData> msg)
 {
 	LocalMessageDTO dto;
@@ -392,7 +392,8 @@ void ChatDialog::slot_load_chat_msg(qint64 thread_id, qint64 msg_id, bool load_m
 			dto.receiver_id = self_info->_uid;
 		}
 		dto.message_type = static_cast<int>(chat_msg->GetMsgType());
-		if (chat_msg->GetMsgType() == ChatMsgType::PIC) {
+		if (chat_msg->GetMsgType() == ChatMsgType::PIC ||
+			chat_msg->GetMsgType() == ChatMsgType::FILE) {
 			//图片 content 为文件唯一名（下载已由 1404 解析处占位并触发）
 			auto img_data = std::dynamic_pointer_cast<ImgChatData>(chat_msg);
 			if (img_data != nullptr && img_data->_msg_info) {
@@ -705,9 +706,11 @@ std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(const LocalMessageDTO& d
 			static_cast<int>(dto.sender_id), status, dto.created_at);
 	}
 
-	//文本消息
+	//普通文本与好友通过系统文本共用文本气泡，但保留原始消息类型。
+	const auto text_type = dto.message_type == static_cast<int>(ChatMsgType::FRIEND_ACCEPT)
+		? ChatMsgType::FRIEND_ACCEPT : ChatMsgType::TEXT;
 	return std::make_shared<TextChatData>(dto.server_message_id, dto.client_message_id,
-		dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content,
+		dto.thread_id, ChatFormType::PRIVATE, text_type, dto.content,
 		static_cast<int>(dto.sender_id), status, dto.created_at);
 }
 
@@ -717,6 +720,11 @@ void ChatDialog::displayInsertedMessages(const QList<LocalMessageDTO>& msgs,
 {
 	for (const auto& dto : msgs) {
 		if (!insertedIds.contains(dto.server_message_id)) {
+			continue;
+		}
+		if (dto.thread_id <= 0 ||
+			dto.message_type == static_cast<int>(ChatMsgType::FRIEND_APPLY) ||
+			dto.message_type == static_cast<int>(ChatMsgType::FRIEND_REJECT)) {
 			continue;
 		}
 
@@ -749,8 +757,8 @@ void ChatDialog::displayInsertedMessages(const QList<LocalMessageDTO>& msgs,
 void ChatDialog::requestOlderHistory(qint64 thread_id, qint64 oldest_loaded)
 {
 	QJsonObject jsonObj;
-	jsonObj["thread_id"] = thread_id;
-	//协议约定仅 before_message_id 字符串化（服务端按十进制解析，0=全部）
+	jsonObj["thread_id"] = QString::number(thread_id);
+	//64 位 ID 统一用十进制字符串（0 表示从最新一页开始）。
 	jsonObj["before_message_id"] = oldest_loaded > 0
 		? QString::number(oldest_loaded) : QString("0");
 
@@ -1053,11 +1061,6 @@ void ChatDialog::slot_apply_friend(std::shared_ptr<AddFriendApply> apply)
 {
 	qDebug() << "receive apply friend slot, applyuid is " << apply->_from_uid << " name is "
 		<< apply->_name << " desc is " << apply->_desc;
-
-	bool b_already = UserMgr::GetInstance()->AlreadyApply(apply->_from_uid);
-	if (b_already) {
-		return;
-	}
 
 	UserMgr::GetInstance()->AddApplyList(std::make_shared<ApplyInfo>(apply));
 	ui->side_contact_lb->ShowRedPoint(true);

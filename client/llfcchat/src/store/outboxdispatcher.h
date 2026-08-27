@@ -12,7 +12,7 @@
 //QTimer 扫描内存镜像 + 事件触发；SQLite outbox 为跨重启持久真值，内存为运行时镜像。
 //SEND_TEXT→1301；SEND_RESOURCE metadata→1503，1504→uploading 后向 ResourceServer 发
 //1509 查服务端真实偏移，1510 对齐后 FileTcpMgr 窗口续发 1507，1508 resource_status=1
-//→confirmResourceSent；DELIVERY_ACK→聚合 1407，1408→删条目。
+//→confirmResourceSent。
 //重启/断线恢复统一走 1509：无需区分首传/续传（1043 分支已废弃）。
 class OutboxDispatcher : public QObject, public Singleton<OutboxDispatcher>,
         public std::enable_shared_from_this<OutboxDispatcher>
@@ -31,8 +31,6 @@ public slots:
     //TcpMgr 转发的 1504 资源消息创建回包（含冲突/transient/permanent）
     void slot_resource_msg_meta_rsp(int error, QString unique_id, QString file_name,
         qint64 message_id, qint64 thread_id, qint64 fromuid, qint64 touid);
-    //TcpMgr 转发的 1408 ACK 回包
-    void slot_delivery_ack_rsp(int error, QList<qint64> message_ids);
     //FileTcpMgr 资源上传收全（1508 resource_status=1）
     void slot_resource_upload_done(QString unique_name);
     //FileTcpMgr 资源上传永久失败（2115/2116 等）
@@ -49,15 +47,13 @@ private slots:
     void slot_outbox_loaded(bool ok, QList<OutboxEntryDTO> entries);
     //uploading 恢复时回查 server_message_id
     void slot_message_loaded(bool ok, LocalMessageDTO dto);
-    //1303/1505 落库成功后触发一次 ACK 立即派发
-    void slot_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs, QList<qint64> insertedIds);
 signals:
     void sig_start();
     void sig_notify_send_enqueued(LocalMessageDTO dto);
 private:
     OutboxDispatcher();
     void loadRetryConfig();
-    //按条目类型派发一次（文本 1301 / 资源 1503 / ACK 聚合 1407）
+	//按条目类型派发一次（文本 1301 / 资源 1503）
     void dispatchDueEntries();
     void dispatchResourceEntry(const OutboxEntryDTO& entry);
     //重建 MsgInfo 并发 1509 查询服务端偏移（首传/续传统一入口）；

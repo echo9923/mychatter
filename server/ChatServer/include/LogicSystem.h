@@ -74,6 +74,9 @@ public:
 	 */
 	void Stop();
 
+	/// Serialize a persisted message for 1302, 1406 and 1701.
+	static json BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg);
+
 private:
 	/// 私有构造函数，启动工作线程并注册所有消息回调
 	LogicSystem();
@@ -205,27 +208,15 @@ private:
 	void DealCreateResourceMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
-	 * @brief 应用层投递 ACK 处理器（计划4.3/5.2）
-	 *
-	 * 在 receiver uid shard 上执行：严格校验 uid==session->GetUserId() 与 message_ids
-	 * （十进制字符串数组，解析为 uint64）；GetMessagesByIds 验证所有 id 都属于本 receiver
-	 * 且存在；MarkMessagesDelivered 成功后才回 Success（重复 ACK 幂等）。
-	 */
-	void DealDeliveryAck(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-
-	/**
 	 * @brief 增量消息同步处理器（1405/1406）
 	 *
-	 * 在 receiver uid shard 上执行：校验 uid==session->GetUserId()；after_sync_seq 按
-	 * 十进制字符串解析为 uint64（缺省 "0"），limit clamp [1,200] 默认 100；
-	 * 请求含 "bootstrap":true 时只回 {error, checkpoint:"<max_seq>"} 不带消息；
-	 * 正常请求回 {error, messages:[envelope+sync_seq], next_sync_seq:"<seq>", has_more}，
-	 * 消息严格按 sync_seq 升序，空页 next_sync_seq=after_sync_seq、has_more=false。
+	 * UID 来自认证 Session；after_recv_seq 按十进制字符串解析，limit clamp
+	 * [1,200]。响应按 recv_seq 升序返回完整 envelope、next_recv_seq 和 has_more。
 	 */
 	void DealSyncMessage(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
-	 * @brief 将一条 ChatMessage 序列化为统一 envelope（1302/1303/1404/1406 共用）
+	 * @brief 将一条 ChatMessage 序列化为统一 envelope（业务响应、1701、1406 共用）
 	 *
 	 * 固定字段：message_id,unique_id,thread_id,fromuid,touid,msg_type,content,
 	 * content_size,chat_time,status。message_id/thread_id/content_size 一律十进制
@@ -233,7 +224,7 @@ private:
 	 * @param msg 待序列化的消息
 	 * @return 填充好的 envelope JSON 对象
 	 */
-	json BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg);
+	void DeliverUserMessage(const std::shared_ptr<ChatMessage>& msg);
 	
 	/// client/gRPC 入口停机标志：置 true 后 PostMsgToQue/PostToUser 拒绝新投递
 	std::atomic<bool> _ingress_stopping{false};

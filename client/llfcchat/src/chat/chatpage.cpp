@@ -81,7 +81,8 @@ void ChatPage::AppendChatMsg(std::shared_ptr<ChatDataBase> msg, bool rsp)
         pChatItem->setUserName(self_info->_name);
         SetSelfIcon(pChatItem, self_info->_icon);
         QWidget* pBubble = nullptr;
-        if (msg->GetMsgType() == ChatMsgType::TEXT) {
+		if (msg->GetMsgType() == ChatMsgType::TEXT ||
+			msg->GetMsgType() == ChatMsgType::FRIEND_ACCEPT) {
             pBubble = new TextBubble(role, msg->GetMsgContent());
         }else if (msg->GetMsgType() == ChatMsgType::PIC || msg->GetMsgType() == ChatMsgType::FILE) {
             pBubble = makeResourceBubble(msg->GetMsgType(),
@@ -145,7 +146,8 @@ void ChatPage::AppendChatMsg(std::shared_ptr<ChatDataBase> msg, bool rsp)
         }
 
         QWidget* pBubble = nullptr;
-        if (msg->GetMsgType() == ChatMsgType::TEXT) {
+		if (msg->GetMsgType() == ChatMsgType::TEXT ||
+			msg->GetMsgType() == ChatMsgType::FRIEND_ACCEPT) {
             pBubble = new TextBubble(role, msg->GetMsgContent());
         }
         else if (msg->GetMsgType() == ChatMsgType::PIC || msg->GetMsgType() == ChatMsgType::FILE) {
@@ -176,7 +178,8 @@ void ChatPage::AppendOtherMsg(std::shared_ptr<ChatDataBase> msg) {
         pChatItem->setUserName(self_info->_name);
         SetSelfIcon(pChatItem, self_info->_icon);
         QWidget* pBubble = nullptr;
-        if (msg->GetMsgType() == ChatMsgType::TEXT) {
+		if (msg->GetMsgType() == ChatMsgType::TEXT ||
+			msg->GetMsgType() == ChatMsgType::FRIEND_ACCEPT) {
             pBubble = new TextBubble(role, msg->GetMsgContent());
         }
         else if (msg->GetMsgType() == ChatMsgType::PIC || msg->GetMsgType() == ChatMsgType::FILE) {
@@ -235,7 +238,8 @@ void ChatPage::AppendOtherMsg(std::shared_ptr<ChatDataBase> msg) {
         }
 
         QWidget* pBubble = nullptr;
-        if (msg->GetMsgType() == ChatMsgType::TEXT) {
+		if (msg->GetMsgType() == ChatMsgType::TEXT ||
+			msg->GetMsgType() == ChatMsgType::FRIEND_ACCEPT) {
             pBubble = new TextBubble(role, msg->GetMsgContent());
         }
         else if (msg->GetMsgType() == ChatMsgType::PIC || msg->GetMsgType() == ChatMsgType::FILE) {

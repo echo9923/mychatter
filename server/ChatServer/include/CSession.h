@@ -141,12 +141,6 @@ public:
 	void NotifyOffline(int uid);
 
 	/**
-	 * @brief 通知客户端接收图片聊天消息（由gRPC服务层调用）
-	 * @param request 图片聊天通知请求
-	 */
-	void NotifyResourceRecv(const std::shared_ptr<ChatMessage>& msg);
-
-	/**
 	 * @brief 判断心跳是否已超时
 	 * @param now 当前时间戳
 	 * @return true表示心跳已过期，应断开连接

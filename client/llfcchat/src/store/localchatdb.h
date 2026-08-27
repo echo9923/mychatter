@@ -4,12 +4,12 @@
 #include <QString>
 #include <QList>
 #include <QSqlDatabase>
+#include <QJsonArray>
 #include "localmessageDTO.h"
 
 //outbox 操作类型
 const QString OUTBOX_OP_SEND_TEXT = "SEND_TEXT";
 const QString OUTBOX_OP_SEND_RESOURCE = "SEND_RESOURCE";
-const QString OUTBOX_OP_DELIVERY_ACK = "DELIVERY_ACK";
 
 //消息发送状态
 const QString SEND_STATE_SENDING = "sending";
@@ -28,7 +28,8 @@ public:
     explicit LocalChatDb(const QString& conn_name = QString());
     ~LocalChatDb();
 
-    //打开数据库：PRAGMA + 建 messages/conversations/outbox/sync_state 四表
+	//打开数据库：PRAGMA + 建 messages/conversations/outbox/sync_state/
+	//friend_requests/contacts 六表
     bool open(const QString& dbPath, qint64 selfUid);
     void close();
     bool isOpen() const;
@@ -51,18 +52,21 @@ public:
 
     //—— 接收与同步（单事务）——
     //INSERT OR IGNORE messages + UPSERT conversations(unread/preview/last_server_message_id)
-    //+ INSERT OR IGNORE outbox(DELIVERY_ACK)；insertedIds 返回实际插入的 server ids 供 UI 去重
-    bool insertIncoming(const QList<LocalMessageDTO>& msgs, QList<qint64>* insertedIds);
+	//insertedIds 返回实际插入的 server ids 供 UI 去重
+    bool insertIncoming(const QList<LocalMessageDTO>& msgs,
+		QList<qint64>* insertedIds = nullptr);
     //整页 + 推进 sync_state 游标，同一事务；失败整体回滚游标不动
     bool applySyncPage(const QList<LocalMessageDTO>& msgs, qint64 newSyncSeq,
-        QList<qint64>* insertedIds);
+        QList<qint64>* insertedIds = nullptr);
     //1403/1404 历史页回写：不产生 ACK、不计未读；更新 oldest_loaded_message_id/history_complete
     bool insertHistoryPage(qint64 threadId, const QList<LocalMessageDTO>& msgs,
         bool historyComplete);
     bool upsertConversations(const QList<LocalConversationDTO>& convs);
+	bool applySnapshot(const QJsonArray& friendRequests, const QJsonArray& contacts,
+		bool replaceCurrent);
 
     //—— sync_state（单行 id=1 UPSERT）——
-    bool getSyncState(qint64* lastSyncSeq, bool* bootstrapComplete);
+	bool getSyncState(qint64* lastRecvSeq, bool* bootstrapComplete);
     bool markBootstrapComplete(qint64 checkpoint);
 
     //—— outbox ——
@@ -78,6 +82,7 @@ public:
 
 private:
     bool initSchema();
+	bool applyUnifiedMessage(const LocalMessageDTO& dto, bool* inserted);
     //INSERT OR IGNORE 单条 messages，返回是否实际插入（供 insertedIds 判定）
     bool insertMessageIgnore(const LocalMessageDTO& dto, bool* inserted);
     //会话 UPSERT：incoming=true 时未读自增并更新 preview，否则只更新 last_server_message_id

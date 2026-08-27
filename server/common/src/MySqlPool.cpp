@@ -115,6 +115,9 @@ void MySqlPool::checkConnectionPro() {
 }
 
 bool MySqlPool::reconnect(long long timestamp) {
+	if (b_stop_) {
+		return false;
+	}
 	try {
 
 		sql::mysql::MySQL_Driver* driver = sql::mysql::get_mysql_driver_instance();
@@ -124,6 +127,9 @@ bool MySqlPool::reconnect(long long timestamp) {
 		auto newCon = std::make_unique<SqlConnection>(con, timestamp);
 		{
 			std::lock_guard<std::mutex> guard(mutex_);
+			if (b_stop_) {
+				return false;
+			}
 			pool_.push(std::move(newCon));
 		}
 		std::cout << "mysql connection reconnect success" << std::endl;
@@ -152,6 +158,29 @@ std::unique_ptr<SqlConnection> MySqlPool::getConnection() {
 }
 
 void MySqlPool::returnConnection(std::unique_ptr<SqlConnection> con) {
+	if (!con || b_stop_) {
+		return;
+	}
+	try {
+		// Every borrower receives a clean autocommit connection. Transactional DAO
+		// methods commit explicitly; rollback here only clears a read snapshot or a
+		// failed transaction that a caller left open.
+		if (!con->_con->getAutoCommit()) {
+			con->_con->rollback();
+			con->_con->setAutoCommit(true);
+		}
+		const auto now = std::chrono::system_clock::now().time_since_epoch();
+		con->_last_oper_time = std::chrono::duration_cast<std::chrono::seconds>(now).count();
+	}
+	catch (const sql::SQLException& e) {
+		std::cout << "Error resetting returned MySQL connection: " << e.what() << std::endl;
+		const auto now = std::chrono::system_clock::now().time_since_epoch();
+		const auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(now).count();
+		if (!reconnect(timestamp)) {
+			_fail_count++;
+		}
+		return;
+	}
 	std::unique_lock<std::mutex> lock(mutex_);
 	if (b_stop_) {
 		return;

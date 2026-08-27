@@ -1,37 +1,26 @@
 #include "ChatGrpcClient.h"
+
 #include "ChatServerRegistry.h"
-#include "const.h"
-#include "data.h"
-#include "RedisMgr.h"
 #include "ConfigMgr.h"
-#include "MysqlMgr.h"
+#include "RedisMgr.h"
+#include "const.h"
+
 #include <charconv>
 #include <chrono>
 #include <nlohmann/json.hpp>
 #include <thread>
 
-using json = nlohmann::json;
-using grpc::ClientContext;
-using grpc::Status;
-using message::ChatService;
-using message::TextChatMsgRsp;
-
 namespace {
-/// 从 [Delivery] 读取整数配置；非法/缺失时回退 fallback（与 LogicSystem 同一模式，计划4.2/5.3）
+
 int ReadDeliveryInt(const std::string& key, int fallback) {
 	try {
-		auto val = ConfigMgr::Inst().GetValue("Delivery", key);
-		if (!val.empty()) {
-			std::size_t pos = 0;
-			int n = std::stoi(val, &pos);
-			//必须整串消费（允许前导空白），否则视为非法值回退 fallback
-			if (pos == val.size() && n > 0) {
-				return n;
-			}
+		const auto value = ConfigMgr::Inst().GetValue("Delivery", key);
+		if (!value.empty()) {
+			std::size_t consumed = 0;
+			const int parsed = std::stoi(value, &consumed);
+			if (consumed == value.size() && parsed > 0) return parsed;
 		}
-	}
-	catch (...) {
-		//配置缺失/非数字，回退默认值
+	} catch (...) {
 	}
 	return fallback;
 }
@@ -43,38 +32,36 @@ bool ResolveRpcEndpoint(const std::string& server_name, std::string& endpoint) {
 		return false;
 	}
 	int load = 0;
-	const auto load_result = std::from_chars(
-		lease.data(), lease.data() + lease.size(), load);
-	if (load_result.ec != std::errc{} ||
-		load_result.ptr != lease.data() + lease.size() || load < 0) {
+	const auto load_result = std::from_chars(lease.data(), lease.data() + lease.size(), load);
+	if (load_result.ec != std::errc{} || load_result.ptr != lease.data() + lease.size() ||
+		load < 0) {
 		return false;
 	}
 
-	const std::string metadata = RedisMgr::GetInstance()->HGet(
-		llfc::kChatServerRegistryKey, server_name);
-	const auto data = json::parse(metadata, nullptr, false);
-	if (!data.is_object()) return false;
+	const auto metadata = nlohmann::json::parse(
+		RedisMgr::GetInstance()->HGet(llfc::kChatServerRegistryKey, server_name),
+		nullptr, false);
+	if (!metadata.is_object()) return false;
 	for (const char* key : { "name", "rpc_host", "rpc_port" }) {
-		if (!data.contains(key) || !data[key].is_string()) return false;
+		if (!metadata.contains(key) || !metadata[key].is_string()) return false;
 	}
-	const std::string name = data["name"].get<std::string>();
-	const std::string host = data["rpc_host"].get<std::string>();
-	const std::string port_text = data["rpc_port"].get<std::string>();
+	const std::string name = metadata["name"].get<std::string>();
+	const std::string host = metadata["rpc_host"].get<std::string>();
+	const std::string port_text = metadata["rpc_port"].get<std::string>();
 	int port = 0;
 	const auto port_result = std::from_chars(
 		port_text.data(), port_text.data() + port_text.size(), port);
-	if (name != server_name || host.empty() ||
-		port_result.ec != std::errc{} ||
-		port_result.ptr != port_text.data() + port_text.size() ||
-		port <= 0 || port > 65535) {
+	if (name != server_name || host.empty() || port_result.ec != std::errc{} ||
+		port_result.ptr != port_text.data() + port_text.size() || port <= 0 || port > 65535) {
 		return false;
 	}
 	endpoint = host + ":" + port_text;
 	return true;
 }
+
 } // namespace
 
-std::shared_ptr<Channel> ChatGrpcClient::ResolveChannel(
+std::shared_ptr<grpc::Channel> ChatGrpcClient::ResolveChannel(
 	const std::string& server_name) {
 	std::string endpoint;
 	if (!ResolveRpcEndpoint(server_name, endpoint)) return nullptr;
@@ -89,128 +76,59 @@ std::shared_ptr<Channel> ChatGrpcClient::ResolveChannel(
 	return channel;
 }
 
-AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_ip, const AddFriendReq& req)
-{
-	AddFriendRsp rsp;
-	rsp.set_error(ErrorCodes::RPCFailed);
-	rsp.set_applyuid(req.applyuid());
-	rsp.set_touid(req.touid());
-	auto channel = ResolveChannel(server_ip);
-	if (!channel) return rsp;
-
-	auto stub = ChatService::NewStub(channel);
-	ClientContext context;
-	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
-	Status status = stub->NotifyAddFriend(&context, req, &rsp);
-
-	if (!status.ok()) {
-		rsp.set_error(ErrorCodes::RPCFailed);
-		return rsp;
-	}
-
-	return rsp;
-}
-
-
-AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const AuthFriendReq& req) {
-	AuthFriendRsp rsp;
-	rsp.set_error(ErrorCodes::RPCFailed);
-	rsp.set_fromuid(req.fromuid());
-	rsp.set_touid(req.touid());
-	auto channel = ResolveChannel(server_ip);
-	if (!channel) return rsp;
-
-	auto stub = ChatService::NewStub(channel);
-	ClientContext context;
-	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
-	Status status = stub->NotifyAuthFriend(&context, req, &rsp);
-
-	if (!status.ok()) {
-		rsp.set_error(ErrorCodes::RPCFailed);
-		return rsp;
-	}
-
-	return rsp;
-}
-
-NotifyResult ChatGrpcClient::NotifyTextChatMsg(const std::string& server_ip, const TextChatMsgReq& req) {
+NotifyResult ChatGrpcClient::NotifyUserMessage(const std::string& server_name,
+	int to_uid, std::int64_t message_id) {
 	NotifyResult result{ grpc::StatusCode::OK, ErrorCodes::Success };
-
-	//配置：每次尝试 deadline、最多尝试次数、退避基数（计划5.6/4.2）
-	int deadline_ms = ReadDeliveryInt("RpcDeadlineMs", 3000);
-	if (deadline_ms < 1) deadline_ms = 3000;
-	int max_attempts = ReadDeliveryInt("RpcMaxAttempts", 3);
-	if (max_attempts < 1) max_attempts = 1;
-	int backoff_ms = ReadDeliveryInt("RpcBackoffMs", 100);
-	if (backoff_ms < 1) backoff_ms = 100;
-
-	auto channel = ResolveChannel(server_ip);
+	const int deadline_ms = ReadDeliveryInt("RpcDeadlineMs", 3000);
+	const int max_attempts = ReadDeliveryInt("RpcMaxAttempts", 3);
+	const int backoff_ms = ReadDeliveryInt("RpcBackoffMs", 100);
+	auto channel = ResolveChannel(server_name);
 	if (!channel) {
-		//未知 server：配置/路由缺失，参数类错误，立即停止不重试（计划5.6）
-		result.grpc_code = grpc::StatusCode::NOT_FOUND;
-		result.app_error = ErrorCodes::RPCFailed;
-		return result;
+		return { grpc::StatusCode::NOT_FOUND, ErrorCodes::RPCFailed };
 	}
+
 	for (int attempt = 1; attempt <= max_attempts; ++attempt) {
-		//每次尝试新的 stub + ClientContext，deadline 固定 RpcDeadlineMs（计划5.6）
-		auto stub = ChatService::NewStub(channel);
-		ClientContext context;
-		context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(deadline_ms));
-
-		TextChatMsgRsp rsp;
-		Status status = stub->NotifyTextChatMsg(&context, req, &rsp);
-
+		auto stub = message::ChatService::NewStub(channel);
+		grpc::ClientContext context;
+		context.set_deadline(std::chrono::system_clock::now() +
+			std::chrono::milliseconds(deadline_ms));
+		message::NotifyUserMessageReq request;
+		request.set_to_uid(to_uid);
+		request.set_message_id(message_id);
+		message::NotifyUserMessageRsp response;
+		const grpc::Status status = stub->NotifyUserMessage(&context, request, &response);
 		if (status.ok()) {
-			result.grpc_code = grpc::StatusCode::OK;
-			result.app_error = rsp.error();
-			//仅对端 SERVER_BUSY(2016) 重试；Success/RECIPIENT_OFFLINE(2015)/未知应用错误立即停止（计划5.6）
-			if (rsp.error() == ErrorCodes::SERVER_BUSY && attempt < max_attempts) {
-				//退避：RpcBackoffMs、2×RpcBackoffMs（100/200ms）；位移限幅防溢出
-				int shift = attempt - 1;
-				if (shift > 10) shift = 10;
-				std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms * (1 << shift)));
-				continue;
+			result = { grpc::StatusCode::OK, response.error() };
+			if (response.error() != ErrorCodes::SERVER_BUSY || attempt == max_attempts) {
+				return result;
 			}
-			return result;
+		} else {
+			result = { status.error_code(), ErrorCodes::RPCFailed };
+			const bool retryable = status.error_code() == grpc::StatusCode::UNAVAILABLE ||
+				status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
+				status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED;
+			if (!retryable || attempt == max_attempts) return result;
 		}
-
-		//transport 失败：记录后判断是否重试（计划5.6）
-		result.grpc_code = status.error_code();
-		result.app_error = ErrorCodes::RPCFailed;
-		bool retryable = (status.error_code() == grpc::StatusCode::UNAVAILABLE ||
-		                  status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
-		                  status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED);
-		if (retryable && attempt < max_attempts) {
-			//退避：RpcBackoffMs、2×RpcBackoffMs（100/200ms）；位移限幅防溢出
-			int shift = attempt - 1;
-			if (shift > 10) shift = 10;
-			std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms * (1 << shift)));
-			continue;
-		}
-		//不可重试或已耗尽：停止
-		break;
+		const int shift = attempt > 11 ? 10 : attempt - 1;
+		std::this_thread::sleep_for(
+			std::chrono::milliseconds(backoff_ms * (1 << shift)));
 	}
-
 	return result;
 }
 
-KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_ip, const KickUserReq& req)
-{
-	KickUserRsp rsp;
-	rsp.set_error(ErrorCodes::RPCFailed);
-	rsp.set_uid(req.uid());
-	auto channel = ResolveChannel(server_ip);
-	if (!channel) return rsp;
+message::KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_name,
+	const message::KickUserReq& request) {
+	message::KickUserRsp response;
+	response.set_error(ErrorCodes::RPCFailed);
+	response.set_uid(request.uid());
+	auto channel = ResolveChannel(server_name);
+	if (!channel) return response;
 
-	auto stub = ChatService::NewStub(channel);
-	ClientContext context;
+	auto stub = message::ChatService::NewStub(channel);
+	grpc::ClientContext context;
 	context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
-	Status status = stub->NotifyKickUser(&context, req, &rsp);
-
-	if (!status.ok()) {
-		rsp.set_error(ErrorCodes::RPCFailed);
-		return rsp;
+	if (!stub->NotifyKickUser(&context, request, &response).ok()) {
+		response.set_error(ErrorCodes::RPCFailed);
 	}
-
-	return rsp;
+	return response;
 }

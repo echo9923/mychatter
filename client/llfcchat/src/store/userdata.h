@@ -25,10 +25,11 @@ Q_DECLARE_METATYPE(std::shared_ptr<SearchInfo>)
 
 class AddFriendApply {
 public:
-    AddFriendApply(int from_uid, QString name, QString desc,
-                   QString icon, QString nick, int sex);
+	AddFriendApply(int from_uid, QString name, QString desc,
+		QString icon, QString nick, int sex, qint64 message_id = 0);
     AddFriendApply() = default;
 	int _from_uid;
+	qint64 _message_id = 0;
 	QString _name;
 	QString _desc;
     QString _icon;
@@ -40,21 +41,22 @@ Q_DECLARE_METATYPE(std::shared_ptr<AddFriendApply>)
 
 struct ApplyInfo {
     ApplyInfo() = default;
-    ApplyInfo(int uid, QString name, QString desc,
-        QString icon, QString nick, int sex, int status)
-        :_uid(uid),_name(name),_desc(desc),
+	ApplyInfo(int uid, QString name, QString desc,
+		QString icon, QString nick, int sex, int status, qint64 message_id = 0)
+		:_uid(uid),_message_id(message_id),_name(name),_desc(desc),
         _icon(icon),_nick(nick),_sex(sex),_status(status){}
 
     ApplyInfo(std::shared_ptr<AddFriendApply> addinfo)
-        :_uid(addinfo->_from_uid),_name(addinfo->_name),
+		:_uid(addinfo->_from_uid),_message_id(addinfo->_message_id),_name(addinfo->_name),
           _desc(addinfo->_desc),_icon(addinfo->_icon),
           _nick(addinfo->_nick),_sex(addinfo->_sex),
-          _status(0)
+		  _status(static_cast<int>(FriendRequestStatus::PENDING))
     {}
     void SetIcon(QString head){
         _icon = head;
     }
     int _uid;
+	qint64 _message_id = 0;
     QString _name;
     QString _desc;
     QString _icon;

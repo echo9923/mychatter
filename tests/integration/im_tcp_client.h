@@ -2,8 +2,8 @@
 //
 // One TcpClient = one logged-in connection to a ChatServer. A background
 // reader thread drains [type][len][body] frames into a mutex-guarded queue; the
-// test thread sends 1301/1407/1405 frames with Send() and consumes inbound
-// frames (1302/1303/1408/1406/...) with Wait(). This mirrors the production Qt
+// test thread sends 1301/1405 frames with Send() and consumes inbound
+// frames (1302/1701/1406/...) with Wait(). This mirrors the production Qt
 // TcpMgr receive model and lets senders pump requests while 1302s stream back,
 // avoiding TCP receive-buffer back-pressure that a strict request/response
 // client would hit under 1000-message bursts.

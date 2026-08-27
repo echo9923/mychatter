@@ -108,12 +108,18 @@ void LocalChatWorker::slot_upsert_conversations(QList<LocalConversationDTO> conv
     emit sig_conversations_upserted(ok);
 }
 
+void LocalChatWorker::slot_apply_snapshot(QJsonArray friendRequests,
+	QJsonArray contacts, bool replaceCurrent)
+{
+	emit sig_snapshot_applied(_db.applySnapshot(friendRequests, contacts, replaceCurrent));
+}
+
 void LocalChatWorker::slot_get_sync_state()
 {
-    qint64 last_sync_seq = 0;
+    qint64 last_recv_seq = 0;
     bool bootstrap_complete = false;
-    bool ok = _db.getSyncState(&last_sync_seq, &bootstrap_complete);
-    emit sig_sync_state_loaded(ok, last_sync_seq, bootstrap_complete);
+    bool ok = _db.getSyncState(&last_recv_seq, &bootstrap_complete);
+    emit sig_sync_state_loaded(ok, last_recv_seq, bootstrap_complete);
 }
 
 void LocalChatWorker::slot_mark_bootstrap_complete(qint64 checkpoint)
@@ -207,6 +213,7 @@ LocalChatStore::LocalChatStore()
     connect(this, &LocalChatStore::sig_apply_sync_page, &_worker, &LocalChatWorker::slot_apply_sync_page);
     connect(this, &LocalChatStore::sig_insert_history_page, &_worker, &LocalChatWorker::slot_insert_history_page);
     connect(this, &LocalChatStore::sig_upsert_conversations, &_worker, &LocalChatWorker::slot_upsert_conversations);
+	connect(this, &LocalChatStore::sig_apply_snapshot, &_worker, &LocalChatWorker::slot_apply_snapshot);
     connect(this, &LocalChatStore::sig_get_sync_state, &_worker, &LocalChatWorker::slot_get_sync_state);
     connect(this, &LocalChatStore::sig_mark_bootstrap_complete, &_worker, &LocalChatWorker::slot_mark_bootstrap_complete);
     connect(this, &LocalChatStore::sig_load_outbox, &_worker, &LocalChatWorker::slot_load_outbox);
@@ -228,6 +235,7 @@ LocalChatStore::LocalChatStore()
     connect(&_worker, &LocalChatWorker::sig_sync_page_applied, this, &LocalChatStore::sig_sync_page_applied);
     connect(&_worker, &LocalChatWorker::sig_history_page_inserted, this, &LocalChatStore::sig_history_page_inserted);
     connect(&_worker, &LocalChatWorker::sig_conversations_upserted, this, &LocalChatStore::sig_conversations_upserted);
+	connect(&_worker, &LocalChatWorker::sig_snapshot_applied, this, &LocalChatStore::sig_snapshot_applied);
     connect(&_worker, &LocalChatWorker::sig_sync_state_loaded, this, &LocalChatStore::sig_sync_state_loaded);
     connect(&_worker, &LocalChatWorker::sig_bootstrap_marked, this, &LocalChatStore::sig_bootstrap_marked);
     connect(&_worker, &LocalChatWorker::sig_outbox_loaded, this, &LocalChatStore::sig_outbox_loaded);
@@ -293,6 +301,11 @@ void LocalChatStore::insertHistoryPage(qint64 threadId, const QList<LocalMessage
 void LocalChatStore::upsertConversations(const QList<LocalConversationDTO>& convs)
 {
     emit sig_upsert_conversations(convs);
+}
+void LocalChatStore::applySnapshot(const QJsonArray& friendRequests,
+	const QJsonArray& contacts, bool replaceCurrent)
+{
+	emit sig_apply_snapshot(friendRequests, contacts, replaceCurrent);
 }
 void LocalChatStore::getSyncState() { emit sig_get_sync_state(); }
 void LocalChatStore::markBootstrapComplete(qint64 checkpoint)

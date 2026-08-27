@@ -1,4 +1,5 @@
 #include "applyfriend.h"
+#include <QUuid>
 #include "ui_applyfriend.h"
 #include "clickedlabel.h"
 #include "friendlabel.h"
@@ -495,6 +496,7 @@ void ApplyFriend::SlotApplySure()
 
     jsonObj["bakname"] = bakname;
     jsonObj["touid"] = _si->_uid;
+	jsonObj["unique_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     QJsonDocument doc(jsonObj);
     QByteArray jsonData = doc.toJson(QJsonDocument::Compact);

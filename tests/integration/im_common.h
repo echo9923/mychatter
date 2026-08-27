@@ -62,15 +62,18 @@ inline constexpr const char* REDIS_PASSWD = "123456";
 // 奇数=发起方（请求/通知），偶数=回包，同一动作 REQ→RSP→NOTIFY 连号。
 inline constexpr short ID_CHAT_LOGIN              = llfc_proto::MSG_CHAT_LOGIN;         // 1101
 inline constexpr short ID_CHAT_LOGIN_RSP          = llfc_proto::MSG_CHAT_LOGIN_RSP;     // 1102
+inline constexpr short ID_ADD_FRIEND_REQ          = llfc_proto::MSG_ADD_FRIEND_REQ;     // 1203
+inline constexpr short ID_ADD_FRIEND_RSP          = llfc_proto::MSG_ADD_FRIEND_RSP;     // 1204
+inline constexpr short ID_HANDLE_FRIEND_REQ       = llfc_proto::MSG_HANDLE_FRIEND_REQ;  // 1207
+inline constexpr short ID_HANDLE_FRIEND_RSP       = llfc_proto::MSG_HANDLE_FRIEND_RSP;  // 1208
 inline constexpr short ID_TEXT_CHAT_MSG_REQ       = llfc_proto::MSG_TEXT_CHAT_REQ;      // 1301
 inline constexpr short ID_TEXT_CHAT_MSG_RSP       = llfc_proto::MSG_TEXT_CHAT_RSP;      // 1302
-inline constexpr short ID_NOTIFY_TEXT_CHAT_MSG    = llfc_proto::MSG_NOTIFY_TEXT_CHAT;   // 1303
+inline constexpr short ID_NOTIFY_USER_MESSAGE     = llfc_proto::MSG_NOTIFY_USER_MESSAGE; // 1701
 // 资源消息（图片/文件统一传输）：创建-分片上传-进度查询-下载信息-分片下载
 inline constexpr short ID_CREATE_RESOURCE_MSG_REQ   = llfc_proto::MSG_CREATE_RESOURCE_REQ;   // 1503
 inline constexpr short ID_CREATE_RESOURCE_MSG_RSP   = llfc_proto::MSG_CREATE_RESOURCE_RSP;  // 1504
 inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ;   // 1507
 inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP;  // 1508
-inline constexpr short ID_NOTIFY_RESOURCE_MSG       = llfc_proto::MSG_NOTIFY_RESOURCE;     // 1505
 inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ;  // 1509
 inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP; // 1510
 // 旧 1043/1044 续传分支已废弃：首传/续传统一 1507+1509
@@ -78,11 +81,9 @@ inline constexpr short ID_RESOURCE_DOWN_INFO_REQ    = llfc_proto::MSG_RESOURCE_D
 inline constexpr short ID_RESOURCE_DOWN_INFO_RSP    = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP;  // 1512
 inline constexpr short ID_RESOURCE_CHUNK_DOWN_REQ   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ; // 1513
 inline constexpr short ID_RESOURCE_CHUNK_DOWN_RSP   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP; // 1514
-inline constexpr short ID_CHAT_DELIVERY_ACK_REQ   = llfc_proto::MSG_DELIVERY_ACK_REQ;   // 1407
-inline constexpr short ID_CHAT_DELIVERY_ACK_RSP   = llfc_proto::MSG_DELIVERY_ACK_RSP;   // 1408
-// 1405/1406 增量同步（按 sync_seq 游标，含 bootstrap 变体）。
-inline constexpr short ID_SYNC_MESSAGE_REQ        = llfc_proto::MSG_SYNC_MESSAGE_REQ;   // 1405
-inline constexpr short ID_SYNC_MESSAGE_RSP        = llfc_proto::MSG_SYNC_MESSAGE_RSP;   // 1406
+// 1405/1406 增量同步（按 recv_seq 游标）。
+inline constexpr short ID_SYNC_USER_MESSAGE_REQ   = llfc_proto::MSG_SYNC_USER_MESSAGE_REQ; // 1405
+inline constexpr short ID_SYNC_USER_MESSAGE_RSP   = llfc_proto::MSG_SYNC_USER_MESSAGE_RSP; // 1406
 // Resource auth: client presents the login token once per connection;
 // all subsequent file frames are authorized against the bound session.
 inline constexpr short ID_RESOURCE_LOGIN_REQ       = llfc_proto::MSG_RESOURCE_LOGIN_REQ;   // 1501
@@ -94,6 +95,12 @@ inline constexpr int MSG_STATUS_UN_READ   = 0;
 inline constexpr int MSG_TYPE_TEXT        = 0;
 inline constexpr int MSG_TYPE_PIC         = 1;
 inline constexpr int MSG_TYPE_FILE        = 3;
+inline constexpr int MSG_TYPE_FRIEND_APPLY  = 10;
+inline constexpr int MSG_TYPE_FRIEND_ACCEPT = 11;
+inline constexpr int MSG_TYPE_FRIEND_REJECT = 12;
+inline constexpr int BUSINESS_PENDING  = 1;
+inline constexpr int BUSINESS_ACCEPTED = 2;
+inline constexpr int BUSINESS_REJECTED = 3;
 inline constexpr int RESOURCE_UPLOADING   = 0;   // 待上传
 inline constexpr int RESOURCE_READY       = 1;   // 就绪可下载
 inline constexpr int RESOURCE_EXPIRED     = 2;   // 失败/过期终态
@@ -116,6 +123,10 @@ inline constexpr int ERR_MESSAGE_CONFLICT    = llfc_proto::ERR_MESSAGE_CONFLICT;
 inline constexpr int ERR_NO_AVAILABLE_CHAT_SERVER = llfc_proto::ERR_NO_CHAT_SERVER; // 2018
 inline constexpr int ERR_RESOURCE_INVALID    = llfc_proto::ERR_RESOURCE_INVALID;    // 2019 资源元数据非法
 inline constexpr int ERR_RESOURCE_SIZE_EXCEEDED = llfc_proto::ERR_RESOURCE_SIZE_EXCEEDED; // 2020 超类型上限
+inline constexpr int ERR_FRIEND_REQUEST_NOT_FOUND = llfc_proto::ERR_FRIEND_REQUEST_NOT_FOUND; // 2021
+inline constexpr int ERR_FRIEND_REQUEST_HANDLED = llfc_proto::ERR_FRIEND_REQUEST_HANDLED; // 2022
+inline constexpr int ERR_ALREADY_FRIENDS = llfc_proto::ERR_ALREADY_FRIENDS; // 2023
+inline constexpr int ERR_SYNC_CURSOR_INVALID = llfc_proto::ERR_SYNC_CURSOR_INVALID; // 2025
 // ResourceServer 侧（21xx 资源表）
 inline constexpr int ERR_RS_FILE_NOT_EXISTS  = llfc_proto::RS_FILE_NOT_EXISTS;        // 2101
 inline constexpr int ERR_RS_OFFSET_INVALID   = llfc_proto::RS_FILE_OFFSET_INVALID;    // 2107 偏移超前（响应带 server_offset）
@@ -166,7 +177,7 @@ inline std::string UserTokenKey(int uid) {
 inline int Failures() { return g_failures.load(); }
 
 // ---- 协议字符串化辅助 -------------------------------------------------------
-// TCP JSON 中 message_id/thread_id/sync_seq 一律十进制字符串（64 位无损）。
+// TCP JSON 中 message_id/thread_id/recv_seq 一律十进制字符串（64 位无损）。
 inline std::string ToIdStr(std::int64_t v) { return std::to_string(v); }
 // 解析十进制字符串 id；空串/非法输入返回 dfl。
 inline std::int64_t ParseIdStr(const std::string& s, std::int64_t dfl = 0) {

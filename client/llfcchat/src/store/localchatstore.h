@@ -27,6 +27,7 @@ public slots:
     void slot_apply_sync_page(QList<LocalMessageDTO> msgs, qint64 newSyncSeq);
     void slot_insert_history_page(qint64 threadId, QList<LocalMessageDTO> msgs, bool historyComplete);
     void slot_upsert_conversations(QList<LocalConversationDTO> convs);
+	void slot_apply_snapshot(QJsonArray friendRequests, QJsonArray contacts, bool replaceCurrent);
     void slot_get_sync_state();
     void slot_mark_bootstrap_complete(qint64 checkpoint);
     void slot_load_outbox();
@@ -49,7 +50,8 @@ signals:
         QList<qint64> insertedIds);
     void sig_history_page_inserted(bool ok, qint64 threadId);
     void sig_conversations_upserted(bool ok);
-    void sig_sync_state_loaded(bool ok, qint64 lastSyncSeq, bool bootstrapComplete);
+	void sig_snapshot_applied(bool ok);
+	void sig_sync_state_loaded(bool ok, qint64 lastRecvSeq, bool bootstrapComplete);
     void sig_bootstrap_marked(bool ok, qint64 checkpoint);
     void sig_outbox_loaded(bool ok, QList<OutboxEntryDTO> entries);
     void sig_conversations_loaded(bool ok, QList<LocalConversationDTO> convs);
@@ -89,6 +91,8 @@ public:
     void insertHistoryPage(qint64 threadId, const QList<LocalMessageDTO>& msgs,
         bool historyComplete);
     void upsertConversations(const QList<LocalConversationDTO>& convs);
+	void applySnapshot(const QJsonArray& friendRequests, const QJsonArray& contacts,
+		bool replaceCurrent);
     void getSyncState();
     void markBootstrapComplete(qint64 checkpoint);
     void loadOutbox();
@@ -111,6 +115,7 @@ signals:
     void sig_apply_sync_page(QList<LocalMessageDTO> msgs, qint64 newSyncSeq);
     void sig_insert_history_page(qint64 threadId, QList<LocalMessageDTO> msgs, bool historyComplete);
     void sig_upsert_conversations(QList<LocalConversationDTO> convs);
+	void sig_apply_snapshot(QJsonArray friendRequests, QJsonArray contacts, bool replaceCurrent);
     void sig_get_sync_state();
     void sig_mark_bootstrap_complete(qint64 checkpoint);
     void sig_load_outbox();
@@ -133,7 +138,8 @@ signals:
         QList<qint64> insertedIds);
     void sig_history_page_inserted(bool ok, qint64 threadId);
     void sig_conversations_upserted(bool ok);
-    void sig_sync_state_loaded(bool ok, qint64 lastSyncSeq, bool bootstrapComplete);
+	void sig_snapshot_applied(bool ok);
+	void sig_sync_state_loaded(bool ok, qint64 lastRecvSeq, bool bootstrapComplete);
     void sig_bootstrap_marked(bool ok, qint64 checkpoint);
     void sig_outbox_loaded(bool ok, QList<OutboxEntryDTO> entries);
     void sig_conversations_loaded(bool ok, QList<LocalConversationDTO> convs);
