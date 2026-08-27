@@ -6,12 +6,15 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QDateTime>
+#include <QMap>
+#include <QPair>
+#include <QSet>
 #include <QUuid>
 #include "global.h"
 
 //messages 表列清单（readMessageRow 与各 SELECT 共用）
 static const char* MSG_COLUMNS =
-    "local_id, server_message_id, client_message_id, thread_id, sender_id, receiver_id,"
+	"local_id, server_message_id, recv_seq, client_message_id, thread_id, sender_id, receiver_id,"
     " message_type, content, local_path, content_size, resource_status, content_hash,"
     " mime_type, send_state, created_at";
 
@@ -48,7 +51,23 @@ bool LocalChatDb::open(const QString& dbPath, qint64 selfUid)
         return false;
     }
 
-    return initSchema();
+	if (!pragma.exec("PRAGMA user_version") || !pragma.next()) {
+		return false;
+	}
+	const int schema_version = pragma.value(0).toInt();
+	if (schema_version != 2) {
+		if (!_db.transaction()) return false;
+		for (const char* table : { "messages", "conversations", "outbox",
+			"sync_state", "friend_requests", "contacts" }) {
+			if (!pragma.exec(QString("DROP TABLE IF EXISTS %1").arg(table))) {
+				_db.rollback();
+				return false;
+			}
+		}
+		if (!_db.commit()) return false;
+	}
+	if (!initSchema()) return false;
+	return pragma.exec("PRAGMA user_version=2");
 }
 
 void LocalChatDb::close()
@@ -70,9 +89,10 @@ bool LocalChatDb::initSchema()
     if (!query.exec(
         "CREATE TABLE IF NOT EXISTS messages ("
         " local_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " server_message_id INTEGER UNIQUE,"
+		" server_message_id INTEGER UNIQUE,"
+		" recv_seq INTEGER UNIQUE,"
         " client_message_id TEXT NOT NULL UNIQUE,"
-        " thread_id INTEGER NOT NULL,"
+		" thread_id INTEGER,"
         " sender_id INTEGER NOT NULL,"
         " receiver_id INTEGER NOT NULL,"
         " message_type INTEGER NOT NULL,"
@@ -86,22 +106,6 @@ bool LocalChatDb::initSchema()
         " created_at TEXT)")) {
         qWarning() << "[LocalChatDb] create messages failed:" << query.lastError().text();
         return false;
-    }
-    //旧库升级：缺列则补（默认值与建表一致，存量行不动）
-    static const char* kUpgrades[] = {
-        "ALTER TABLE messages ADD COLUMN resource_status INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE messages ADD COLUMN content_hash TEXT",
-        "ALTER TABLE messages ADD COLUMN mime_type TEXT",
-    };
-    for (const char* sql : kUpgrades) {
-        if (!query.exec(sql)) {
-            //duplicate column（已存在）不算失败
-            const QString err = query.lastError().text();
-            if (!err.contains("duplicate column", Qt::CaseInsensitive)) {
-                qWarning() << "[LocalChatDb] upgrade messages failed:" << err;
-                return false;
-            }
-        }
     }
     if (!query.exec(
         "CREATE INDEX IF NOT EXISTS idx_messages_thread"
@@ -135,21 +139,30 @@ bool LocalChatDb::initSchema()
         qWarning() << "[LocalChatDb] create outbox failed:" << query.lastError().text();
         return false;
     }
-    //一次性作废旧协议的 SEND_IMAGE 条目（三端同批发布，旧 stage 语义不复存在）
-    if (!query.exec("DELETE FROM outbox WHERE operation_type = 'SEND_IMAGE'")) {
-        qWarning() << "[LocalChatDb] purge legacy outbox failed:" << query.lastError().text();
-        return false;
-    }
+	if (!query.exec(
+		"CREATE TABLE IF NOT EXISTS friend_requests ("
+		" message_id INTEGER PRIMARY KEY, from_uid INTEGER NOT NULL, to_uid INTEGER NOT NULL,"
+		" direction INTEGER NOT NULL, business_status INTEGER NOT NULL, description TEXT,"
+		" requester_remark TEXT, related_thread_id INTEGER, handled_at TEXT,"
+		" name TEXT, nick TEXT, icon TEXT, sex INTEGER, profile_desc TEXT, created_at TEXT)")) {
+		return false;
+	}
+	if (!query.exec(
+		"CREATE TABLE IF NOT EXISTS contacts ("
+		" uid INTEGER PRIMARY KEY, thread_id INTEGER, name TEXT, nick TEXT, icon TEXT,"
+		" sex INTEGER, profile_desc TEXT, remark TEXT, updated_at TEXT)")) {
+		return false;
+	}
     if (!query.exec(
         "CREATE TABLE IF NOT EXISTS sync_state ("
         " id INTEGER PRIMARY KEY CHECK (id = 1),"
-        " last_sync_seq INTEGER NOT NULL DEFAULT 0,"
+		" last_recv_seq INTEGER NOT NULL DEFAULT 0,"
         " bootstrap_complete INTEGER NOT NULL DEFAULT 0)")) {
         qWarning() << "[LocalChatDb] create sync_state failed:" << query.lastError().text();
         return false;
     }
     //sync_state 单行占位（id=1）
-    if (!query.exec("INSERT OR IGNORE INTO sync_state(id, last_sync_seq, bootstrap_complete)"
+	if (!query.exec("INSERT OR IGNORE INTO sync_state(id, last_recv_seq, bootstrap_complete)"
         " VALUES(1, 0, 0)")) {
         qWarning() << "[LocalChatDb] init sync_state failed:" << query.lastError().text();
         return false;
@@ -163,19 +176,20 @@ LocalMessageDTO LocalChatDb::readMessageRow(QSqlQuery& query)
     dto.local_id = query.value(0).toLongLong();
     //server_message_id 可能为 NULL（未确认），NULL 语义回读为 0
     dto.server_message_id = query.value(1).isNull() ? 0 : query.value(1).toLongLong();
-    dto.client_message_id = query.value(2).toString();
-    dto.thread_id = query.value(3).toLongLong();
-    dto.sender_id = query.value(4).toLongLong();
-    dto.receiver_id = query.value(5).toLongLong();
-    dto.message_type = query.value(6).toInt();
-    dto.content = query.value(7).toString();
-    dto.local_path = query.value(8).toString();
-    dto.content_size = query.value(9).toString();
-    dto.resource_status = query.value(10).toInt();
-    dto.content_hash = query.value(11).toString();
-    dto.mime_type = query.value(12).toString();
-    dto.send_state = query.value(13).toString();
-    dto.created_at = query.value(14).toString();
+	dto.recv_seq = query.value(2).isNull() ? 0 : query.value(2).toLongLong();
+	dto.client_message_id = query.value(3).toString();
+	dto.thread_id = query.value(4).toLongLong();
+	dto.sender_id = query.value(5).toLongLong();
+	dto.receiver_id = query.value(6).toLongLong();
+	dto.message_type = query.value(7).toInt();
+	dto.content = query.value(8).toString();
+	dto.local_path = query.value(9).toString();
+	dto.content_size = query.value(10).toString();
+	dto.resource_status = query.value(11).toInt();
+	dto.content_hash = query.value(12).toString();
+	dto.mime_type = query.value(13).toString();
+	dto.send_state = query.value(14).toString();
+	dto.created_at = query.value(15).toString();
     return dto;
 }
 
@@ -200,10 +214,10 @@ bool LocalChatDb::insertMessageIgnore(const LocalMessageDTO& dto, bool* inserted
     QSqlQuery query(_db);
     query.prepare(
         "INSERT OR IGNORE INTO messages"
-        " (server_message_id, client_message_id, thread_id, sender_id, receiver_id,"
+		" (server_message_id, recv_seq, client_message_id, thread_id, sender_id, receiver_id,"
         "  message_type, content, local_path, content_size, resource_status, content_hash,"
         "  mime_type, send_state, created_at)"
-        " VALUES(:sid, :cid, :tid, :sender, :recv, :mtype, :content, :lpath, :csize,"
+		" VALUES(:sid, :rseq, :cid, :tid, :sender, :recv, :mtype, :content, :lpath, :csize,"
         "  :rstatus, :chash, :mime, :state, :ctime)");
     //0=未确认语义落盘为 NULL，避免唯一索引把多条 0 判重
     if (dto.server_message_id > 0) {
@@ -211,6 +225,8 @@ bool LocalChatDb::insertMessageIgnore(const LocalMessageDTO& dto, bool* inserted
     } else {
         query.bindValue(":sid", QVariant(QVariant::LongLong));
     }
+	if (dto.recv_seq > 0) query.bindValue(":rseq", dto.recv_seq);
+	else query.bindValue(":rseq", QVariant(QVariant::LongLong));
     query.bindValue(":cid", dto.client_message_id);
     query.bindValue(":tid", QVariant::fromValue<qint64>(dto.thread_id));
     query.bindValue(":sender", QVariant::fromValue<qint64>(dto.sender_id));
@@ -496,6 +512,88 @@ bool LocalChatDb::getMessageByClientId(const QString& clientMessageId, LocalMess
     return fillMessageByClientId(clientMessageId, out);
 }
 
+bool LocalChatDb::applyUnifiedMessage(const LocalMessageDTO& dto, bool* inserted)
+{
+	if (inserted) *inserted = false;
+	const int apply_type = static_cast<int>(ChatMsgType::FRIEND_APPLY);
+	const int accept_type = static_cast<int>(ChatMsgType::FRIEND_ACCEPT);
+	const int reject_type = static_cast<int>(ChatMsgType::FRIEND_REJECT);
+	if (dto.message_type == apply_type) {
+		QSqlQuery query(_db);
+		query.prepare(
+			"INSERT OR IGNORE INTO friend_requests"
+			" (message_id, from_uid, to_uid, direction, business_status, description,"
+			" requester_remark, name, nick, icon, sex, profile_desc, created_at)"
+			" VALUES(:mid,:from,:to,:direction,:status,:description,:remark,"
+			" :name,:nick,:icon,:sex,:profile_desc,:created)");
+		query.bindValue(":mid", dto.server_message_id);
+		query.bindValue(":from", dto.sender_id);
+		query.bindValue(":to", dto.receiver_id);
+		query.bindValue(":direction", dto.sender_id == _self_uid ? 1 : 0);
+		query.bindValue(":status", dto.business_status);
+		query.bindValue(":description", dto.content);
+		query.bindValue(":remark", dto.requester_remark);
+		query.bindValue(":name", dto.sender_name);
+		query.bindValue(":nick", dto.sender_nick);
+		query.bindValue(":icon", dto.sender_icon);
+		query.bindValue(":sex", dto.sender_sex);
+		query.bindValue(":profile_desc", dto.sender_desc);
+		query.bindValue(":created", dto.created_at);
+		if (!query.exec()) return false;
+		if (inserted) *inserted = query.numRowsAffected() > 0;
+		return true;
+	}
+
+	if (dto.message_type == accept_type || dto.message_type == reject_type) {
+		QSqlQuery update(_db);
+		update.prepare(
+			"UPDATE friend_requests SET business_status=:status, handled_at=:handled,"
+			" related_thread_id=:thread WHERE message_id=:related OR "
+			"(:accepted=1 AND business_status=1 AND "
+			"((from_uid=:from AND to_uid=:to) OR (from_uid=:to AND to_uid=:from)))");
+		update.bindValue(":status", dto.business_status);
+		update.bindValue(":handled", dto.handled_at);
+		update.bindValue(":thread", dto.thread_id > 0
+			? QVariant::fromValue<qint64>(dto.thread_id) : QVariant(QVariant::LongLong));
+		update.bindValue(":related", dto.related_message_id);
+		update.bindValue(":accepted", dto.message_type == accept_type ? 1 : 0);
+		update.bindValue(":from", QVariant::fromValue<qint64>(dto.sender_id));
+		update.bindValue(":to", QVariant::fromValue<qint64>(dto.receiver_id));
+		if (!update.exec()) return false;
+		if (dto.message_type == reject_type) {
+			if (inserted) *inserted = true;
+			return true;
+		}
+
+		const qint64 peer_uid = dto.sender_id == _self_uid ? dto.receiver_id : dto.sender_id;
+		QSqlQuery contact(_db);
+		contact.prepare(
+			"INSERT INTO contacts(uid,thread_id,name,nick,icon,sex,profile_desc,remark,updated_at)"
+			" VALUES(:uid,:thread,:name,:nick,:icon,:sex,:profile_desc,:remark,:updated)"
+			" ON CONFLICT(uid) DO UPDATE SET thread_id=excluded.thread_id,name=excluded.name,"
+			" nick=excluded.nick,icon=excluded.icon,sex=excluded.sex,"
+			" profile_desc=excluded.profile_desc,remark=excluded.remark,updated_at=excluded.updated_at");
+		contact.bindValue(":uid", peer_uid);
+		contact.bindValue(":thread", dto.thread_id);
+		contact.bindValue(":name", dto.sender_name);
+		contact.bindValue(":nick", dto.sender_nick);
+		contact.bindValue(":icon", dto.sender_icon);
+		contact.bindValue(":sex", dto.sender_sex);
+		contact.bindValue(":profile_desc", dto.sender_desc);
+		contact.bindValue(":remark", dto.requester_remark);
+		contact.bindValue(":updated", dto.created_at);
+		if (!contact.exec()) return false;
+	}
+
+	bool message_inserted = false;
+	if (!insertMessageIgnore(dto, &message_inserted)) return false;
+	if (message_inserted && dto.thread_id > 0 && !upsertConversationOnMessage(dto, true)) {
+		return false;
+	}
+	if (inserted) *inserted = message_inserted;
+	return true;
+}
+
 bool LocalChatDb::insertIncoming(const QList<LocalMessageDTO>& msgs, QList<qint64>* insertedIds)
 {
     if (!isOpen()) {
@@ -509,7 +607,7 @@ bool LocalChatDb::insertIncoming(const QList<LocalMessageDTO>& msgs, QList<qint6
     }
     for (const LocalMessageDTO& dto : msgs) {
         bool inserted = false;
-        if (!insertMessageIgnore(dto, &inserted)) {
+		if (!applyUnifiedMessage(dto, &inserted)) {
             _db.rollback();
             return false;
         }
@@ -517,29 +615,11 @@ bool LocalChatDb::insertIncoming(const QList<LocalMessageDTO>& msgs, QList<qint6
             //重复消息：UI 去重与会话未读都已在首次插入时处理
             continue;
         }
-        if (insertedIds && dto.server_message_id > 0) {
+		if (insertedIds && dto.server_message_id > 0 &&
+			(dto.message_type <= static_cast<int>(ChatMsgType::FILE) ||
+			 dto.message_type == static_cast<int>(ChatMsgType::FRIEND_APPLY) ||
+			 dto.message_type == static_cast<int>(ChatMsgType::FRIEND_ACCEPT))) {
             insertedIds->append(dto.server_message_id);
-        }
-        if (!upsertConversationOnMessage(dto, true)) {
-            _db.rollback();
-            return false;
-        }
-        //接收成功生成 DELIVERY_ACK outbox（幂等：重复投递 INSERT OR IGNORE 无操作）
-        if (dto.server_message_id > 0 && dto.sender_id != _self_uid) {
-            QJsonObject ack_payload;
-            ack_payload["message_id"] = QString::number(dto.server_message_id);
-            QSqlQuery ob(_db);
-            ob.prepare(
-                "INSERT OR IGNORE INTO outbox (operation_type, dedup_key, payload)"
-                " VALUES(:op, :dedup, :payload)");
-            ob.bindValue(":op", OUTBOX_OP_DELIVERY_ACK);
-            ob.bindValue(":dedup", "ack_" + QString::number(dto.server_message_id));
-            ob.bindValue(":payload", QString::fromUtf8(
-                QJsonDocument(ack_payload).toJson(QJsonDocument::Compact)));
-            if (!ob.exec()) {
-                _db.rollback();
-                return false;
-            }
         }
     }
     if (!_db.commit()) {
@@ -563,42 +643,23 @@ bool LocalChatDb::applySyncPage(const QList<LocalMessageDTO>& msgs, qint64 newSy
     }
     for (const LocalMessageDTO& dto : msgs) {
         bool inserted = false;
-        if (!insertMessageIgnore(dto, &inserted)) {
+		if (!applyUnifiedMessage(dto, &inserted)) {
             _db.rollback();
             return false;
         }
         if (!inserted) {
             continue;
         }
-        if (insertedIds && dto.server_message_id > 0) {
+		if (insertedIds && dto.server_message_id > 0 &&
+			(dto.message_type <= static_cast<int>(ChatMsgType::FILE) ||
+			 dto.message_type == static_cast<int>(ChatMsgType::FRIEND_APPLY) ||
+			 dto.message_type == static_cast<int>(ChatMsgType::FRIEND_ACCEPT))) {
             insertedIds->append(dto.server_message_id);
-        }
-        if (!upsertConversationOnMessage(dto, true)) {
-            _db.rollback();
-            return false;
-        }
-        //同步落库同样生成 DELIVERY_ACK outbox（与 insertIncoming 对齐，补齐离线
-        //资源消息的 ACK 闭环；幂等：重复同步 INSERT OR IGNORE 无操作）
-        if (dto.server_message_id > 0 && dto.sender_id != _self_uid) {
-            QJsonObject ack_payload;
-            ack_payload["message_id"] = QString::number(dto.server_message_id);
-            QSqlQuery ob(_db);
-            ob.prepare(
-                "INSERT OR IGNORE INTO outbox (operation_type, dedup_key, payload)"
-                " VALUES(:op, :dedup, :payload)");
-            ob.bindValue(":op", OUTBOX_OP_DELIVERY_ACK);
-            ob.bindValue(":dedup", "ack_" + QString::number(dto.server_message_id));
-            ob.bindValue(":payload", QString::fromUtf8(
-                QJsonDocument(ack_payload).toJson(QJsonDocument::Compact)));
-            if (!ob.exec()) {
-                _db.rollback();
-                return false;
-            }
         }
     }
     //整页写完后推进游标（同事务，失败整体回滚游标不动）
     QSqlQuery sync(_db);
-    sync.prepare("UPDATE sync_state SET last_sync_seq = :seq WHERE id = 1");
+	sync.prepare("UPDATE sync_state SET last_recv_seq = :seq WHERE id = 1");
     sync.bindValue(":seq", QVariant::fromValue<qint64>(newSyncSeq));
     if (!sync.exec()) {
         _db.rollback();
@@ -700,18 +761,119 @@ bool LocalChatDb::upsertConversations(const QList<LocalConversationDTO>& convs)
     return true;
 }
 
-bool LocalChatDb::getSyncState(qint64* lastSyncSeq, bool* bootstrapComplete)
+bool LocalChatDb::applySnapshot(const QJsonArray& friendRequests,
+	const QJsonArray& contacts, bool replaceCurrent)
+{
+	if (!isOpen() || !_db.transaction()) return false;
+	QSqlQuery query(_db);
+	QSet<qint64> current_pending_ids;
+	QMap<qint64, qint64> current_contact_threads;
+	if (replaceCurrent &&
+		(!query.exec("DELETE FROM friend_requests") || !query.exec("DELETE FROM contacts"))) {
+		_db.rollback();
+		return false;
+	}
+	for (const QJsonValue& value : friendRequests) {
+		const QJsonObject obj = value.toObject();
+		current_pending_ids.insert(obj["message_id"].toString().toLongLong());
+		query.prepare(
+			"INSERT INTO friend_requests(message_id,from_uid,to_uid,direction,business_status,"
+			" description,requester_remark,name,nick,icon,sex,profile_desc,created_at)"
+			" VALUES(:mid,:from,:to,:direction,:status,:description,:remark,:name,:nick,"
+			" :icon,:sex,:profile_desc,:created) ON CONFLICT(message_id) DO UPDATE SET"
+			" from_uid=excluded.from_uid,to_uid=excluded.to_uid,direction=excluded.direction,"
+			" business_status=excluded.business_status,description=excluded.description,"
+			" requester_remark=excluded.requester_remark,name=excluded.name,nick=excluded.nick,"
+			" icon=excluded.icon,sex=excluded.sex,profile_desc=excluded.profile_desc,"
+			" created_at=excluded.created_at");
+		query.bindValue(":mid", obj["message_id"].toString().toLongLong());
+		query.bindValue(":from", obj["from_uid"].toInt());
+		query.bindValue(":to", obj["to_uid"].toInt());
+		query.bindValue(":direction", obj["from_uid"].toInt() == _self_uid ? 1 : 0);
+		query.bindValue(":status", obj["status"].toInt());
+		query.bindValue(":description", obj["desc"].toString());
+		query.bindValue(":remark", obj["requester_remark"].toString());
+		query.bindValue(":name", obj["name"].toString());
+		query.bindValue(":nick", obj["nick"].toString());
+		query.bindValue(":icon", obj["icon"].toString());
+		query.bindValue(":sex", obj["sex"].toInt());
+		query.bindValue(":profile_desc", obj["profile_desc"].toString());
+		query.bindValue(":created", obj["created_at"].toString());
+		if (!query.exec()) { _db.rollback(); return false; }
+	}
+	for (const QJsonValue& value : contacts) {
+		const QJsonObject obj = value.toObject();
+		current_contact_threads.insert(
+			obj["uid"].toInt(), obj["thread_id"].toString().toLongLong());
+		query.prepare(
+			"INSERT INTO contacts(uid,thread_id,name,nick,icon,sex,profile_desc,remark,updated_at)"
+			" VALUES(:uid,:thread,:name,:nick,:icon,:sex,:profile_desc,:remark,:updated)"
+			" ON CONFLICT(uid) DO UPDATE SET thread_id=excluded.thread_id,name=excluded.name,"
+			" nick=excluded.nick,icon=excluded.icon,sex=excluded.sex,"
+			" profile_desc=excluded.profile_desc,remark=excluded.remark,updated_at=excluded.updated_at");
+		query.bindValue(":uid", obj["uid"].toInt());
+		query.bindValue(":thread", obj["thread_id"].toString().toLongLong());
+		query.bindValue(":name", obj["name"].toString());
+		query.bindValue(":nick", obj["nick"].toString());
+		query.bindValue(":icon", obj["icon"].toString());
+		query.bindValue(":sex", obj["sex"].toInt());
+		query.bindValue(":profile_desc", obj["desc"].toString());
+		query.bindValue(":remark", obj["back"].toString());
+		query.bindValue(":updated", QDateTime::currentDateTime().toString(Qt::ISODate));
+		if (!query.exec()) { _db.rollback(); return false; }
+	}
+	if (!replaceCurrent) {
+		QSqlQuery pending(_db);
+		if (!pending.exec(
+			"SELECT message_id,from_uid,to_uid FROM friend_requests WHERE business_status=1")) {
+			_db.rollback();
+			return false;
+		}
+		QList<QPair<qint64, qint64>> stale_pending;
+		while (pending.next()) {
+			const qint64 message_id = pending.value(0).toLongLong();
+			if (current_pending_ids.contains(message_id)) continue;
+			const qint64 from_uid = pending.value(1).toLongLong();
+			const qint64 to_uid = pending.value(2).toLongLong();
+			const qint64 peer_uid = from_uid == _self_uid ? to_uid : from_uid;
+			stale_pending.append(qMakePair(message_id, peer_uid));
+		}
+		pending.finish();
+		for (const auto& stale : stale_pending) {
+			const qint64 message_id = stale.first;
+			const qint64 peer_uid = stale.second;
+			const bool accepted = current_contact_threads.contains(peer_uid);
+			QSqlQuery reconcile(_db);
+			reconcile.prepare(
+				"UPDATE friend_requests SET business_status=:status,related_thread_id=:thread "
+				"WHERE message_id=:mid AND business_status=1");
+			reconcile.bindValue(":status", accepted ? 2 : 3);
+			if (accepted) {
+				reconcile.bindValue(":thread", QVariant::fromValue<qint64>(
+					current_contact_threads.value(peer_uid)));
+			} else {
+				reconcile.bindValue(":thread", QVariant(QVariant::LongLong));
+			}
+			reconcile.bindValue(":mid", QVariant::fromValue<qint64>(message_id));
+			if (!reconcile.exec()) { _db.rollback(); return false; }
+		}
+	}
+	if (!_db.commit()) { _db.rollback(); return false; }
+	return true;
+}
+
+bool LocalChatDb::getSyncState(qint64* lastRecvSeq, bool* bootstrapComplete)
 {
     if (!isOpen()) {
         return false;
     }
     QSqlQuery query(_db);
-    if (!query.exec("SELECT last_sync_seq, bootstrap_complete FROM sync_state WHERE id = 1")
+	if (!query.exec("SELECT last_recv_seq, bootstrap_complete FROM sync_state WHERE id = 1")
         || !query.next()) {
         return false;
     }
-    if (lastSyncSeq) {
-        *lastSyncSeq = query.value(0).toLongLong();
+	if (lastRecvSeq) {
+		*lastRecvSeq = query.value(0).toLongLong();
     }
     if (bootstrapComplete) {
         *bootstrapComplete = query.value(1).toInt() != 0;
@@ -727,9 +889,9 @@ bool LocalChatDb::markBootstrapComplete(qint64 checkpoint)
     //单行 id=1 UPSERT：置 bootstrap 完成并记录 checkpoint 游标
     QSqlQuery query(_db);
     query.prepare(
-        "INSERT INTO sync_state(id, last_sync_seq, bootstrap_complete) VALUES(1, :seq, 1)"
+		"INSERT INTO sync_state(id, last_recv_seq, bootstrap_complete) VALUES(1, :seq, 1)"
         " ON CONFLICT(id) DO UPDATE SET"
-        " last_sync_seq = excluded.last_sync_seq, bootstrap_complete = 1");
+		" last_recv_seq = excluded.last_recv_seq, bootstrap_complete = 1");
     query.bindValue(":seq", QVariant::fromValue<qint64>(checkpoint));
     if (!query.exec()) {
         return false;

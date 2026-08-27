@@ -42,10 +42,12 @@ AuthenFriend::AuthenFriend(QWidget *parent) :
     ui->scrollArea->verticalScrollBar()->setHidden(true);
     ui->scrollArea->installEventFilter(this);
     ui->sure_btn->SetState("normal","hover","press");
+	ui->reject_btn->SetState("normal","hover","press");
     ui->cancel_btn->SetState("normal","hover","press");
     //连接确认和取消按钮的槽函数
     connect(ui->cancel_btn, &QPushButton::clicked, this, &AuthenFriend::SlotApplyCancel);
     connect(ui->sure_btn, &QPushButton::clicked, this, &AuthenFriend::SlotApplySure);
+	connect(ui->reject_btn, &QPushButton::clicked, this, &AuthenFriend::SlotApplyReject);
 }
 
 AuthenFriend::~AuthenFriend()
@@ -414,9 +416,8 @@ void AuthenFriend::SlotApplySure()
     qDebug() << "Slot Apply Sure ";
     //添加发送逻辑
     QJsonObject jsonObj;
-    auto uid = UserMgr::GetInstance()->GetUid();
-    jsonObj["fromuid"] = uid;
-    jsonObj["touid"] = _apply_info->_uid;
+	jsonObj["apply_message_id"] = QString::number(_apply_info->_message_id);
+	jsonObj["action"] = "accept";
     QString back_name = "";
     if(ui->back_ed->text().isEmpty()){
         back_name = ui->back_ed->placeholderText();
@@ -429,10 +430,22 @@ void AuthenFriend::SlotApplySure()
     QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
 
     //发送tcp请求给chat server
-    emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_AUTH_FRIEND_REQ, jsonData);
+	emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_HANDLE_FRIEND_REQ, jsonData);
 
     this->hide();
     deleteLater();
+}
+
+void AuthenFriend::SlotApplyReject()
+{
+	QJsonObject jsonObj;
+	jsonObj["apply_message_id"] = QString::number(_apply_info->_message_id);
+	jsonObj["action"] = "reject";
+	jsonObj["reason"] = QString();
+	emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_HANDLE_FRIEND_REQ,
+		QJsonDocument(jsonObj).toJson(QJsonDocument::Compact));
+	hide();
+	deleteLater();
 }
 
 void AuthenFriend::SlotApplyCancel()

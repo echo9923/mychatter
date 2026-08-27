@@ -454,33 +454,6 @@ void CSession::NotifyOffline(int uid) {
     return;
 }
 
-void CSession::NotifyResourceRecv(const std::shared_ptr<ChatMessage> &msg) {
-    if (!msg) {
-        return;
-    }
-    // 1505 通用资源消息通知：与 1303/1406 同构的统一 envelope
-    // （msg_type/content/hash/mime/resource_status 均取 DB 真值）
-    json rtvalue;
-    rtvalue["error"] = ErrorCodes::Success;
-    rtvalue["message_id"] = std::to_string(msg->message_id);
-    rtvalue["unique_id"] = "";
-    rtvalue["thread_id"] = std::to_string(msg->thread_id);
-    rtvalue["fromuid"] = msg->sender_id;
-    rtvalue["touid"] = msg->recv_id;
-    rtvalue["msg_type"] = msg->msg_type;
-    rtvalue["content"] = msg->content;
-    rtvalue["content_size"] = std::to_string(msg->content_size);
-    rtvalue["chat_time"] = msg->chat_time;
-    rtvalue["status"] = msg->status;
-    rtvalue["resource_status"] = static_cast<int>(msg->resource_status);
-    rtvalue["content_hash"] = msg->content_hash;
-    rtvalue["mime_type"] = msg->mime_type;
-
-    std::string return_str = rtvalue.dump(4);
-    Send(return_str, ID_NOTIFY_RESOURCE_MSG_REQ);
-    return;
-}
-
 LogicNode::LogicNode(shared_ptr<CSession> session,
                      shared_ptr<RecvNode> recvnode) : _session(session), _recvnode(recvnode) {
 }

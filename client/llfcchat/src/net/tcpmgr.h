@@ -20,7 +20,7 @@ private:
 };
 
 //TcpMgr 回归纯传输：帧收发 + initHandlers 分发 + 公共 sendData 通道。
-//可靠语义（重传/ACK/同步）全部移交 OutboxDispatcher/ChatSyncManager。
+//重传与统一增量同步语义移交 OutboxDispatcher/ChatSyncManager。
 class TcpMgr:public QObject, public Singleton<TcpMgr>,
         public std::enable_shared_from_this<TcpMgr>
 {
@@ -39,18 +39,14 @@ private:
     void handleChatLoginRsp(ReqId id, int len, QByteArray data);
     // 1202 搜索用户回包
     void handleSearchUserRsp(ReqId id, int len, QByteArray data);
-    // 1205 收到好友申请通知
-    void handleNotifyAddFriendReq(ReqId id, int len, QByteArray data);
-    // 1209 对方认证好友通知
-    void handleNotifyAuthFriendReq(ReqId id, int len, QByteArray data);
     // 1204 添加好友回包
     void handleAddFriendRsp(ReqId id, int len, QByteArray data);
     // 1208 认证好友回包
     void handleAuthFriendRsp(ReqId id, int len, QByteArray data);
+	// 1701 唯一用户消息实时通知
+	void handleUserMessageNotify(ReqId id, int len, QByteArray data);
     // 1302 文本消息发送回包
     void handleTextChatMsgRsp(ReqId id, int len, QByteArray data);
-    // 1303 收到文本消息通知
-    void handleNotifyTextChatMsgReq(ReqId id, int len, QByteArray data);
     // 1105 被踢下线通知
     void handleNotifyOfflineReq(ReqId id, int len, QByteArray data);
     // 1104 心跳回包
@@ -63,10 +59,6 @@ private:
     void handleLoadChatMsgRsp(ReqId id, int len, QByteArray data);
     // 1504 资源消息创建回包
     void handleCreateResourceMsgRsp(ReqId id, int len, QByteArray data);
-    // 1505 收到图片/文件资源消息通知
-    void handleNotifyResourceMsgReq(ReqId id, int len, QByteArray data);
-    // 1408 投递 ACK 回包
-    void handleDeliveryAckRsp(ReqId id, int len, QByteArray data);
     // 1406 增量同步回包
     void handleSyncMessageRsp(ReqId id, int len, QByteArray data);
     void handleMsg(ReqId id, int len, QByteArray data);
@@ -74,15 +66,6 @@ private:
     void CreatePlaceholderResourceMsgL(QString cache_dir, QString msg_content,
         qint64 msg_id, qint64 thread_id, int send_uid, int recv_id, int status, QString chat_time,
         ChatMsgType msg_type, std::vector<std::shared_ptr<ChatDataBase>>& chat_datas);
-    //统一 envelope 分发（1303/1505 共用）：文本走 sig_text_chat_msg，图片走
-    //sig_img_chat_msg+自动下载，文件走 sig_file_chat_msg（不自动下载）。
-    //资源三件套（resource_status/content_hash/mime_type）仅 1505/1406 资源消息携带
-    void dispatchIncomingMessage(qint64 message_id, const QString& unique_id,
-        qint64 thread_id, int fromuid, int touid, int msg_type,
-        const QString& content, qint64 content_size,
-        const QString& chat_time, int status,
-        int resource_status = 0, const QString& content_hash = QString(),
-        const QString& mime_type = QString());
     QTcpSocket _socket;
     QString _host;
     uint16_t _port;
@@ -117,6 +100,7 @@ signals:
     void sig_send_data(ReqId reqId, QByteArray data);
     //1102 登录/重连成功：OutboxDispatcher/ChatSyncManager 启动点
     void sig_chat_login_ready();
+	void sig_login_snapshot(QJsonObject snapshot, bool initialLogin);
     void sig_swich_chatdlg();
     //3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource（携带 ServerInfo）
     void sig_connect_resource(std::shared_ptr<ServerInfo> si);
@@ -124,6 +108,7 @@ signals:
     void sig_login_failed(int);
     void sig_user_search(std::shared_ptr<SearchInfo>);
     void sig_friend_apply(std::shared_ptr<AddFriendApply>);
+	void sig_friend_request_handled(qint64 messageId, int businessStatus);
     void sig_add_auth_friend(std::shared_ptr<AuthInfo>);
     void sig_auth_rsp(std::shared_ptr<AuthRsp>);
     void sig_text_chat_msg(std::shared_ptr<TextChatData> msg);
@@ -137,15 +122,15 @@ signals:
     void sig_img_chat_msg(std::shared_ptr<ImgChatData> msg_list);
     //文件消息（复用 ImgChatData 载荷；不自动下载，等用户点击）
     void sig_file_chat_msg(std::shared_ptr<ImgChatData> msg_list);
-    //—— 领域转发信号：1302/1504/1408 → OutboxDispatcher，1406 → ChatSyncManager ——
+    //—— 领域转发信号：1302/1504 → OutboxDispatcher，1701/1406 → ChatSyncManager ——
     //1302 文本回包（含 MESSAGE_CONFLICT/transient，由 Dispatcher 判定）
     void sig_text_msg_rsp_forward(int error, QString unique_id, qint64 message_id,
         QString chat_time);
     //1504 资源消息创建回包（含 MESSAGE_CONFLICT/RESOURCE_*/transient，由 Dispatcher 判定）
     void sig_resource_msg_meta_rsp_forward(int error, QString unique_id, QString file_name,
         qint64 message_id, qint64 thread_id, qint64 fromuid, qint64 touid);
-    //1408 ACK 回包（message_ids 按字符串解析转 qint64）
-    void sig_delivery_ack_rsp_forward(int error, QList<qint64> message_ids);
+	void sig_user_message_notify(QJsonObject envelope);
+	void sig_user_message_business_rsp(QJsonObject envelope);
     //1406 增量同步回包（原始 JSON 对象交 ChatSyncManager）
     void sig_sync_message_rsp(QJsonObject rsp);
 };

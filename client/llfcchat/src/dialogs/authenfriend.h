@@ -52,6 +52,7 @@ public slots:
     void SlotAddFirendLabelByClickTip(QString text);
     //处理确认回调
     void SlotApplySure();
+	void SlotApplyReject();
     //处理取消回调
     void SlotApplyCancel();
    

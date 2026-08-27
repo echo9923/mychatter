@@ -19,6 +19,8 @@
 #include "localchatdb.h"
 
 #include <QCoreApplication>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -79,6 +81,23 @@ bool SqlScalar(const QString& dbPath, const QString& sql, QString* out)
     return ok;
 }
 
+bool SqlExec(const QString& dbPath, const QString& sql)
+{
+    const QString conn = QString("local_store_exec_%1").arg(++g_conn_seq);
+    bool ok = false;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", conn);
+        db.setDatabaseName(dbPath);
+        if (db.open()) {
+            QSqlQuery query(db);
+            ok = query.exec(sql);
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(conn);
+    return ok;
+}
+
 QString NextClientId(const char* prefix)
 {
     return QString("%1-%2").arg(QLatin1String(prefix)).arg(++g_client_seq);
@@ -115,7 +134,7 @@ LocalMessageDTO MakeIncoming(qint64 threadId, qint64 serverMessageId)
 }
 
 // ---------------------------------------------------------------------------
-// Group 1 — open() 建库：四表存在、WAL 生效、sync_state 初始化为 (0,false)。
+// Group 1 — open() 建库：六表存在、WAL 生效、sync_state 初始化为 (0,false)。
 // ---------------------------------------------------------------------------
 void Group1_OpenSchemaWal()
 {
@@ -137,9 +156,9 @@ void Group1_OpenSchemaWal()
     QString tableCount;
     CheckDetail(SqlScalar(dbPath,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN"
-                " ('messages','conversations','outbox','sync_state');", &tableCount)
-                && tableCount == QLatin1String("4"),
-                "four tables exist (messages/conversations/outbox/sync_state)", tableCount);
+				" ('messages','conversations','outbox','sync_state','friend_requests','contacts');", &tableCount)
+				&& tableCount == QLatin1String("6"),
+				"six unified local tables exist", tableCount);
 
     qint64 seq = -1;
     bool bootstrap = true;
@@ -352,11 +371,11 @@ void Group5_MarkSendFailed()
 // ---------------------------------------------------------------------------
 // Group 6 — insertIncoming 幂等：重复 server_message_id 被 INSERT OR IGNORE
 //           吞掉（insertedIds 第二次为空，供 UI 去重），未读只加一次，
-//           且仅生成一条 DELIVERY_ACK outbox。
+//           且不生成接收方 ACK outbox。
 // ---------------------------------------------------------------------------
 void Group6_InsertIncomingDedup()
 {
-    std::printf("\n== Group 6: insertIncoming dedup / DELIVERY_ACK ==\n");
+	std::printf("\n== Group 6: insertIncoming dedup / no ACK ==\n");
     QTemporaryDir dir;
     Check(dir.isValid(), "temporary dir created");
     const QString dbPath = dir.path() + "/chat.db";
@@ -374,13 +393,7 @@ void Group6_InsertIncomingDedup()
           "insertedIds reports the new server id");
 
     QList<OutboxEntryDTO> outbox;
-    Check(db.loadOutbox(&outbox) && outbox.size() == 1, "DELIVERY_ACK outbox entry created");
-    if (outbox.size() == 1) {
-        const OutboxEntryDTO& e = outbox.first();
-        Check(e.operation_type == OUTBOX_OP_DELIVERY_ACK, "outbox op is DELIVERY_ACK");
-        Check(e.dedup_key == QString("ack_%1").arg(kSid), "ack dedup_key is ack_<server_id>");
-        Check(e.payload.contains(QString::number(kSid)), "ack payload carries message_id");
-    }
+	Check(db.loadOutbox(&outbox) && outbox.isEmpty(), "incoming message creates no ACK outbox");
 
     QList<LocalConversationDTO> convs;
     Check(db.loadConversations(&convs) && convs.size() == 1, "conversation upserted");
@@ -392,8 +405,7 @@ void Group6_InsertIncomingDedup()
 
     Check(db.insertIncoming(msgs, &inserted), "second insertIncoming returns true (idempotent)");
     Check(inserted.isEmpty(), "duplicate server_message_id swallowed (insertedIds empty)");
-    Check(db.loadOutbox(&outbox) && outbox.size() == 1,
-          "no duplicate ACK for duplicate message");
+	Check(db.loadOutbox(&outbox) && outbox.isEmpty(), "duplicate still creates no ACK");
     Check(db.loadConversations(&convs) && convs.size() == 1
           && convs.first().unread_count == 1,
           "unread_count not bumped by duplicate");
@@ -446,7 +458,7 @@ void Group7_ApplySyncPage()
 }
 
 // ---------------------------------------------------------------------------
-// Group 8 — 64 位往返：>2^32 的 server_message_id / sync_seq 写入读出无损。
+// Group 8 — 64 位往返：>2^32 的 server_message_id / recv_seq 写入读出无损。
 //           覆盖 INSERT（applySyncPage）与 UPDATE（confirmTextSent）两条路径。
 // ---------------------------------------------------------------------------
 void Group8_BigIntRoundTrip()
@@ -471,7 +483,7 @@ void Group8_BigIntRoundTrip()
           "64-bit server id in insertedIds");
 
     qint64 seq = 0;
-    Check(db.getSyncState(&seq, NULL) && seq == kBigSeq, "64-bit sync_seq round-trip");
+    Check(db.getSyncState(&seq, NULL) && seq == kBigSeq, "64-bit recv_seq round-trip");
 
     QList<LocalMessageDTO> loaded;
     Check(db.loadRecentMessages(kThread, 10, &loaded) && loaded.size() == 1
@@ -543,13 +555,11 @@ void Group9_PaginationOrdering()
 }
 
 // ---------------------------------------------------------------------------
-// Group 10 — 同步页 ACK 闭环：applySyncPage 对实际新插入的“他人消息”在同一
-//           事务生成 DELIVERY_ACK（与 insertIncoming 对齐）；自己发的消息与
-//           重复页不产生 ACK。这是离线资源消息不再依赖服务端重推的关键。
+// Group 10 — 同步页不创建 ACK；只原子写业务数据并推进 recv_seq。
 // ---------------------------------------------------------------------------
-void Group10_SyncPageAck()
+void Group10_SyncPageNoAck()
 {
-    std::printf("\n== Group 10: applySyncPage DELIVERY_ACK closure ==\n");
+	std::printf("\n== Group 10: applySyncPage without ACK ==\n");
     QTemporaryDir dir;
     Check(dir.isValid(), "temporary dir created");
     const QString dbPath = dir.path() + "/chat.db";
@@ -557,7 +567,7 @@ void Group10_SyncPageAck()
     LocalChatDb db;
     Check(db.open(dbPath, kSelf), "open() succeeds");
 
-    //一页混合：他人消息 91001（产生 ACK）+ 自己消息 91002（不产生 ACK）
+    //一页混合两条消息，二者都只写业务数据和推进游标。
     QList<LocalMessageDTO> page;
     page.append(MakeIncoming(kThread, 91001));
     {
@@ -572,19 +582,12 @@ void Group10_SyncPageAck()
     Check(inserted.size() == 2, "whole page inserted");
 
     QList<OutboxEntryDTO> outbox;
-    Check(db.loadOutbox(&outbox) && outbox.size() == 1,
-          "exactly one DELIVERY_ACK created for the received message");
-    if (outbox.size() == 1) {
-        const OutboxEntryDTO& e = outbox.first();
-        Check(e.operation_type == OUTBOX_OP_DELIVERY_ACK, "outbox op is DELIVERY_ACK");
-        Check(e.dedup_key == QLatin1String("ack_91001"), "ack dedup_key is ack_91001");
-    }
+	Check(db.loadOutbox(&outbox) && outbox.isEmpty(), "sync page creates no ACK outbox");
 
-    //重复同步同一页：INSERT OR IGNORE 吞掉，不产生第二条 ACK
+    //重复同步同一页：INSERT OR IGNORE 吞掉，不产生额外业务数据。
     Check(db.applySyncPage(page, 91002, &inserted), "re-applying the same page returns true");
     Check(inserted.isEmpty(), "duplicate page rows swallowed");
-    Check(db.loadOutbox(&outbox) && outbox.size() == 1,
-          "no duplicate ACK from duplicate sync page");
+	Check(db.loadOutbox(&outbox) && outbox.isEmpty(), "duplicate page creates no ACK");
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +654,233 @@ void Group11_FileMsgChain()
           "stored row keeps msg_type/mime_type");
 }
 
+void Group12_FriendMessageState()
+{
+    std::printf("\n== Group 12: friend messages / contacts ==\n");
+    QTemporaryDir dir;
+    Check(dir.isValid(), "temporary dir created");
+    const QString dbPath = dir.path() + "/chat.db";
+
+    LocalChatDb db;
+    Check(db.open(dbPath, kSelf), "open() succeeds");
+
+    LocalMessageDTO apply;
+    apply.server_message_id = 92001;
+    apply.client_message_id = QStringLiteral("friend-apply-92001");
+    apply.sender_id = kSelf;
+    apply.receiver_id = kPeer;
+    apply.message_type = 10;
+    apply.business_status = 1;
+    apply.content = QStringLiteral("hello");
+    apply.requester_remark = QStringLiteral("peer remark");
+    apply.sender_name = QStringLiteral("self");
+    apply.created_at = QStringLiteral("2026-08-26T10:00:00");
+    QList<qint64> friendInserted;
+    Check(db.insertIncoming(QList<LocalMessageDTO>() << apply, &friendInserted),
+          "outgoing application response persisted");
+	Check(friendInserted.size() == 1 && friendInserted.first() == 92001,
+		"new friend application reports its canonical id");
+	Check(db.insertIncoming(QList<LocalMessageDTO>() << apply, &friendInserted) &&
+		friendInserted.isEmpty(), "duplicate friend application is swallowed");
+
+    QString value;
+    Check(SqlScalar(dbPath,
+          "SELECT business_status FROM friend_requests WHERE message_id=92001", &value)
+          && value == QLatin1String("1"), "application is pending");
+	LocalMessageDTO reverseApply = apply;
+	reverseApply.server_message_id = 92000;
+	reverseApply.client_message_id = QStringLiteral("friend-apply-92000");
+	reverseApply.sender_id = kPeer;
+	reverseApply.receiver_id = kSelf;
+	Check(db.insertIncoming(QList<LocalMessageDTO>() << reverseApply),
+		"opposite-direction application persisted");
+
+    LocalMessageDTO accept;
+    accept.server_message_id = 92002;
+    accept.recv_seq = 1;
+    accept.client_message_id = QStringLiteral("server-92002");
+    accept.thread_id = 45001;
+    accept.sender_id = kPeer;
+    accept.receiver_id = kSelf;
+    accept.message_type = 11;
+    accept.business_status = 2;
+    accept.related_message_id = 92001;
+    accept.content = QStringLiteral("We are friends now!");
+    accept.sender_name = QStringLiteral("peer");
+    accept.sender_nick = QStringLiteral("Peer");
+    accept.requester_remark = QStringLiteral("peer remark");
+    accept.created_at = QStringLiteral("2026-08-26T10:01:00");
+    accept.handled_at = accept.created_at;
+    Check(db.applySyncPage(QList<LocalMessageDTO>() << accept, 1),
+          "accept result applied");
+    Check(SqlScalar(dbPath,
+          "SELECT business_status FROM friend_requests WHERE message_id=92001", &value)
+          && value == QLatin1String("2"), "application becomes accepted");
+	Check(SqlScalar(dbPath,
+		  "SELECT business_status FROM friend_requests WHERE message_id=92000", &value)
+		  && value == QLatin1String("2"),
+		  "accept closes the opposite-direction pending application");
+    Check(SqlScalar(dbPath, "SELECT COUNT(*) FROM contacts WHERE uid=2002", &value)
+          && value == QLatin1String("1"), "accept creates contact");
+    Check(SqlScalar(dbPath, "SELECT COUNT(*) FROM messages WHERE message_type=11", &value)
+          && value == QLatin1String("1"), "accept creates one system message");
+
+    LocalMessageDTO apply2 = apply;
+    apply2.server_message_id = 92003;
+    apply2.client_message_id = QStringLiteral("friend-apply-92003");
+    Check(db.insertIncoming(QList<LocalMessageDTO>() << apply2),
+          "second outgoing application persisted");
+    LocalMessageDTO reject;
+    reject.server_message_id = 92004;
+    reject.recv_seq = 2;
+    reject.client_message_id = QStringLiteral("server-92004");
+    reject.sender_id = kPeer;
+    reject.receiver_id = kSelf;
+    reject.message_type = 12;
+    reject.business_status = 3;
+    reject.related_message_id = 92003;
+    reject.content = QStringLiteral("not now");
+    reject.created_at = QStringLiteral("2026-08-26T10:02:00");
+    reject.handled_at = reject.created_at;
+    Check(db.applySyncPage(QList<LocalMessageDTO>() << reject, 2),
+          "reject result applied");
+    Check(SqlScalar(dbPath,
+          "SELECT business_status FROM friend_requests WHERE message_id=92003", &value)
+          && value == QLatin1String("3"), "application becomes rejected");
+    Check(SqlScalar(dbPath, "SELECT COUNT(*) FROM contacts", &value)
+          && value == QLatin1String("1"), "reject creates no contact");
+    Check(SqlScalar(dbPath, "SELECT COUNT(*) FROM messages WHERE message_type=12", &value)
+          && value == QLatin1String("0"), "reject is not inserted into chat history");
+    qint64 seq = 0;
+    Check(db.getSyncState(&seq, NULL) && seq == 2,
+          "friend results advance recv cursor");
+    QList<OutboxEntryDTO> outbox;
+    Check(db.loadOutbox(&outbox) && outbox.isEmpty(),
+          "friend results create no ACK outbox");
+
+    LocalMessageDTO reconcileAccept = apply;
+    reconcileAccept.server_message_id = 92005;
+    reconcileAccept.client_message_id = QStringLiteral("friend-apply-92005");
+    LocalMessageDTO reconcileReject = apply;
+    reconcileReject.server_message_id = 92006;
+    reconcileReject.client_message_id = QStringLiteral("friend-apply-92006");
+    reconcileReject.receiver_id = 2003;
+    LocalMessageDTO stillPending = apply;
+    stillPending.server_message_id = 92007;
+    stillPending.client_message_id = QStringLiteral("friend-apply-92007");
+    stillPending.sender_id = 2004;
+    stillPending.receiver_id = kSelf;
+    Check(db.insertIncoming(QList<LocalMessageDTO>()
+          << reconcileAccept << reconcileReject << stillPending),
+          "pending applications seeded for reconnect reconciliation");
+
+    QJsonObject pendingSnapshot;
+    pendingSnapshot["message_id"] = QStringLiteral("92007");
+    pendingSnapshot["from_uid"] = 2004;
+    pendingSnapshot["to_uid"] = static_cast<int>(kSelf);
+    pendingSnapshot["status"] = 1;
+    pendingSnapshot["desc"] = QStringLiteral("still pending");
+    QJsonObject contactSnapshot;
+    contactSnapshot["uid"] = static_cast<int>(kPeer);
+    contactSnapshot["thread_id"] = QStringLiteral("45001");
+    contactSnapshot["name"] = QStringLiteral("peer");
+    contactSnapshot["back"] = QStringLiteral("peer remark");
+    QJsonArray pendingSnapshots;
+    pendingSnapshots.append(pendingSnapshot);
+    QJsonArray contactSnapshots;
+    contactSnapshots.append(contactSnapshot);
+    Check(db.applySnapshot(pendingSnapshots, contactSnapshots, false),
+          "reconnect snapshot merges and reconciles pending applications");
+    Check(SqlScalar(dbPath,
+          "SELECT business_status FROM friend_requests WHERE message_id=92005", &value)
+          && value == QLatin1String("2"),
+          "missing pending request with contact reconciles to accepted");
+    Check(SqlScalar(dbPath,
+          "SELECT related_thread_id FROM friend_requests WHERE message_id=92005", &value)
+          && value == QLatin1String("45001"),
+          "accepted reconciliation records contact thread");
+    Check(SqlScalar(dbPath,
+          "SELECT business_status FROM friend_requests WHERE message_id=92006", &value)
+          && value == QLatin1String("3"),
+          "missing pending request without contact reconciles to rejected");
+    Check(SqlScalar(dbPath,
+          "SELECT business_status FROM friend_requests WHERE message_id=92007", &value)
+          && value == QLatin1String("1"),
+          "request present in snapshot remains pending");
+}
+
+void Group13_FriendCursorRollback()
+{
+    std::printf("\n== Group 13: friend transaction rollback ==\n");
+    QTemporaryDir dir;
+    Check(dir.isValid(), "temporary dir created");
+    const QString dbPath = dir.path() + "/chat.db";
+
+    LocalChatDb db;
+    Check(db.open(dbPath, kSelf), "open() succeeds");
+    LocalMessageDTO apply;
+    apply.server_message_id = 93001;
+    apply.client_message_id = QStringLiteral("friend-apply-93001");
+    apply.sender_id = kSelf;
+    apply.receiver_id = kPeer;
+    apply.message_type = 10;
+    apply.business_status = 1;
+    Check(db.insertIncoming(QList<LocalMessageDTO>() << apply),
+          "pending application seeded");
+    Check(SqlExec(dbPath, "DROP TABLE contacts"),
+          "contact table removed to force SQL failure");
+
+    LocalMessageDTO accept;
+    accept.server_message_id = 93002;
+    accept.recv_seq = 1;
+    accept.client_message_id = QStringLiteral("server-93002");
+    accept.thread_id = 46001;
+    accept.sender_id = kPeer;
+    accept.receiver_id = kSelf;
+    accept.message_type = 11;
+    accept.business_status = 2;
+    accept.related_message_id = 93001;
+    Check(!db.applySyncPage(QList<LocalMessageDTO>() << accept, 1),
+          "accept page fails when business write fails");
+    qint64 seq = -1;
+    Check(db.getSyncState(&seq, NULL) && seq == 0,
+          "cursor rolls back with failed business write");
+    QString value;
+    Check(SqlScalar(dbPath,
+          "SELECT business_status FROM friend_requests WHERE message_id=93001", &value)
+          && value == QLatin1String("1"), "friend status also rolls back");
+    Check(SqlScalar(dbPath, "SELECT COUNT(*) FROM messages", &value)
+          && value == QLatin1String("0"), "system message also rolls back");
+}
+
+void Group14_SchemaVersionRebuild()
+{
+    std::printf("\n== Group 14: destructive schema rebuild ==\n");
+    QTemporaryDir dir;
+    Check(dir.isValid(), "temporary dir created");
+    const QString dbPath = dir.path() + "/chat.db";
+    {
+        LocalChatDb db;
+        Check(db.open(dbPath, kSelf), "open() succeeds");
+        LocalMessageDTO dto = MakeOutgoingText(kThread);
+        Check(db.enqueueSend(dto), "old schema data seeded");
+    }
+    Check(SqlExec(dbPath, "PRAGMA user_version=1"),
+          "schema version changed to obsolete value");
+    {
+        LocalChatDb rebuilt;
+        Check(rebuilt.open(dbPath, kSelf), "open rebuilds obsolete schema");
+        QString value;
+        Check(SqlScalar(dbPath, "SELECT COUNT(*) FROM messages", &value)
+              && value == QLatin1String("0"), "old local messages discarded");
+        Check(SqlScalar(dbPath, "PRAGMA user_version", &value)
+              && value == QLatin1String("2"), "schema version advanced to 2");
+        QList<OutboxEntryDTO> outbox;
+        Check(rebuilt.loadOutbox(&outbox) && outbox.isEmpty(),
+              "obsolete outbox discarded with schema");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -671,8 +901,11 @@ int main(int argc, char** argv)
     Group7_ApplySyncPage();
     Group8_BigIntRoundTrip();
     Group9_PaginationOrdering();
-    Group10_SyncPageAck();
+	Group10_SyncPageNoAck();
     Group11_FileMsgChain();
+    Group12_FriendMessageState();
+    Group13_FriendCursorRollback();
+    Group14_SchemaVersionRebuild();
 
     std::printf("\n=== summary: %d failure(s) ===\n", g_failures);
     if (g_failures != 0) {

@@ -34,6 +34,11 @@ enum ErrorCodes {
 	NoAvailableChatServer = llfc_proto::ERR_NO_CHAT_SERVER, ///< 无可用 ChatServer 节点（所有 lease 缺失或过期）
 	ResourceInvalid = llfc_proto::ERR_RESOURCE_INVALID,      ///< 资源元数据非法（文件名/SHA-256 格式/MIME 类型不合规）
 	ResourceSizeExceeded = llfc_proto::ERR_RESOURCE_SIZE_EXCEEDED, ///< 资源超过类型上限（图片 20MB / 文件 100MB）
+	FriendRequestNotFound = llfc_proto::ERR_FRIEND_REQUEST_NOT_FOUND,
+	FriendRequestHandled = llfc_proto::ERR_FRIEND_REQUEST_HANDLED,
+	AlreadyFriends = llfc_proto::ERR_ALREADY_FRIENDS,
+	FriendActionInvalid = llfc_proto::ERR_FRIEND_ACTION_INVALID,
+	SyncCursorInvalid = llfc_proto::ERR_SYNC_CURSOR_INVALID,
 };
 
 
@@ -69,13 +74,10 @@ enum MSG_TYPES {
 	ID_SEARCH_USER_RSP = llfc_proto::MSG_SEARCH_USER_RSP, ///< 搜索用户响应 1202
 	ID_ADD_FRIEND_REQ = llfc_proto::MSG_ADD_FRIEND_REQ,   ///< 申请添加好友请求 1203
 	ID_ADD_FRIEND_RSP  = llfc_proto::MSG_ADD_FRIEND_RSP,  ///< 申请添加好友响应 1204
-	ID_NOTIFY_ADD_FRIEND_REQ = llfc_proto::MSG_NOTIFY_ADD_FRIEND, ///< 服务端通知目标用户收到好友申请 1205
-	ID_AUTH_FRIEND_REQ = llfc_proto::MSG_AUTH_FRIEND_REQ, ///< 认证好友请求 1207（同意/拒绝）
-	ID_AUTH_FRIEND_RSP = llfc_proto::MSG_AUTH_FRIEND_RSP, ///< 认证好友响应 1208
-	ID_NOTIFY_AUTH_FRIEND_REQ = llfc_proto::MSG_NOTIFY_AUTH_FRIEND, ///< 服务端通知申请者认证结果 1209
+	ID_HANDLE_FRIEND_REQ = llfc_proto::MSG_HANDLE_FRIEND_REQ, ///< 处理好友申请请求 1207
+	ID_HANDLE_FRIEND_RSP = llfc_proto::MSG_HANDLE_FRIEND_RSP, ///< 处理好友申请响应 1208
 	ID_TEXT_CHAT_MSG_REQ = llfc_proto::MSG_TEXT_CHAT_REQ, ///< 发送文本聊天消息请求 1301
 	ID_TEXT_CHAT_MSG_RSP = llfc_proto::MSG_TEXT_CHAT_RSP, ///< 文本聊天消息发送响应 1302
-	ID_NOTIFY_TEXT_CHAT_MSG_REQ = llfc_proto::MSG_NOTIFY_TEXT_CHAT, ///< 服务端通知接收者收到文本消息 1303
 	ID_NOTIFY_OFF_LINE_REQ = llfc_proto::MSG_NOTIFY_OFF_LINE, ///< 服务端通知用户被踢下线 1105
 	ID_HEART_BEAT_REQ = llfc_proto::MSG_HEART_BEAT_REQ,   ///< 客户端心跳请求 1103
 	ID_HEARTBEAT_RSP = llfc_proto::MSG_HEARTBEAT_RSP,     ///< 服务端心跳响应 1104
@@ -87,12 +89,10 @@ enum MSG_TYPES {
 	ID_LOAD_CHAT_MSG_RSP = llfc_proto::MSG_LOAD_CHAT_MSG_RSP, ///< 加载历史聊天消息响应 1404
 	ID_CREATE_RESOURCE_MSG_REQ = llfc_proto::MSG_CREATE_RESOURCE_REQ, ///< 创建资源消息请求 1503（图片/文件统一，元数据先行）
 	ID_CREATE_RESOURCE_MSG_RSP = llfc_proto::MSG_CREATE_RESOURCE_RSP, ///< 创建资源消息响应 1504（返回 message_id，resource_status=0）
-	ID_NOTIFY_RESOURCE_MSG_REQ = llfc_proto::MSG_NOTIFY_RESOURCE, ///< 服务端通知接收者收到资源消息 1505（在线投递）
 	// 1507~1514 分片上传/进度查询/下载信息/分片下载由 ResourceServer 处理，不在此声明
-	ID_CHAT_DELIVERY_ACK_REQ = llfc_proto::MSG_DELIVERY_ACK_REQ,  ///< 应用层投递 ACK 请求 1407（receiver 确认已收到 message_ids）
-	ID_CHAT_DELIVERY_ACK_RSP = llfc_proto::MSG_DELIVERY_ACK_RSP,  ///< 应用层投递 ACK 响应 1408
-	ID_SYNC_MESSAGE_REQ = llfc_proto::MSG_SYNC_MESSAGE_REQ,   ///< 增量消息同步请求 1405（按 sync_seq 游标分页，含 bootstrap 变体）
-	ID_SYNC_MESSAGE_RSP = llfc_proto::MSG_SYNC_MESSAGE_RSP    ///< 增量消息同步响应 1406
+	ID_SYNC_USER_MESSAGE_REQ = llfc_proto::MSG_SYNC_USER_MESSAGE_REQ, ///< 统一消息同步请求 1405
+	ID_SYNC_USER_MESSAGE_RSP = llfc_proto::MSG_SYNC_USER_MESSAGE_RSP, ///< 统一消息同步响应 1406
+	ID_NOTIFY_USER_MESSAGE = llfc_proto::MSG_NOTIFY_USER_MESSAGE ///< 统一实时消息通知 1701
 };
 
 /**
@@ -100,7 +100,7 @@ enum MSG_TYPES {
  *
  * 用于在无法正常进入 handler（如服务端停机/队列拒绝）时，仍能向客户端
  * 回送对应类型的错误响应。显式映射表比依赖“req+1”约定更安全，
- * 服务端通知类消息（1205/1209/1303/1105/1505）没有对应响应，返回 0
+ * 服务端用户消息统一通过 1701 通知，1702 留空；1105 仍为踢下线通知。
  * 表示无法回送，调用方应直接关闭连接。
  * @param req_id 客户端请求消息ID
  * @return 对应的响应消息ID；无映射时返回 0
@@ -110,15 +110,14 @@ inline short ReqToRspId(short req_id) {
 	case MSG_CHAT_LOGIN:               return MSG_CHAT_LOGIN_RSP;          // 1101 -> 1102
 	case ID_SEARCH_USER_REQ:           return ID_SEARCH_USER_RSP;          // 1201 -> 1202
 	case ID_ADD_FRIEND_REQ:            return ID_ADD_FRIEND_RSP;           // 1203 -> 1204
-	case ID_AUTH_FRIEND_REQ:           return ID_AUTH_FRIEND_RSP;          // 1207 -> 1208
+	case ID_HANDLE_FRIEND_REQ:         return ID_HANDLE_FRIEND_RSP;        // 1207 -> 1208
 	case ID_TEXT_CHAT_MSG_REQ:         return ID_TEXT_CHAT_MSG_RSP;        // 1301 -> 1302
 	case ID_HEART_BEAT_REQ:            return ID_HEARTBEAT_RSP;            // 1103 -> 1104
 	case ID_LOAD_CHAT_THREAD_REQ:      return ID_LOAD_CHAT_THREAD_RSP;     // 1401 -> 1402
 	case ID_CREATE_PRIVATE_CHAT_REQ:   return ID_CREATE_PRIVATE_CHAT_RSP;  // 1305 -> 1306
 	case ID_LOAD_CHAT_MSG_REQ:         return ID_LOAD_CHAT_MSG_RSP;        // 1403 -> 1404
 	case ID_CREATE_RESOURCE_MSG_REQ:   return ID_CREATE_RESOURCE_MSG_RSP;   // 1503 -> 1504
-	case ID_CHAT_DELIVERY_ACK_REQ:    return ID_CHAT_DELIVERY_ACK_RSP;    // 1407 -> 1408
-	case ID_SYNC_MESSAGE_REQ:         return ID_SYNC_MESSAGE_RSP;         // 1405 -> 1406
+	case ID_SYNC_USER_MESSAGE_REQ:    return ID_SYNC_USER_MESSAGE_RSP;    // 1405 -> 1406
 	default:                           return 0;
 	}
 }

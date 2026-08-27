@@ -20,10 +20,12 @@ public:
     ~ApplyFriendItem();
     void SetInfo(std::shared_ptr<ApplyInfo> apply_info);
     void ShowAddBtn(bool bshow);
+	void ShowStatus(FriendRequestStatus status);
     QSize sizeHint() const override {
         return QSize(250, 80); // 返回自定义的尺寸
     }
     int GetUid();
+	qint64 GetMessageId() const;
 private:
     Ui::ApplyFriendItem *ui;
     std::shared_ptr<ApplyInfo> _apply_info;

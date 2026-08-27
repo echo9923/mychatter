@@ -31,6 +31,8 @@ public:
     std::vector<std::shared_ptr<ApplyInfo>> GetApplyList();
     void AddApplyList(std::shared_ptr<ApplyInfo> app);
     bool AlreadyApply(int uid);
+	void UpdateApplyStatus(qint64 messageId, FriendRequestStatus status);
+	QList<qint64> UpdatePendingApplyStatusByPeer(int peerUid, FriendRequestStatus status);
     std::vector<std::shared_ptr<UserInfo>> GetConListPerPage();
     void UpdateContactLoadedCount();
     bool IsLoadConFin();

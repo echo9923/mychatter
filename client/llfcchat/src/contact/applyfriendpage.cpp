@@ -3,7 +3,6 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QStyleOption>
-#include <QRandomGenerator>
 #include "applyfrienditem.h"
 #include "authenfriend.h"
 #include "applyfriend.h"
@@ -20,6 +19,8 @@ ApplyFriendPage::ApplyFriendPage(QWidget *parent) :
     loadApplyList();
     //接受tcp传递的authrsp信号处理
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_auth_rsp, this, &ApplyFriendPage::slot_auth_rsp);
+	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_friend_request_handled,
+		this, &ApplyFriendPage::slot_request_handled);
 }
 
 ApplyFriendPage::~ApplyFriendPage()
@@ -29,12 +30,13 @@ ApplyFriendPage::~ApplyFriendPage()
 
 void ApplyFriendPage::AddNewApply(std::shared_ptr<AddFriendApply> apply)
 {
-    //先模拟头像随机，以后头像资源增加资源服务器后再显示
-    int randomValue = QRandomGenerator::global()->bounded(100); // 生成0到99之间的随机整数
-    int head_i = randomValue % heads.size();
+	if (!apply || apply->_message_id <= 0 || _unauth_items.contains(apply->_message_id)) {
+		return;
+	}
 	auto* apply_item = new ApplyFriendItem();
     auto apply_info = std::make_shared<ApplyInfo>(apply->_from_uid,
-             apply->_name, apply->_desc,heads[head_i], apply->_name, 0, 0);
+		 apply->_name, apply->_desc, apply->_icon, apply->_nick, apply->_sex,
+		 static_cast<int>(FriendRequestStatus::PENDING), apply->_message_id);
     apply_item->SetInfo( apply_info);
 	QListWidgetItem* item = new QListWidgetItem;
 	//qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
@@ -42,8 +44,8 @@ void ApplyFriendPage::AddNewApply(std::shared_ptr<AddFriendApply> apply)
 	item->setFlags(item->flags() & ~Qt::ItemIsEnabled & ~Qt::ItemIsSelectable);
 	ui->apply_friend_list->insertItem(0,item);
 	ui->apply_friend_list->setItemWidget(item, apply_item);
-    apply_item->ShowAddBtn(true);
-    _unauth_items[apply->_from_uid] = apply_item;
+	apply_item->ShowStatus(FriendRequestStatus::PENDING);
+	_unauth_items[apply->_message_id] = apply_item;
 	//收到审核好友信号
     connect(apply_item, &ApplyFriendItem::sig_auth_friend, [this](std::shared_ptr<ApplyInfo> apply_info) {
 		auto* authFriend = new AuthenFriend(this);
@@ -66,10 +68,7 @@ void ApplyFriendPage::loadApplyList()
     //添加好友申请
     auto apply_list = UserMgr::GetInstance()->GetApplyList();
     for(auto &apply: apply_list){
-        int randomValue = QRandomGenerator::global()->bounded(100); // 生成0到99之间的随机整数
-        int head_i = randomValue % heads.size();
         auto* apply_item = new ApplyFriendItem();
-        apply->SetIcon(heads[head_i]);
         apply_item->SetInfo(apply);
         QListWidgetItem* item = new QListWidgetItem;
         //qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
@@ -77,13 +76,11 @@ void ApplyFriendPage::loadApplyList()
         item->setFlags(item->flags() & ~Qt::ItemIsEnabled & ~Qt::ItemIsSelectable);
         ui->apply_friend_list->insertItem(0,item);
         ui->apply_friend_list->setItemWidget(item, apply_item);
-        if(apply->_status){
-            apply_item->ShowAddBtn(false);
-        }else{
-             apply_item->ShowAddBtn(true);
-             auto uid = apply_item->GetUid();
-             _unauth_items[uid] = apply_item;
-        }
+		const auto status = static_cast<FriendRequestStatus>(apply->_status);
+		apply_item->ShowStatus(status);
+		if (status == FriendRequestStatus::PENDING) {
+			_unauth_items[apply_item->GetMessageId()] = apply_item;
+		}
 
         //收到审核好友信号
         connect(apply_item, &ApplyFriendItem::sig_auth_friend, [this](std::shared_ptr<ApplyInfo> apply_info) {
@@ -96,13 +93,15 @@ void ApplyFriendPage::loadApplyList()
 }
 
 void ApplyFriendPage::slot_auth_rsp(std::shared_ptr<AuthRsp> auth_rsp) {
-    auto uid = auth_rsp->_uid;
-    auto find_iter = _unauth_items.find(uid);
-    if (find_iter == _unauth_items.end()) {
-        return;
-    }
+	Q_UNUSED(auth_rsp);
+}
 
-    find_iter->second->ShowAddBtn(false);
+void ApplyFriendPage::slot_request_handled(qint64 messageId, int businessStatus)
+{
+	auto found = _unauth_items.find(messageId);
+	if (found == _unauth_items.end()) return;
+	found->second->ShowStatus(static_cast<FriendRequestStatus>(businessStatus));
+	_unauth_items.erase(found);
 }
 
 

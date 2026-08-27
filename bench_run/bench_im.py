@@ -105,14 +105,14 @@ async def main():
         try:
             while True:
                 mid, body = await recv_frame(r)
-                # 单条化：1302/1303 均为顶层拍平 envelope，unique_id 直接在顶层
+                # 1302 是发送方业务响应，1701 是接收方统一消息 envelope。
                 if mid == 1302:
                     if body.get("error", 0) != 0: ack_err[uid] = ack_err.get(uid, 0) + 1
                     uq = body.get("unique_id")
                     if uq in send_t0.get(uid, {}):
                         rtts.append((time.perf_counter() - send_t0[uid].pop(uq)) * 1000)
                         acked[uid].add(uq)
-                elif mid == 1303:
+                elif mid == 1701:
                     recv_got.setdefault(uid, set()).add(body.get("unique_id"))
         except (asyncio.IncompleteReadError, ConnectionError, OSError):
             pass

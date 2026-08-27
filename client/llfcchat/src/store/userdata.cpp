@@ -7,8 +7,8 @@ SearchInfo::SearchInfo(int uid, QString name,
 }
 
 AddFriendApply::AddFriendApply(int from_uid, QString name, QString desc,
-                               QString icon, QString nick, int sex)
-    :_from_uid(from_uid),_name(name),
+	QString icon, QString nick, int sex, qint64 message_id)
+	:_from_uid(from_uid),_message_id(message_id),_name(name),
       _desc(desc),_icon(icon),_nick(nick),_sex(sex)
 {
 

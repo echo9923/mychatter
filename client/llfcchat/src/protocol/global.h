@@ -53,28 +53,22 @@ enum ReqId{
     ID_SEARCH_USER_RSP = llfc_proto::MSG_SEARCH_USER_RSP,     //1202 搜索用户回包
     ID_ADD_FRIEND_REQ = llfc_proto::MSG_ADD_FRIEND_REQ,       //1203 添加好友申请
     ID_ADD_FRIEND_RSP = llfc_proto::MSG_ADD_FRIEND_RSP,       //1204 申请添加好友回复
-    ID_NOTIFY_ADD_FRIEND_REQ = llfc_proto::MSG_NOTIFY_ADD_FRIEND, //1205 通知用户添加好友申请
-    ID_AUTH_FRIEND_REQ = llfc_proto::MSG_AUTH_FRIEND_REQ,     //1207 认证好友请求
-    ID_AUTH_FRIEND_RSP = llfc_proto::MSG_AUTH_FRIEND_RSP,     //1208 认证好友回复
-    ID_NOTIFY_AUTH_FRIEND_REQ = llfc_proto::MSG_NOTIFY_AUTH_FRIEND, //1209 通知用户认证好友申请
+    ID_HANDLE_FRIEND_REQ = llfc_proto::MSG_HANDLE_FRIEND_REQ, //1207 处理好友申请
+    ID_HANDLE_FRIEND_RSP = llfc_proto::MSG_HANDLE_FRIEND_RSP, //1208 处理好友申请回复
     ID_TEXT_CHAT_MSG_REQ  = llfc_proto::MSG_TEXT_CHAT_REQ,    //1301 文本聊天信息请求
     ID_TEXT_CHAT_MSG_RSP  = llfc_proto::MSG_TEXT_CHAT_RSP,    //1302 文本聊天信息回复
-    ID_NOTIFY_TEXT_CHAT_MSG_REQ = llfc_proto::MSG_NOTIFY_TEXT_CHAT, //1303 通知用户文本聊天信息
     ID_CREATE_PRIVATE_CHAT_REQ = llfc_proto::MSG_CREATE_PRIVATE_CHAT_REQ,   //1305 创建私聊请求
     ID_CREATE_PRIVATE_CHAT_RSP = llfc_proto::MSG_CREATE_PRIVATE_CHAT_RSP,   //1306 创建私聊回复
     ID_LOAD_CHAT_THREAD_REQ = llfc_proto::MSG_LOAD_CHAT_THREAD_REQ,  //1401 加载聊天会话列表
     ID_LOAD_CHAT_THREAD_RSP = llfc_proto::MSG_LOAD_CHAT_THREAD_RSP,  //1402 加载聊天会话列表回复
     ID_LOAD_CHAT_MSG_REQ = llfc_proto::MSG_LOAD_CHAT_MSG_REQ,        //1403 加载聊天消息
     ID_LOAD_CHAT_MSG_RSP = llfc_proto::MSG_LOAD_CHAT_MSG_RSP,        //1404 加载聊天消息回复
-    ID_SYNC_MESSAGE_REQ = llfc_proto::MSG_SYNC_MESSAGE_REQ,          //1405 增量同步消息请求
-    ID_SYNC_MESSAGE_RSP = llfc_proto::MSG_SYNC_MESSAGE_RSP,          //1406 增量同步消息回复
-    ID_CHAT_DELIVERY_ACK_REQ = llfc_proto::MSG_DELIVERY_ACK_REQ,     //1407 聊天消息投递ACK请求
-    ID_CHAT_DELIVERY_ACK_RSP = llfc_proto::MSG_DELIVERY_ACK_RSP,     //1408 聊天消息投递ACK回复
+    ID_SYNC_USER_MESSAGE_REQ = llfc_proto::MSG_SYNC_USER_MESSAGE_REQ, //1405 统一消息同步请求
+    ID_SYNC_USER_MESSAGE_RSP = llfc_proto::MSG_SYNC_USER_MESSAGE_RSP, //1406 统一消息同步回复
     ID_RESOURCE_LOGIN_REQ = llfc_proto::MSG_RESOURCE_LOGIN_REQ,      //1501 资源服务器登录请求
     ID_RESOURCE_LOGIN_RSP = llfc_proto::MSG_RESOURCE_LOGIN_RSP,      //1502 资源服务器登录回复
     ID_CREATE_RESOURCE_MSG_REQ = llfc_proto::MSG_CREATE_RESOURCE_REQ,   //1503 创建资源消息请求
     ID_CREATE_RESOURCE_MSG_RSP = llfc_proto::MSG_CREATE_RESOURCE_RSP,   //1504 创建资源消息回复
-    ID_NOTIFY_RESOURCE_MSG_REQ = llfc_proto::MSG_NOTIFY_RESOURCE,        //1505 通知用户资源聊天信息
     ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ,   //1507 上传资源分片
     ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP,   //1508 上传资源分片回复
     ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ,  //1509 查询上传进度
@@ -87,6 +81,7 @@ enum ReqId{
     ID_UPLOAD_HEAD_ICON_RSP  = llfc_proto::MSG_UPLOAD_HEAD_ICON_RSP,  //1602 上传头像回复
     ID_DOWN_LOAD_FILE_REQ = llfc_proto::MSG_DOWN_LOAD_FILE_REQ,      //1603 下载文件请求（旧头像链路）
     ID_DOWN_LOAD_FILE_RSP = llfc_proto::MSG_DOWN_LOAD_FILE_RSP,      //1604 下载文件回复
+    ID_NOTIFY_USER_MESSAGE = llfc_proto::MSG_NOTIFY_USER_MESSAGE,    //1701 统一实时消息通知
     ID_REASSIGN_CHAT = llfc_proto::MSG_REASSIGN_CHAT                  //1005 复用当前 token 获取新的 ChatServer
 };
 Q_DECLARE_METATYPE(ReqId)
@@ -107,6 +102,11 @@ enum ErrorCodes{
     MESSAGE_CONFLICT     = llfc_proto::ERR_MESSAGE_CONFLICT,     //2017 消息冲突（permanent，停止重传标 SEND_FAILED）
     RESOURCE_INVALID     = llfc_proto::ERR_RESOURCE_INVALID,     //2019 资源元数据非法（permanent）
     RESOURCE_SIZE_EXCEEDED = llfc_proto::ERR_RESOURCE_SIZE_EXCEEDED, //2020 资源超过类型上限（permanent）
+    FRIEND_REQUEST_NOT_FOUND = llfc_proto::ERR_FRIEND_REQUEST_NOT_FOUND,
+    FRIEND_REQUEST_HANDLED = llfc_proto::ERR_FRIEND_REQUEST_HANDLED,
+    ALREADY_FRIENDS = llfc_proto::ERR_ALREADY_FRIENDS,
+    FRIEND_ACTION_INVALID = llfc_proto::ERR_FRIEND_ACTION_INVALID,
+    SYNC_CURSOR_INVALID = llfc_proto::ERR_SYNC_CURSOR_INVALID,
     //资源链路错误码（21xx 资源表）
     FILE_OFFSET_INVALID  = llfc_proto::RS_FILE_OFFSET_INVALID,   //2107 分片偏移超前（按响应 server_offset 对齐重发）
     MSG_ID_ERR           = llfc_proto::RS_MSG_ID_ERR,            //2111 消息不存在（permanent，标失败）
@@ -288,7 +288,17 @@ enum class ChatFormType {
 enum class ChatMsgType {
     TEXT = 0,
     PIC = 1,
-    FILE = 3
+    FILE = 3,
+    FRIEND_APPLY = 10,
+    FRIEND_ACCEPT = 11,
+    FRIEND_REJECT = 12
+};
+
+enum class FriendRequestStatus {
+    NONE = 0,
+    PENDING = 1,
+    ACCEPTED = 2,
+    REJECTED = 3
 };
 
 

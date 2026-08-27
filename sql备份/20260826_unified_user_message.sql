@@ -16,6 +16,8 @@ ALTER TABLE `user`
     ADD COLUMN `last_recv_seq` BIGINT UNSIGNED NOT NULL DEFAULT 0
         COMMENT 'last sequence allocated to this user as message receiver';
 
+UPDATE `user` SET `last_recv_seq` = 0;
+
 ALTER TABLE `chat_message`
     DROP INDEX `idx_chat_message_pending`,
     DROP COLUMN `delivery_status`,
@@ -36,6 +38,7 @@ ALTER TABLE `chat_message`
             END
         ) STORED,
     ADD UNIQUE KEY `uk_chat_message_recv_seq` (`recv_id`, `recv_seq`),
+    ADD KEY `idx_chat_message_recv_seq` (`recv_id`, `recv_seq`),
     ADD UNIQUE KEY `uk_chat_message_friend_result` (`related_message_id`),
     ADD UNIQUE KEY `uk_chat_message_pending_friend` (`pending_friend_key`),
     ADD KEY `idx_chat_message_friend_apply`

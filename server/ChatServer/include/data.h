@@ -13,7 +13,7 @@
  */
 struct UserInfo {
 	/// 默认构造函数，初始化所有字段为空/0
-	UserInfo():name(""),uid(0),email(""),nick(""),desc(""),sex(0), icon(""), back("") {}
+	UserInfo():name(""),uid(0),email(""),nick(""),desc(""),sex(0), icon(""), back(""), thread_id(0) {}
 	std::string name;   ///< 用户名（登录账号）
 	int uid;            ///< 用户唯一ID
 	std::string email;  ///< 邮箱地址
@@ -22,6 +22,7 @@ struct UserInfo {
 	int sex;            ///< 性别（0:未设置, 1:男, 2:女）
 	std::string icon;   ///< 头像图片URL
 	std::string back;   ///< 背景图片URL
+	std::int64_t thread_id; ///< 与当前查询用户的私聊会话，可为空/0
 };
 
 /**
@@ -38,15 +39,17 @@ struct ApplyInfo {
 	 * @param icon 申请者头像URL
 	 * @param nick 申请者昵称
 	 * @param sex 申请者性别
-	 * @param status 申请状态（0:待处理, 1:已同意, 2:已拒绝）
+	 * @param status 业务状态（1:待处理, 2:已同意, 3:已拒绝）
 	 */
 	ApplyInfo(std::int64_t message_id, int from_uid, int to_uid,
 		std::string name, std::string desc, std::string requester_remark,
-		std::string icon, std::string nick, int sex, int status)
+		std::string icon, std::string nick, std::string profile_desc,
+		std::string created_at, int sex, int status)
 		:_message_id(message_id), _from_uid(from_uid), _to_uid(to_uid),
 		_uid(from_uid), _name(std::move(name)), _desc(std::move(desc)),
 		_requester_remark(std::move(requester_remark)), _icon(std::move(icon)),
-		_nick(std::move(nick)), _sex(sex), _status(status){}
+		_nick(std::move(nick)), _profile_desc(std::move(profile_desc)),
+		_created_at(std::move(created_at)), _sex(sex), _status(status){}
 
 	std::int64_t _message_id;
 	int _from_uid;
@@ -57,8 +60,10 @@ struct ApplyInfo {
 	std::string _requester_remark; ///< 申请人希望给对方设置的备注
 	std::string _icon;  ///< 申请者头像URL
 	std::string _nick;  ///< 申请者昵称
+	std::string _profile_desc; ///< 当前展示资料描述
+	std::string _created_at; ///< 申请创建时间
 	int _sex;           ///< 申请者性别
-	int _status;        ///< 申请状态（0:待处理, 1:已同意, 2:已拒绝）
+	int _status;        ///< 业务状态（1:待处理, 2:已同意, 3:已拒绝）
 };
 
 /**
@@ -69,8 +74,9 @@ struct ApplyInfo {
 struct ChatThreadInfo {
 	std::int64_t _thread_id{0};  ///< 会话线程ID（主键，64 位）
 	std::string _type;  ///< 会话类型: "private"(私聊) 或 "group"(群聊)
-	int _user1_id;      ///< 私聊时对应 user1_id；群聊时设为 0
-	int _user2_id;      ///< 私聊时对应 user2_id；群聊时设为 0
+	int _user1_id{0};   ///< 私聊时对应 user1_id；群聊时设为 0
+	int _user2_id{0};   ///< 私聊时对应 user2_id；群聊时设为 0
+	std::int64_t _last_msg_id{0}; ///< 会话当前最后一条服务端消息 ID
 };
 
 /**
@@ -103,8 +109,8 @@ struct ChatMessage {
 	std::int64_t message_id{0}; ///< 消息ID（主键，自增，64 位）
 	std::int64_t thread_id{0};  ///< 所属会话线程ID（64 位）
 	std::uint64_t recv_seq{0};  ///< 接收者维度连续序号；未发布资源为 0/NULL
-	int sender_id;          ///< 发送者用户ID
-	int recv_id;            ///< 接收者用户ID
+	int sender_id{0};       ///< 发送者用户ID
+	int recv_id{0};         ///< 接收者用户ID
 	std::string unique_id;  ///< 消息唯一标识（客户端生成，用于去重，历史/系统消息为空串）
 	std::string content;    ///< 消息内容（文本或图片URL）
 	std::string chat_time;  ///< 消息发送时间

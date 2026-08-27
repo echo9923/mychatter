@@ -33,8 +33,8 @@ ScenarioEntry kScenarios[] = {
 	{ "order-n4",      imt::ScenarioOrderN4      },
 	{ "order-n1",      imt::ScenarioOrderN1      },
 	{ "dedup",         imt::ScenarioDedup        },
+	{ "friend-workflow", imt::ScenarioFriendWorkflow },
 	{ "offline",       imt::ScenarioOffline      },
-	{ "lost-ack",      imt::ScenarioLostAck      },
 	{ "pull-bytes",    imt::ScenarioPullBytes    },
 	{ "cross-server",  imt::ScenarioCrossServer  },
 	{ "resource-offline", imt::ScenarioResourceOffline },
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
 		const std::string a = argv[i];
 		if (a == "--scenario" && i + 1 < argc) { scenario = argv[++i]; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|offline|lost-ack|pull-bytes|cross-server|resource-offline|status-discovery|chat-failover|simple-auth|sync-bootstrap|big-ids|resource-create|resource-upload|resource-resume|resource-idempotent|resource-corrupt|resource-perm|resource-offset|resource-expiry>\n");
+			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|friend-workflow|offline|pull-bytes|cross-server|resource-offline|status-discovery|chat-failover|simple-auth|sync-bootstrap|big-ids|resource-create|resource-upload|resource-resume|resource-idempotent|resource-corrupt|resource-perm|resource-offset|resource-expiry>\n");
 			return 0;
 		}
 	}

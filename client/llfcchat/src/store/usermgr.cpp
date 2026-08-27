@@ -68,6 +68,9 @@ void UserMgr::AppendApplyList(QJsonArray array)
 {
     // 遍历 QJsonArray 并输出每个元素
     for (const QJsonValue &value : array) {
+		if (value["to_uid"].toInt() != GetUid()) {
+			continue;
+		}
         auto name = value["name"].toString();
         auto desc = value["desc"].toString();
         auto icon = value["icon"].toString();
@@ -75,8 +78,9 @@ void UserMgr::AppendApplyList(QJsonArray array)
         auto sex = value["sex"].toInt();
         auto uid = value["uid"].toInt();
         auto status = value["status"].toInt();
-        auto info = std::make_shared<ApplyInfo>(uid, name,
-                           desc, icon, nick, sex, status);
+		auto message_id = value["message_id"].toString().toLongLong();
+		auto info = std::make_shared<ApplyInfo>(uid, name,
+						   desc, icon, nick, sex, status, message_id);
         std::lock_guard<std::mutex> lock(_mtx);
         _apply_list.push_back(info);
     }
@@ -96,7 +100,17 @@ void UserMgr::AppendFriendList(QJsonArray array) {
         auto info = std::make_shared<UserInfo>(uid, name,
             nick, icon, sex, desc, back);
         std::lock_guard<std::mutex> lock(_mtx);
-        _friend_list.push_back(info);
+		auto existing = _friend_map.find(uid);
+		if (existing == _friend_map.end()) {
+			_friend_list.push_back(info);
+		} else {
+			for (auto& item : _friend_list) {
+				if (item && item->_uid == uid) {
+					item = info;
+					break;
+				}
+			}
+		}
         _friend_map.insert(uid, info);
     }
 }
@@ -109,7 +123,15 @@ std::vector<std::shared_ptr<ApplyInfo> > UserMgr::GetApplyList()
 
 void UserMgr::AddApplyList(std::shared_ptr<ApplyInfo> app)
 {
+	if (!app) return;
     std::lock_guard<std::mutex> lock(_mtx);
+	for (auto& existing : _apply_list) {
+		if (existing && app->_message_id > 0 &&
+			existing->_message_id == app->_message_id) {
+			existing = app;
+			return;
+		}
+	}
     _apply_list.push_back(app);
 }
 
@@ -117,12 +139,40 @@ bool UserMgr::AlreadyApply(int uid)
 {
     std::lock_guard<std::mutex> lock(_mtx);
     for(auto& apply: _apply_list){
-        if(apply->_uid == uid){
+		if(apply->_uid == uid &&
+			apply->_status == static_cast<int>(FriendRequestStatus::PENDING)){
             return true;
         }
     }
 
     return false;
+}
+
+void UserMgr::UpdateApplyStatus(qint64 messageId, FriendRequestStatus status)
+{
+	std::lock_guard<std::mutex> lock(_mtx);
+	for (const auto& apply : _apply_list) {
+		if (apply && apply->_message_id == messageId) {
+			apply->_status = static_cast<int>(status);
+			return;
+		}
+	}
+}
+
+QList<qint64> UserMgr::UpdatePendingApplyStatusByPeer(
+	int peerUid, FriendRequestStatus status)
+{
+	QList<qint64> updated;
+	std::lock_guard<std::mutex> lock(_mtx);
+	for (const auto& apply : _apply_list) {
+		if (!apply || apply->_uid != peerUid ||
+			apply->_status != static_cast<int>(FriendRequestStatus::PENDING)) {
+			continue;
+		}
+		apply->_status = static_cast<int>(status);
+		if (apply->_message_id > 0) updated.append(apply->_message_id);
+	}
+	return updated;
 }
 
 std::vector<std::shared_ptr<UserInfo>> UserMgr::GetConListPerPage() {
@@ -193,6 +243,9 @@ void UserMgr::AddFriend(std::shared_ptr<AuthRsp> auth_rsp)
 {
     std::lock_guard<std::mutex> lock(_mtx);
     auto friend_info = std::make_shared<UserInfo>(auth_rsp);
+	if (!_friend_map.contains(friend_info->_uid)) {
+		_friend_list.push_back(friend_info);
+	}
     _friend_map[friend_info->_uid] = friend_info;
 }
 
@@ -200,6 +253,9 @@ void UserMgr::AddFriend(std::shared_ptr<AuthInfo> auth_info)
 {
     std::lock_guard<std::mutex> lock(_mtx);
     auto friend_info = std::make_shared<UserInfo>(auth_info);
+	if (!_friend_map.contains(friend_info->_uid)) {
+		_friend_list.push_back(friend_info);
+	}
     _friend_map[friend_info->_uid] = friend_info;
 }
 

@@ -47,8 +47,24 @@ void ApplyFriendItem::ShowAddBtn(bool bshow)
     }
 }
 
+void ApplyFriendItem::ShowStatus(FriendRequestStatus status)
+{
+	if (status == FriendRequestStatus::PENDING) {
+		ShowAddBtn(true);
+		return;
+	}
+	ShowAddBtn(false);
+	ui->already_add_lb->setText(status == FriendRequestStatus::REJECTED
+		? tr("已拒绝") : tr("已同意"));
+}
+
 int ApplyFriendItem::GetUid() {
     return _apply_info->_uid;
+}
+
+qint64 ApplyFriendItem::GetMessageId() const
+{
+	return _apply_info ? _apply_info->_message_id : 0;
 }
 
 

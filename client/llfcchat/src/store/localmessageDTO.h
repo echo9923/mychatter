@@ -9,6 +9,7 @@
 struct LocalMessageDTO {
     qint64 local_id = 0;            //messages 表自增主键（0=未入库）
     qint64 server_message_id = 0;   //服务端 message_id（0=未确认/NULL 语义）
+	qint64 recv_seq = 0;            //接收者维度连续序号
     QString client_message_id;      //客户端幂等键（QUuid 串）
     qint64 thread_id = 0;
     qint64 sender_id = 0;
@@ -22,6 +23,15 @@ struct LocalMessageDTO {
     QString mime_type;              //资源 MIME 类型（资源消息）
     QString send_state;             //sending/sent/failed
     QString created_at;             //chat_time 字符串
+	int business_status = 0;        //0 NONE/1 PENDING/2 ACCEPTED/3 REJECTED
+	qint64 related_message_id = 0;
+	QString handled_at;
+	QString requester_remark;
+	QString sender_name;
+	QString sender_nick;
+	QString sender_icon;
+	QString sender_desc;
+	int sender_sex = 0;
 };
 
 //本地会话值对象
@@ -39,10 +49,10 @@ struct LocalConversationDTO {
 //outbox 可靠重试条目
 struct OutboxEntryDTO {
     qint64 operation_id = 0;        //outbox 表自增主键
-    QString operation_type;         //SEND_TEXT/SEND_RESOURCE/DELIVERY_ACK
+	QString operation_type;         //SEND_TEXT/SEND_RESOURCE
     QString dedup_key;              //去重键（唯一约束）
-    QString request_id;             //关联 client_message_id（ACK 条目为空）
-    QString payload;                //原始请求 JSON（ACK 条目为 {"message_id":"..."}）
+	QString request_id;             //关联 client_message_id
+	QString payload;                //文本或资源发送的原始请求 JSON
     QString stage;                  //资源阶段：metadata/uploading，其余为空
     int retry_count = 0;
     qint64 next_retry_at = 0;       //下次重试时刻（epoch ms）

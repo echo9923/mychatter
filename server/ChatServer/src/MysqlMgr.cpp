@@ -25,14 +25,17 @@ bool MysqlMgr::CheckPwd(const std::string& name, const std::string& pwd, UserInf
 	return _dao.CheckPwd(name, pwd, userInfo);
 }
 
-bool MysqlMgr::AddFriendApply(const int& from, const int& to, const std::string& desc, const std::string& back_name)
-{
-	return _dao.AddFriendApply(from, to, desc, back_name);
+FriendOperationResult MysqlMgr::AddFriendApply(int from, int to, const std::string& desc,
+	const std::string& requester_remark, const std::string& unique_id,
+	std::shared_ptr<ChatMessage>& application) {
+	return _dao.AddFriendApply(from, to, desc, requester_remark, unique_id, application);
 }
 
-bool MysqlMgr::AddFriend(const int& from, const int& to, std::string back_name, 
-	std::vector<std::shared_ptr<AddFriendMsg>>& msg_list) {
-	return _dao.AddFriend(from, to, back_name, msg_list);
+FriendOperationResult MysqlMgr::HandleFriendApply(int handler_uid,
+	std::int64_t apply_message_id, bool accept, const std::string& handler_remark,
+	const std::string& reason, FriendHandleOutput& output) {
+	return _dao.HandleFriendApply(handler_uid, apply_message_id, accept,
+		handler_remark, reason, output);
 }
 
 std::shared_ptr<UserInfo> MysqlMgr::GetUser(int uid)
@@ -45,10 +48,11 @@ std::shared_ptr<UserInfo> MysqlMgr::GetUser(std::string name)
 	return _dao.GetUser(name);
 }
 
-bool MysqlMgr::GetApplyList(int touid, 
-	std::vector<std::shared_ptr<ApplyInfo>>& applyList, int begin, int limit) {
+bool MysqlMgr::GetApplyList(int touid,
+	std::vector<std::shared_ptr<ApplyInfo>>& applyList,
+	std::int64_t after_message_id, int limit) {
 
-	return _dao.GetApplyList(touid, applyList, begin, limit);
+	return _dao.GetApplyList(touid, applyList, after_message_id, limit);
 }
 
 bool MysqlMgr::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo> >& user_info) {
@@ -89,21 +93,12 @@ SaveMessageResult MysqlMgr::AddChatMsg(std::shared_ptr<ChatMessage> chat_data) {
 	return _dao.AddChatMsg(chat_data);
 }
 
-bool MysqlMgr::GetMessagesAfterSyncSeq(int uid, std::uint64_t after_sync_seq, int limit,
+bool MysqlMgr::GetMessagesAfterRecvSeq(int uid, std::uint64_t after_recv_seq, int limit,
 	std::vector<SyncedMessage>& messages) {
-	return _dao.GetMessagesAfterSyncSeq(uid, after_sync_seq, limit, messages);
+	return _dao.GetMessagesAfterRecvSeq(uid, after_recv_seq, limit, messages);
 }
 
-bool MysqlMgr::GetMaxSyncSeq(int uid, std::uint64_t& max_seq) {
-	return _dao.GetMaxSyncSeq(uid, max_seq);
-}
-
-std::vector<std::shared_ptr<ChatMessage>> MysqlMgr::GetMessagesByIds(int recv_uid,
-	const std::vector<std::int64_t>& ids) {
-	return _dao.GetMessagesByIds(recv_uid, ids);
-}
-
-bool MysqlMgr::MarkMessagesDelivered(int recv_uid, const std::vector<std::int64_t>& ids) {
-	return _dao.MarkMessagesDelivered(recv_uid, ids);
+bool MysqlMgr::GetLastRecvSeq(int uid, std::uint64_t& last_seq) {
+	return _dao.GetLastRecvSeq(uid, last_seq);
 }
 

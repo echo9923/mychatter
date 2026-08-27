@@ -7,7 +7,10 @@
 #include "MysqlMgr.h"
 #include "Sha256.h"
 
+#include <algorithm>
 #include <boost/filesystem.hpp>
+#include <cctype>
+#include <limits>
 
 //将请求消息类型映射为对应的回复消息类型；无对应回复（通知类）或未知类型返回0
 static short ReqToRspId(short msg_type)
@@ -24,27 +27,19 @@ static short ReqToRspId(short msg_type)
 }
 
 namespace {
-/// 从 JSON 值解析 64 位无符号整数：十进制字符串（协议约定）与数字（兼容）都接受，
-/// 字符串必须整串消费；解析失败返回 false
+/// 从 JSON 值解析 64 位无符号整数：破坏性协议只接受十进制字符串。
 bool ParseJsonUInt64(const json& v, unsigned long long& out) {
-	if (v.is_number_unsigned()) {
-		out = v.get<unsigned long long>();
-		return true;
-	}
-	if (v.is_number_integer()) {
-		const long long n = v.get<long long>();
-		if (n >= 0) {
-			out = static_cast<unsigned long long>(n);
-			return true;
-		}
-		return false;
-	}
 	if (v.is_string()) {
 		try {
 			auto s = v.get<std::string>();
+			if (s.empty() || !std::all_of(s.begin(), s.end(),
+				[](unsigned char c) { return std::isdigit(c) != 0; })) {
+				return false;
+			}
 			std::size_t pos = 0;
 			unsigned long long n = std::stoull(s, &pos);
-			if (pos == s.size()) {
+			if (pos == s.size() && n <= static_cast<unsigned long long>(
+				std::numeric_limits<long long>::max())) {
 				out = n;
 				return true;
 			}
@@ -316,12 +311,23 @@ void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, con
 		return;
 	}
 
-	auto callback = [session, message_id]() {
+	const int uid = session->GetUserId();
+	auto callback = [session, message_id, uid]() {
 		auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(static_cast<long long>(message_id));
 		json rtvalue;
 		rtvalue["message_id"] = std::to_string(message_id);
 		if (chat_msg == nullptr) {
 			rtvalue["error"] = ErrorCodes::MsgIdErr;
+			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			return;
+		}
+		if (uid == 0 || uid != chat_msg->sender_id) {
+			rtvalue["error"] = ErrorCodes::ResourceForbidden;
+			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			return;
+		}
+		if (chat_msg->msg_type != 1 && chat_msg->msg_type != 3) {
+			rtvalue["error"] = ErrorCodes::ResourceStateInvalid;
 			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
@@ -348,6 +354,9 @@ void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, con
 		rtvalue["total_size"] = std::to_string(chat_msg->content_size);
 		rtvalue["resource_status"] = chat_msg->resource_status;
 		rtvalue["content_hash"] = chat_msg->content_hash;
+		if (chat_msg->recv_seq > 0) {
+			rtvalue["recv_seq"] = std::to_string(chat_msg->recv_seq);
+		}
 		session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 	};
 

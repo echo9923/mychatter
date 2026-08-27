@@ -37,7 +37,8 @@ std::time_t FileMTime(const boost::filesystem::path& p) {
  * @brief 资源清理任务（启动时 + 每小时）
  *
  * 1. DB：捞取 updated_at 早于 7 天前且 resource_status=0 的资源消息，对应 .part
- *    缺失或 mtime 陈旧的标记为 2（失败/过期）并补双方同步行（客户端据此展示“已过期”）。
+ *    缺失或 mtime 陈旧的标记为 2（失败/过期）。未发布资源不分配 recv_seq，
+ *    因此不会出现在接收者的统一消息流中。
  * 2. 磁盘：删 mtime 超 7 天的 *.part；删 mtime 超 7 天且 DB 无行/非 Ready 的最终文件。
  *
  * 与活跃上传的竞争防护：活跃上传每片都刷新 .part 的 mtime，天然新鲜不会被清理；

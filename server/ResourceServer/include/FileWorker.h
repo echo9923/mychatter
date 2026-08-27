@@ -128,7 +128,7 @@ private:
 	void task_callback(std::shared_ptr<FileTask>);
 	//资源上传分片状态机（1507）：校验-写入-完成判定
 	void HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task);
-	//完成点：整文件 SHA-256 校验 -> .part 原子改名 -> 事务置 Ready+同步行 -> gRPC 通知
+	//完成点：整文件 SHA-256 校验 -> .part 原子改名 -> 事务置 Ready+recv_seq -> gRPC 通知
 	void CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 		std::shared_ptr<UploadSession> session);
 	//空闲会话逐出（30 分钟无活动）

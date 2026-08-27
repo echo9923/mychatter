@@ -1,5 +1,5 @@
 // im_scenarios.h — the IM integration scenarios (plan Verification.6):
-//   gate-smoke, order-n4, order-n1, dedup, offline, lost-ack, pull-bytes,
+//   gate-smoke, order-n4, order-n1, dedup, offline, pull-bytes,
 //   cross-server, image-offline, status-discovery, chat-failover, simple-auth,
 //   sync-bootstrap, big-ids.
 //
@@ -17,11 +17,11 @@ bool ScenarioGateSmoke();
 bool ScenarioOrderN4();
 bool ScenarioOrderN1();
 bool ScenarioDedup();
+bool ScenarioFriendWorkflow(); // friend-workflow: 申请/拒绝/重申/同意/幂等/越权
 
 // --- Verification.6 second half (plan §2-3 后半) ---
-bool ScenarioOffline();     // offline: 离线消息重连后经 1405/1406 增量同步按 sync_seq 补齐
-bool ScenarioLostAck();    // lost-ack: 1408 丢失重发 1407，服务端幂等成功
-bool ScenarioPullBytes();  // pull-bytes: 多页同步，无遗漏无重复、sync_seq 严格递增
+bool ScenarioOffline();     // offline: 离线消息重连后按 recv_seq 补齐
+bool ScenarioPullBytes();  // pull-bytes: 多页同步，无遗漏无重复、recv_seq 严格递增
 bool ScenarioCrossServer();// cross-server: gRPC proxy break, retry bounded, restart sync
 bool ScenarioResourceOffline(); // resource-offline: 上传完成前同步流不含该资源，1508 Ready 后出现
 
@@ -42,7 +42,7 @@ bool ScenarioChatFailover();   // chat-failover: token-preserving reassignment a
 // --- Simple token auth: shared utoken_<uid> for Chat + Resource ---
 bool ScenarioSimpleAuth();    // simple-auth: forged/valid token on Chat+Resource, secret-field hygiene, rotation
 
-// --- 增量同步（user_message_sync）---
+// --- 统一接收序号增量同步 ---
 bool ScenarioSyncBootstrap();// sync-bootstrap: checkpoint 之后全量同步、之前不推
 bool ScenarioBigIds();       // big-ids: >32 位 message_id 字符串全链路无损
 

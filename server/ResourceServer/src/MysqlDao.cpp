@@ -95,66 +95,68 @@ bool MysqlDao::UpdateHeadInfo(int uid, const std::string& icon)
 	return false;
 }
 
-bool MysqlDao::CompleteResourceUploadWithSync(long long chat_message_id, int sender_id, int recv_id)
-{
+bool MysqlDao::CompleteResourceUpload(long long chat_message_id, int sender_id, int recv_id,
+	unsigned long long& recv_seq) {
+	recv_seq = 0;
 	auto con = pool_->getConnection();
-	if (!con) {
-		return false;
-	}
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
+	if (!con) return false;
+	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
 	auto& conn = con->_con;
 	try {
-		// 状态迁移与同步行写入同生共死：显式事务（连接池存在 autocommit 残留，必须显式关闭）
 		conn->setAutoCommit(false);
-
-		//0→1 条件更新：已 Ready（重发末片再触发完成）不重复迁移，回读判幂等
-		std::string update_sql =
-			"UPDATE chat_message SET resource_status = 1 "
-			"WHERE message_id = ? AND resource_status = 0;";
-
-		std::unique_ptr<sql::PreparedStatement> pstmt(conn->prepareStatement(update_sql));
-		pstmt->setInt64(1, chat_message_id);
-
-		int affected_rows = pstmt->executeUpdate();
-
-		if (affected_rows == 0) {
-			//回读区分幂等成功（已 Ready）与真值缺失/终态
-			std::unique_ptr<sql::PreparedStatement> read_stmt(conn->prepareStatement(
-				"SELECT resource_status FROM chat_message WHERE message_id = ?"));
-			read_stmt->setInt64(1, chat_message_id);
-			std::unique_ptr<sql::ResultSet> rs(read_stmt->executeQuery());
-			if (rs->next() && rs->getInt("resource_status")
-				== static_cast<int>(ResourceStatus::Ready)) {
-				//已就绪：补同步行后按成功提交（INSERT IGNORE 幂等）
-			}
-			else {
-				conn->rollback();
-				std::cerr << "CompleteResourceUploadWithSync: message " << chat_message_id
-					<< " not found or not uploadable" << std::endl;
-				return false;
-			}
+		auto read = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
+			"SELECT sender_id, recv_id, resource_status, recv_seq FROM chat_message "
+			"WHERE message_id = ? FOR UPDATE"));
+		read->setInt64(1, chat_message_id);
+		auto rs = std::unique_ptr<sql::ResultSet>(read->executeQuery());
+		if (!rs->next() || rs->getInt("sender_id") != sender_id ||
+			rs->getInt("recv_id") != recv_id) {
+			conn->rollback();
+			return false;
+		}
+		const int status = rs->getInt("resource_status");
+		if (status == 1 && !rs->isNull("recv_seq")) {
+			recv_seq = rs->getUInt64("recv_seq");
+			conn->commit();
+			return true;
+		}
+		if (status != 0) {
+			conn->rollback();
+			return false;
 		}
 
-		// 上传完成点才补双方同步行（此前 Uploading 资源对增量同步不可见）；
-		// INSERT IGNORE 使续传重复完成天然幂等
-		std::unique_ptr<sql::PreparedStatement> sync_stmt(conn->prepareStatement(
-			"INSERT IGNORE INTO user_message_sync (uid, message_id) VALUES (?, ?), (?, ?)"
-		));
-		sync_stmt->setInt(1, sender_id);
-		sync_stmt->setInt64(2, chat_message_id);
-		sync_stmt->setInt(3, recv_id);
-		sync_stmt->setInt64(4, chat_message_id);
-		sync_stmt->executeUpdate();
-
+		auto seq_stmt = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
+			"SELECT last_recv_seq FROM user WHERE uid = ? FOR UPDATE"));
+		seq_stmt->setInt(1, recv_id);
+		auto seq_rs = std::unique_ptr<sql::ResultSet>(seq_stmt->executeQuery());
+		if (!seq_rs->next()) {
+			conn->rollback();
+			return false;
+		}
+		recv_seq = seq_rs->getUInt64("last_recv_seq") + 1;
+		auto update_user = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
+			"UPDATE user SET last_recv_seq = ? WHERE uid = ?"));
+		update_user->setUInt64(1, recv_seq);
+		update_user->setInt(2, recv_id);
+		if (update_user->executeUpdate() != 1) {
+			conn->rollback();
+			return false;
+		}
+		auto publish = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
+			"UPDATE chat_message SET resource_status = 1, recv_seq = ? "
+			"WHERE message_id = ? AND resource_status = 0 AND recv_seq IS NULL"));
+		publish->setUInt64(1, recv_seq);
+		publish->setInt64(2, chat_message_id);
+		if (publish->executeUpdate() != 1) {
+			conn->rollback();
+			return false;
+		}
 		conn->commit();
 		return true;
 	}
-	catch (sql::SQLException& e) {
-		std::cerr << "SQLException in CompleteResourceUploadWithSync: " << e.what() << std::endl;
+	catch (const sql::SQLException& e) {
 		conn->rollback();
+		std::cerr << "CompleteResourceUpload SQLException: " << e.what() << std::endl;
 		return false;
 	}
 }
@@ -174,9 +176,10 @@ std::shared_ptr<ChatMessage> MysqlDao::GetChatMsgById(long long message_id) {
 	try {
 		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
 			conn->prepareStatement(
-				"SELECT message_id, thread_id, sender_id, recv_id, "
+				"SELECT message_id, thread_id, recv_seq, sender_id, recv_id, "
 				"content, created_at, updated_at, status, msg_type, resource_status, "
-				"content_size, content_hash, mime_type "
+				"content_size, content_hash, mime_type, business_status, "
+				"related_message_id, handled_at, requester_remark "
 				"FROM chat_message WHERE message_id = ?"
 			)
 			);
@@ -187,7 +190,8 @@ std::shared_ptr<ChatMessage> MysqlDao::GetChatMsgById(long long message_id) {
 		if (rs->next()) {
 			auto msg = std::make_shared<ChatMessage>();
 			msg->message_id = rs->getUInt64("message_id");
-			msg->thread_id = rs->getUInt64("thread_id");
+			msg->thread_id = rs->isNull("thread_id") ? 0 : rs->getUInt64("thread_id");
+			msg->recv_seq = rs->isNull("recv_seq") ? 0 : rs->getUInt64("recv_seq");
 			msg->sender_id = rs->getUInt64("sender_id");
 			msg->recv_id = rs->getUInt64("recv_id");
 			msg->content = rs->getString("content");
@@ -198,6 +202,10 @@ std::shared_ptr<ChatMessage> MysqlDao::GetChatMsgById(long long message_id) {
 			msg->content_size = rs->getUInt64("content_size");
 			msg->content_hash = rs->isNull("content_hash") ? "" : rs->getString("content_hash");
 			msg->mime_type = rs->isNull("mime_type") ? "" : rs->getString("mime_type");
+			msg->business_status = rs->getInt("business_status");
+			msg->related_message_id = rs->isNull("related_message_id") ? 0 : rs->getInt64("related_message_id");
+			msg->handled_at = rs->isNull("handled_at") ? "" : rs->getString("handled_at");
+			msg->requester_remark = rs->isNull("requester_remark") ? "" : rs->getString("requester_remark");
 			return msg;
 		}
 
@@ -265,21 +273,13 @@ bool MysqlDao::MarkResourceExpired(const std::vector<ExpiredResource>& items) {
 	auto& conn = con->_con;
 	try {
 		conn->setAutoCommit(false);
-		//逐条条件更新 0→2 并补双方同步行：失败终态也必须进同步流，
-		//客户端才能把气泡置为“已过期”而不是无限重试下载
+		// 未发布资源没有 recv_seq，过期只更新权威资源状态，不通知接收者。
 		auto upd = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
 			"UPDATE chat_message SET resource_status = 2 "
 			"WHERE message_id = ? AND resource_status = 0"));
-		auto sync_stmt = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
-			"INSERT IGNORE INTO user_message_sync (uid, message_id) VALUES (?, ?), (?, ?)"));
 		for (const auto& item : items) {
 			upd->setInt64(1, item.message_id);
 			upd->executeUpdate();
-			sync_stmt->setInt(1, item.sender_id);
-			sync_stmt->setInt64(2, item.message_id);
-			sync_stmt->setInt(3, item.recv_id);
-			sync_stmt->setInt64(4, item.message_id);
-			sync_stmt->executeUpdate();
 		}
 		conn->commit();
 		return true;
