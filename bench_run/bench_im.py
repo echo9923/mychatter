@@ -37,7 +37,7 @@ async def main():
     ap.add_argument("--per-pair", type=int, default=100)
     ap.add_argument("--window", type=int, default=64)
     ap.add_argument("--runtag", type=str, default=str(int(time.time())),
-                    help="unique_id prefix tag so repeated runs don't conflict on the DB unique index")
+                    help="client_message_id prefix so repeated runs remain idempotent")
     ap.add_argument("--conn-concurrency", type=int, default=256,
                     help="max simultaneous chat-login TCP connects (stagger the connect storm)")
     args = ap.parse_args()
@@ -108,12 +108,12 @@ async def main():
                 # 1302 是发送方业务响应，1701 是接收方统一消息 envelope。
                 if mid == 1302:
                     if body.get("error", 0) != 0: ack_err[uid] = ack_err.get(uid, 0) + 1
-                    uq = body.get("unique_id")
-                    if uq in send_t0.get(uid, {}):
-                        rtts.append((time.perf_counter() - send_t0[uid].pop(uq)) * 1000)
-                        acked[uid].add(uq)
+                    client_id = body.get("client_message_id")
+                    if client_id in send_t0.get(uid, {}):
+                        rtts.append((time.perf_counter() - send_t0[uid].pop(client_id)) * 1000)
+                        acked[uid].add(client_id)
                 elif mid == 1701:
-                    recv_got.setdefault(uid, set()).add(body.get("unique_id"))
+                    recv_got.setdefault(uid, set()).add(body.get("client_message_id"))
         except (asyncio.IncompleteReadError, ConnectionError, OSError):
             pass
 
@@ -121,13 +121,16 @@ async def main():
         _, w = conns[a]
         tid = 900000 + a
         for k in range(K):
-            uq = f"b-{args.runtag}-{a}-{k}"
+            client_id = f"b-{args.runtag}-{a}-{k}"
             while len(send_t0[a]) >= args.window:
                 await asyncio.sleep(0.0005)
-            send_t0[a][uq] = time.perf_counter()
-            # 协议字符串化：1301 请求 thread_id 为十进制字符串
-            await send_frame(w, 1301, {"fromuid": a, "touid": b, "thread_id": str(tid),
-                "content": CONTENT, "unique_id": uq})
+            send_t0[a][client_id] = time.perf_counter()
+            await send_frame(w, 1301, {
+                "target_user_id": b,
+                "thread_id": str(tid),
+                "text_content": CONTENT,
+                "client_message_id": client_id,
+            })
 
     readers = [asyncio.create_task(reader_loop(u)) for u in conns]
     t0 = time.perf_counter()

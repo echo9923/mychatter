@@ -22,15 +22,15 @@ public:
 	~MysqlDao();
 	std::shared_ptr<UserInfo> GetUser(int uid);
 	bool UpdateHeadInfo(int uid, const std::string& icon);
-	/// 资源上传完成点：单事务 UPDATE chat_message.resource_status=1（0→1 条件更新，
-	/// 上传完成时原子设置 Ready 并为接收者分配 recv_seq；重复完成返回原序号。
-	bool CompleteResourceUpload(long long chat_message_id, int sender_id, int recv_id,
-		unsigned long long& recv_seq);
+	/// 资源上传完成点：发布消息并在同一事务中为接收者分配 user_events.event_seq。
+	/// 重复完成返回原 event_seq，不重复创建事件。
+	bool CompleteResourceUpload(long long message_id, int sender_user_id,
+		unsigned long long& event_seq);
 	std::shared_ptr<ChatMessage> GetChatMsgById(long long message_id);
-	/// 清理任务：捞取 updated_at 早于 before_time 且 resource_status=0 的资源消息
+	/// 清理任务：捞取 created_at 早于 before_time 且 status=PENDING 的资源消息。
 	bool GetExpiredResourceIds(const std::string& before_time, int limit,
 		std::vector<ExpiredResource>& out);
-	/// 清理任务：事务内 resource_status 0→2；未发布资源不分配 recv_seq。
+	/// 清理任务：事务内 status PENDING→FAILED；未发布资源不创建用户事件。
 	bool MarkResourceExpired(const std::vector<ExpiredResource>& items);
 
 private:

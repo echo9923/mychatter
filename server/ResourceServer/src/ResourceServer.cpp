@@ -14,7 +14,7 @@
 #include "const.h"
 
 namespace {
-/// 本地时间格式化为 MySQL timestamp 字符串（与 chat_message.updated_at 同构）
+/// 本地时间格式化为 MySQL timestamp 字符串（与 chat_messages.created_at 同构）
 std::string FormatDbTime(std::time_t t) {
 	std::tm tm_val{};
 	localtime_s(&tm_val, &t);
@@ -36,13 +36,13 @@ std::time_t FileMTime(const boost::filesystem::path& p) {
 /**
  * @brief 资源清理任务（启动时 + 每小时）
  *
- * 1. DB：捞取 updated_at 早于 7 天前且 resource_status=0 的资源消息，对应 .part
- *    缺失或 mtime 陈旧的标记为 2（失败/过期）。未发布资源不分配 recv_seq，
- *    因此不会出现在接收者的统一消息流中。
+ * 1. DB：捞取 created_at 早于 7 天前且 status=PENDING 的资源消息，对应 .part
+ *    缺失或 mtime 陈旧的标记为 FAILED。未发布资源不创建 user_events 行，
+ *    因此不会出现在接收者的统一事件流中。
  * 2. 磁盘：删 mtime 超 7 天的 *.part；删 mtime 超 7 天且 DB 无行/非 Ready 的最终文件。
  *
  * 与活跃上传的竞争防护：活跃上传每片都刷新 .part 的 mtime，天然新鲜不会被清理；
- * DB 侧条件更新（resource_status=0）防二次标记。残余竞态后果 = 客户端收
+ * DB 侧条件更新（status=PENDING）防二次标记。残余竞态后果 = 客户端收
  * ResourceStateInvalid 后本地标失败，可重发，无数据损坏。
  */
 void RunResourceCleanup() {
@@ -55,7 +55,7 @@ void RunResourceCleanup() {
 	if (MysqlMgr::GetInstance()->GetExpiredResourceIds(before, 200, pending)) {
 		std::vector<ExpiredResource> to_expire;
 		for (const auto& item : pending) {
-			auto part_path = root / std::to_string(item.sender_id)
+			auto part_path = root / std::to_string(item.sender_user_id)
 				/ (std::to_string(item.message_id) + ".part");
 			const std::time_t mtime = FileMTime(part_path);
 			//.part 缺失或 7 天未动 → 终态过期
@@ -99,7 +99,7 @@ void RunResourceCleanup() {
 			const long long mid = std::strtoll(name.c_str(), &parse_end, 10);
 			if (parse_end != nullptr && *parse_end == '\0' && mid > 0) {
 				auto msg = MysqlMgr::GetInstance()->GetChatMsgById(mid);
-				removable = !msg || msg->resource_status != static_cast<int>(ResourceStatus::Ready);
+				removable = !msg || msg->status != MessageStatus::Published;
 			}
 			else {
 				removable = true; //不符合 <message_id> 命名规则的残留

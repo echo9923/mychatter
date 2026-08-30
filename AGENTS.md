@@ -51,30 +51,30 @@ out/run/<Config>/ResourceServer/ResourceServer.exe
 - CMakePresets.json 中 toolchainFile 引用 `$env{VCPKG_ROOT}`，若未设置该环境变量，CMake 仍可使用已有的 `vcpkg_installed/` 完成配置
 - **首次构建或拉取本次改造后必须重新 `vcpkg install`**：`qt5-base` 新增了 `sqlite3plugin` feature（客户端本地消息库依赖 qsqlite 驱动），qt5-base 会整包重编（约 1–3 小时）；装完后应存在 `vcpkg_installed/x64-windows-static-md/plugins/sqldrivers/qsqlite[d].lib`
 
-## 客户端本地消息架构（本次改造新增）
+## 客户端与服务端数据库架构（20260830 重构）
 
-- 权威存储在服务端 MySQL：`chat_message` 是文本、资源和好友业务的统一接收流水，`user.last_recv_seq` 是服务端序号头；迁移脚本为 `sql备份/20260826_unified_user_message.sql`
-- 客户端每用户一个 SQLite：`AppDataLocation/user/<uid>/chat.db`（messages/conversations/outbox/sync_state/friend_requests/contacts 六表，WAL + synchronous=FULL）
+- 不迁移旧假数据；唯一建库入口为 `sql备份/20260830_database_rebuild.sql`，执行后服务端只使用 `users/friendships/private_chats/chat_messages/message_resources/friend_requests/user_events` 七表。
+- `chat_messages` 只保存文本、图片、文件；`message_resources` 是资源一对一扩展；好友申请与处理状态只在 `friend_requests`；`user_events` 只保存接收顺序和业务引用。当前无群聊、好友申请撤销和好友备注。
+- 客户端每用户一个 SQLite：`AppDataLocation/user/<user_id>/chat.db`，只使用 `messages/message_resources/conversations/friend_requests/contacts/outbox/sync_state` 七表（WAL + synchronous=FULL，`user_version=4` 破坏性重建）。
 - 新模块（`client/llfcchat/`，C++11）：`localmessageDTO.h`（跨线程值对象）、`localchatdb`（同步 SQL 核心，非 QObject）、`localchatstore`（独立 QThread 独占 QSQLITE 命名连接，GUI/TCP/File 线程禁止直接触碰 QSqlDatabase）、`outboxdispatcher`（驻留 TCP 线程）、`chatsyncmanager`（登录/重连/缺口/30～60 秒随机周期的 1405/1406 增量同步，驻留 TCP 线程）
-- **OutboxDispatcher 为单向状态模型（20260829 重构）**：SQLite outbox 是唯一真值，内存 `_entries`（dedup_key → RuntimeEntry）只是运行时登记簿。硬边界：`enqueueSend` 事务 commit 成功后经 `sig_send_enqueued(ok,dto,entry)` 广播"CommittedSend"，GUI 与 Dispatcher 各自订阅、互不依赖（ChatPage 不再中转）；1302/1504/1506 回包只发起本地销账/推进事务，结果信号 ok=true（commit 成功）后条目才离开登记簿。增量登记、不做每条消息的全表重查；全表 `loadOutbox` 仅登录/换用户恢复消费（`sig_db_opened` 作废旧登记簿，恢复期 `_restoring` 暂停派发，恢复首轮按 operation_id 顺序首发）；进程内重连不清登记簿，uploading 条目用运行时 server_message_id 直接 1507 对齐。退避 `retry_count/next_retry_at` 为纯内存状态不落盘（outbox 表已无此两列，本地库 schema 升至 user_version=3，破坏性重建；DB API `updateOutboxRetry/deleteOutboxEntry` 已删除）。1504 成功先落库 stage=uploading 再推进内存，失败只重发 stage 推进、不重发 1503；文本与资源是同一持久状态机的不同阶段。服务端幂等：重复 1301/1503 走 `(sender_id,unique_id)` UPSERT 的 Duplicate 分支返回原 message_id，同 key 不同内容才 MESSAGE_CONFLICT
+- **OutboxDispatcher 为单向状态模型**：SQLite outbox 是唯一真值，内存 `_entries`（`client_message_id` 到运行时条目）只是登记簿。`enqueueSend` 事务提交后才广播；1302/1504/1506 只发起本地销账或阶段推进，结果事务提交后条目才离开登记簿。退避只在内存，不写 SQLite。服务端 1301/1503 按 `(sender_user_id,client_message_id)` 幂等。
 - TcpMgr 已回归纯网络传输；旧 QSettings pending/replay/离线轮询（llfcchat-delivery.ini、旧号 1051/1052 pending 拉取、Redis offline_msg ZSET）已全部删除
-- 协议破坏性变更：TCP JSON 中 `message_id/thread_id/recv_seq/related_message_id` 一律为十进制字符串，两端必须同批发布；1405/1406 为 `ID_SYNC_USER_MESSAGE_REQ/RSP`（按接收者 `recv_seq` 游标增量同步），唯一实时通知为 1701，客户端不回 ACK
+- TCP JSON 中 64 位 `message_id/friend_request_id/thread_id/event_seq/after_event_seq/next_event_seq/file_size_bytes` 一律为十进制字符串；1405/1406 按接收者 `event_seq` 增量同步，唯一实时通知为 1701，客户端不回 ACK。
 
 ## 图片与文件统一资源传输（20260814 改造）
 
 - 图片与普通文件统一为“资源消息”：创建元数据（1503）→ 查询上传进度（1507）→ 分片上传（1505）→ 完整性校验 → 发布消息 → 查询下载信息（1509）→ 分片下载（1511）。分片 32KiB Base64 JSON 帧，帧格式与 MAX_FILE_LEN 维持不变。
-- `chat_message` 新增 `resource_status`（0 待上传/1 就绪/2 失败过期）、`content_hash`（整文件 SHA-256）、`mime_type`；`content` 存原始文件名，服务端磁盘文件统一以 `message_id` 命名于 `bin/resource/<sender_uid>/`，进行中为 `.part` 后缀，收齐校验后原子改名。迁移脚本 `sql备份/20260814_resource_unified.sql`（清库重建，不兼容旧数据/旧磁盘文件）。
-- 协议语义变更（三端同批发布）：1503/1504 通用资源创建（file_name/content_hash/mime_type，上限图片 20MB/文件 100MB，可由 [Resource] 配置覆盖）；1505/1506 按 message_id+offset+chunk_sha256 上传；1507/1508 纯进度查询（返回服务端 .part 实际长度）；旧 1043/1044 续传分支已删除（首传续传统一 1505+1507）；1509/1510 下载信息（校验请求者必须是 sender/recv）；1511/1512 按 offset 下载并随片下发 SHA-256；资源 READY 后走通用 `NotifyUserMessage`/1701（envelope 含 resource_status/content_hash/mime_type）。
-- ResourceServer 按 `message_id % worker 数` 固定路由，同一 .part 只被一个线程写；分片/整文件 SHA-256 由 `server/common` 的 `llfc::Sha256Hex/Sha256FileHex`（OpenSSL EVP，llfc_server_common_crypto）校验；重复分片幂等确认、偏移超前返回 server_offset 供客户端对齐；完成点在一个事务中设置 `resource_status=1` 并为接收者分配 `recv_seq`，提交后才尝试通用 gRPC 通知（先 DB 后 RPC 不变式）。Redis 不再保存上传进度（真值=磁盘 .part 长度+MySQL 行），头像通道（1601-1604）维持旧 seq+MD5 协议不动。
-- 清理：ResourceServer 启动时及每小时清理超时（7 天）未完成资源，标记 `resource_status=2`，但不分配 `recv_seq`、不通知接收者；回收陈旧 .part 与无属主最终文件，只扫 `resource/` 目录，与头像目录 `static/` 隔离。
-- 客户端：MessageTextEdit 采集时一次 32KiB 遍历预计算整文件+逐片 SHA-256；发送统一走 outbox（SEND_RESOURCE，FILE_MSG 不再被跳过）；上传恢复/断线重连一律 1507 对齐服务端偏移；下载缓存按 message_id 隔离（`cache/<message_id>/<文件名>`，写 .part 逐片校验、整文件校验后原子改名）；图片自动下载显示预览，文件用新 `FileBubble`（下载/暂停/继续/打开/另存为）；`applySyncPage` 将消息业务写入和 `last_recv_seq` 推进放在同一事务，不生成 ACK outbox。
+- `chat_messages.status` 保存 Pending/Published/Failed；`message_resources` 保存 `original_file_name/file_size_bytes/sha256/mime_type`。磁盘文件以 `message_id` 命名，进行中使用 `.part` 后缀。
+- 1503/1504 创建资源元数据；1505/1506 按 `message_id+offset+chunk_sha256` 上传；1507/1508 查询 `.part` 长度；1509/1510 查询下载信息；1511/1512 按偏移下载。资源发布后 1701 envelope 携带资源扩展字段。
+- ResourceServer 按 `message_id % worker 数` 固定路由；上传完成事务把 `chat_messages.status` 置为 Published，并为接收者分配 `event_seq`。失败/过期置 Failed，不分配事件。上传进度真值是磁盘 `.part` 长度。
+- 客户端资源发送统一走 outbox；下载缓存按 `message_id` 隔离。`applySyncPage` 将业务投影和 `sync_state.last_event_seq` 放在同一事务，不生成 ACK outbox。
 
 ## 协议号分段规则（20260823 重编号）
 
 - 数值唯一来源：`proto/protocol_ids.h`（`llfc_proto` 命名空间，C++11 兼容）。客户端 `global.h`、ChatServer/ResourceServer/Gate/Status 各自 `const.h`、集成测试 `im_common.h` 的本地枚举壳一律引用该头——**新增/修改协议号只改这一处**，三端必须同批发布
 - 消息 ID：百位=功能域（10 账户/11 连接保活/12 好友/13 聊天/14 历史同步/15 资源/16 头像/17 统一用户消息）；**奇数=发起方**（请求或服务端通知）、**偶数=回包**；请求/响应连续成对编号，1105 和 1701 是无回包的单向通知
 - 错误码独立 2xxx 段：**20xx 通用表**（Gate/Status/Chat 共用）+ **21xx 资源表**（ResourceServer 专属）；与消息 ID 的 1xxx 永不重叠。旧 1012~1027 错误码段已废弃（曾与消息 ID 数值冲突，如旧 1018 在两表语义不同）
-- 完整表格见 `开发文档/消息ID速查表.md`；文本、资源和好友消息都通过 1701 实时通知，并由 1405/1406 按 `recv_seq` 兜底
+- 完整表格见 `开发文档/消息ID速查表.md`；文本、资源和好友事件都通过 1701 实时通知，并由 1405/1406 按 `event_seq` 兜底
 - ChatServer `CSession` 校验 `msg_id <= 2048`，新号不得越界
 
 ## 注意事项

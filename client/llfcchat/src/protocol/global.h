@@ -187,7 +187,7 @@ enum class TransferState {
     Paused,         // 暂停
     Completed,      // 完成
     Failed,         // 失败
-    Expired         // 资源已过期/终态（服务端标记 resource_status=2）
+    Expired         // 资源消息已进入 Failed 终态
 };
 
 struct MsgInfo{
@@ -269,37 +269,34 @@ const int CHAT_COUNT_PER_PAGE = 13;
 enum MsgStatus{
     UN_READ = 0,  //对方未读
     SEND_FAILED = 1,  //发送失败
-    READED = 2   //对方已读（3=UN_UPLOAD 已废弃，资源状态读 ResourceStatus）
+    READED = 2
 };
 
-//资源生命周期（镜像服务端 chat_message.resource_status）
-enum ResourceStatus{
-    RESOURCE_UPLOADING = 0, //待上传（分片未收齐）
-    RESOURCE_READY     = 1, //就绪可下载
-    RESOURCE_EXPIRED   = 2  //失败/过期（终态）
+//服务端 chat_messages.status；资源表本身不重复保存状态。
+enum class MessageStatus {
+    Pending = 0,
+    Published = 1,
+    Failed = 2
 };
 
-//聊天形式，私聊和群聊
-enum class ChatFormType {
-    PRIVATE = 0,
-    GROUP = 1
-};
-
-//聊天消息类型，文本，图片，文件等
+//当前聊天消息类型：文本、图片、文件。
 enum class ChatMsgType {
     TEXT = 0,
     PIC = 1,
-    FILE = 3,
+    FILE = 3
+};
+
+//统一同步流中的好友事件类型，不属于聊天消息类型。
+enum class UserEventType {
     FRIEND_APPLY = 10,
     FRIEND_ACCEPT = 11,
     FRIEND_REJECT = 12
 };
 
 enum class FriendRequestStatus {
-    NONE = 0,
-    PENDING = 1,
-    ACCEPTED = 2,
-    REJECTED = 3
+    PENDING = 0,
+    ACCEPTED = 1,
+    REJECTED = 2
 };
 
 

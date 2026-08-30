@@ -7,38 +7,33 @@ SearchInfo::SearchInfo(int uid, QString name,
 }
 
 AddFriendApply::AddFriendApply(int from_uid, QString name, QString desc,
-	QString icon, QString nick, int sex, qint64 message_id)
-	:_from_uid(from_uid),_message_id(message_id),_name(name),
+	QString icon, QString nick, int sex, qint64 friend_request_id)
+	:_from_uid(from_uid),_friend_request_id(friend_request_id),_name(name),
       _desc(desc),_icon(icon),_nick(nick),_sex(sex)
 {
 
 }
 
-ChatDataBase::ChatDataBase(qint64 msg_id, qint64 thread_id, ChatFormType form_type,
-    ChatMsgType msg_type, QString content, int send_uid, int status, QString chat_time):_msg_id(msg_id),
-_thread_id(thread_id), _form_type(form_type),
-_msg_type(msg_type), _content(content), _send_uid(send_uid), _status(status), _chat_time(chat_time){
+ChatDataBase::ChatDataBase(qint64 msg_id, qint64 thread_id,
+    ChatMsgType msg_type, QString content, int send_uid, int status):_msg_id(msg_id),
+_thread_id(thread_id),
+_msg_type(msg_type), _content(content), _send_uid(send_uid), _status(status){
 
 }
 
-ChatDataBase::ChatDataBase(QString unique_id, qint64 thread_id, ChatFormType form_type,
-    ChatMsgType msg_type, QString content, int send_uid, int status, QString chat_time):_unique_id(unique_id),
-    _thread_id(thread_id), _form_type(form_type),
-    _msg_type(msg_type), _content(content), _send_uid(send_uid),_msg_id(0), _status(status), _chat_time(chat_time)
+ChatDataBase::ChatDataBase(QString client_message_id, qint64 thread_id,
+    ChatMsgType msg_type, QString content, int send_uid, int status)
+    : _client_message_id(client_message_id), _thread_id(thread_id),
+      _msg_type(msg_type), _content(content), _send_uid(send_uid), _status(status)
 {
 
 }
 
-ChatDataBase::ChatDataBase(qint64 msg_id, QString unique_id, qint64 thread_id, ChatFormType form_type, ChatMsgType msg_type,
-    QString content, int send_uid, int status, QString chat_time):_msg_id(msg_id), _unique_id(unique_id),
-    _thread_id(thread_id), _form_type(form_type),
-    _msg_type(msg_type), _content(content), _send_uid(send_uid), _status(status), _chat_time(chat_time) {
+ChatDataBase::ChatDataBase(qint64 msg_id, QString client_message_id, qint64 thread_id, ChatMsgType msg_type,
+    QString content, int send_uid, int status):_client_message_id(client_message_id), _msg_id(msg_id),
+    _thread_id(thread_id),
+    _msg_type(msg_type), _content(content), _send_uid(send_uid), _status(status) {
 
-}
-
-QString ChatDataBase::GetUniqueId()
-{
-    return _unique_id;
 }
 
 void ChatThreadData::AddMsg(std::shared_ptr<ChatDataBase> msg)
@@ -50,7 +45,7 @@ void ChatThreadData::AddMsg(std::shared_ptr<ChatDataBase> msg)
 
 void ChatThreadData::MoveMsg(std::shared_ptr<ChatDataBase> msg) {
 
-    auto iter = _msg_unrsp_map.find(msg->GetUniqueId());
+    auto iter = _msg_unrsp_map.find(msg->GetClientMessageId());
     if (iter == _msg_unrsp_map.end()) {
         AddMsg(msg);
         return;
@@ -81,13 +76,8 @@ void ChatThreadData::SetLastMsgId(qint64 msg_id)
     _last_msg_id = msg_id;
 }
 
-int  ChatThreadData::GetOtherId() {
-    return _other_id;
-}
-
-QString ChatThreadData::GetGroupName()
-{
-    return _group_name;
+int ChatThreadData::GetPeerUserId() {
+    return _peer_user_id;
 }
 
 qint64 ChatThreadData::GetThreadId()
@@ -125,25 +115,14 @@ qint64 ChatThreadData::GetLastMsgId()
     return _last_msg_id;
 }
 
-void ChatThreadData::AppendUnRspMsg(QString unique_id, std::shared_ptr<ChatDataBase> base_msg)
+void ChatThreadData::AppendUnRspMsg(QString client_message_id, std::shared_ptr<ChatDataBase> base_msg)
 {
-    _msg_unrsp_map.insert(unique_id, base_msg);
+    _msg_unrsp_map.insert(client_message_id, base_msg);
 }
 
 
 QMap<QString, std::shared_ptr<ChatDataBase>>& ChatThreadData::GetMsgUnRspRef() {
     return _msg_unrsp_map;
-}
-
-void AuthInfo::SetChatDatas(std::vector<std::shared_ptr<TextChatData>> chat_datas)
-{
-    _chat_datas = chat_datas;
-    _thread_id = _chat_datas[0]->GetThreadId();
-}
-
-void AuthRsp::SetChatDatas(std::vector<std::shared_ptr<TextChatData>> chat_datas) {
-    _chat_datas = chat_datas;
-    _thread_id = _chat_datas[0]->GetThreadId();
 }
 
 std::shared_ptr<ChatDataBase> ChatThreadData::GetChatDataBase(qint64 msg_id) {

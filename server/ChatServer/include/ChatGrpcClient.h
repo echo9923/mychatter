@@ -21,8 +21,8 @@ class ChatGrpcClient : public Singleton<ChatGrpcClient>
 public:
 	~ChatGrpcClient() = default;
 
-	NotifyResult NotifyUserMessage(const std::string& server_name, int to_uid,
-		std::int64_t message_id);
+	NotifyResult NotifyUserEvent(const std::string& server_name, int to_uid,
+		int event_type, std::int64_t message_id, std::int64_t friend_request_id);
 	message::KickUserRsp NotifyKickUser(std::string server_name,
 		const message::KickUserReq& req);
 

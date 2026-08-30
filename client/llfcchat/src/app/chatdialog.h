@@ -39,11 +39,13 @@ private:
     void SetSelectChatItem(qint64 thread_id = 0);
     void SetSelectChatPage(qint64 thread_id = 0);
     //§6.4 抽取自 slot_create_private_chat：为 thread 不存在时创建 ChatThreadData + 列表项
-    QListWidgetItem* createPrivateChatItem(int other_id, qint64 thread_id);
-    //本地消息 DTO → 窗口消息对象（文本/图片）
-    std::shared_ptr<ChatDataBase> buildChatData(const LocalMessageDTO& dto);
+    QListWidgetItem* createPrivateChatItem(int peer_user_id, qint64 thread_id);
+    //本地消息与可选资源扩展 -> 窗口消息对象
+    std::shared_ptr<ChatDataBase> buildChatData(const LocalMessageDTO& message,
+        const LocalMessageResourceDTO& resource);
     //只对实际插入的消息上屏（insertedIds 去重保证推送与同步只展示一次）
-    void displayInsertedMessages(const QList<LocalMessageDTO>& msgs,
+    void displayInsertedMessages(const QList<LocalMessageDTO>& messages,
+        const QList<LocalMessageResourceDTO>& resources,
         const QList<qint64>& insertedIds);
     //本地不足时发 1403 拉更早历史（before_message_id 十进制字符串）
     void requestOlderHistory(qint64 thread_id, qint64 oldest_loaded);
@@ -75,21 +77,24 @@ public slots:
     void slot_jump_chat_item(std::shared_ptr<SearchInfo> si);
     void slot_jump_chat_item_from_infopage(std::shared_ptr<UserInfo> ui);
     void slot_item_clicked(QListWidgetItem *item);
-    void slot_text_chat_msg(std::shared_ptr<TextChatData> msg);
-    void slot_img_chat_msg(std::shared_ptr<ImgChatData> imgchat);
-    void slot_create_private_chat(int uid, int other_id, qint64 thread_id);
+    void slot_create_private_chat(int target_user_id, qint64 thread_id);
 
-    void slot_load_chat_msg(qint64 thread_id, qint64 msg_id, bool load_more,
-        std::vector<std::shared_ptr<ChatDataBase>> msglists);
+    void slot_load_chat_msg(qint64 threadId, qint64 nextMessageId, bool loadMore,
+        QList<LocalMessageDTO> messages, QList<LocalMessageResourceDTO> resources);
 
     //—— 本地库结果信号（提交成功后才更新 UI）——
     void slot_conversations_loaded(bool ok, QList<LocalConversationDTO> convs);
     void slot_recent_messages_loaded(bool ok, qint64 threadId, QList<LocalMessageDTO> msgs,
-        bool historyComplete, qint64 oldestLoadedMessageId);
+        QList<LocalMessageResourceDTO> resources, bool historyComplete,
+        qint64 oldestLoadedMessageId);
     void slot_history_page_inserted(bool ok, qint64 threadId);
-    void slot_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs, QList<qint64> insertedIds);
-    void slot_sync_page_applied(bool ok, qint64 newSyncSeq, QList<LocalMessageDTO> msgs,
-        QList<qint64> insertedIds);
+    void slot_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs,
+        QList<LocalMessageResourceDTO> resources, QList<qint64> insertedIds);
+    void slot_sync_page_applied(bool ok, qint64 newEventSeq,
+        QList<UserEventDTO> events, QList<LocalMessageDTO> msgs,
+        QList<LocalMessageResourceDTO> resources,
+        QList<LocalFriendRequestDTO> friendRequests,
+        QList<LocalContactDTO> contacts, QList<qint64> insertedIds);
     void slot_send_confirmed(bool ok, LocalMessageDTO dto);
     void slot_send_failed_marked(bool ok, LocalMessageDTO dto);
     void slot_resource_stage_updated(bool ok, LocalMessageDTO dto);

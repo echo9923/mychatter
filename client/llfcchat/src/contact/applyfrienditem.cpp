@@ -62,9 +62,9 @@ int ApplyFriendItem::GetUid() {
     return _apply_info->_uid;
 }
 
-qint64 ApplyFriendItem::GetMessageId() const
+qint64 ApplyFriendItem::GetFriendRequestId() const
 {
-	return _apply_info ? _apply_info->_message_id : 0;
+	return _apply_info ? _apply_info->_friend_request_id : 0;
 }
 
 

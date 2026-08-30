@@ -49,7 +49,8 @@ private slots:
     void on_clicked_resume(QString unique_name, TransferType transfer_type);
     //本地库入库提交成功后才上屏（sending 气泡）；可靠派发由 Dispatcher
     //订阅同一 sig_send_enqueued 自行登记，与 GUI 互不依赖
-    void slot_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO entry);
+    void slot_send_enqueued(bool ok, LocalMessageDTO message,
+        LocalMessageResourceDTO resource, OutboxEntryDTO outbox);
 
 private:
     void clearItems();
@@ -59,7 +60,7 @@ private:
     QHash<QString, ChatItemBase*> _unrsp_item_map;
     //管理已经回复的消息
     QHash<qint64, ChatItemBase*> _base_item_map;
-    //发送中的入库请求（client_message_id → DTO / 图片 MsgInfo）
+    //发送中的入库请求（client_message_id -> 消息 / 资源运行时对象）
     QHash<QString, LocalMessageDTO> _pending_sends;
     QHash<QString, std::shared_ptr<MsgInfo>> _pending_img_infos;
 };

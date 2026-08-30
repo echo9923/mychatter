@@ -10,14 +10,14 @@
 //               receipt-sequence ranges overlap (different shards, true parallel).
 //   order-n1:   LogicWorkers=1; same 1000-each send, order preserved; no overlap
 //               assertion (single shard serializes, overlap is not guaranteed).
-//   dedup:      pipelined re-send of an identical (sender_id,unique_id) yields the
+//   dedup:      pipelined re-send of an identical (sender_user_id,client_message_id) yields the
 //               same message_id with exactly one DB row; a same-key different-
 //               content send returns MESSAGE_CONFLICT and leaves the original row.
 //   friend-workflow: 好友申请/拒绝/重新申请/双方申请后同意都进入统一流水，
 //               重试不增序号，越权和相反动作返回明确错误。
-//   offline:    离线期间产生的消息，重连后经 1405/1406 按 recv_seq 升序补齐。
-//   pull-bytes: 多页同步：超过一页的消息量逐页 after_recv_seq 推进，无遗漏无重复、
-//               recv_seq 严格递增、has_more 正确。
+//   offline:    离线期间产生的消息，重连后经 1405/1406 按 event_seq 升序补齐。
+//   pull-bytes: 多页同步：超过一页的消息量逐页 after_event_seq 推进，无遗漏无重复、
+//               event_seq 严格递增、has_more 正确。
 //   sync-bootstrap: 拉取到当前序号头作为 checkpoint；其后的消息全部同步到，
 //               之前的不推，领先服务端的游标返回明确错误。
 //   big-ids:    AUTO_INCREMENT 调到 2^32 以上后，>32 位 message_id 以十进制字符串
@@ -74,8 +74,8 @@ static unsigned long GetCurrentPidSafe() {
 #endif
 }
 
-// Unique per-run tag embedded in every unique_id so concurrent ctest runs or
-// re-runs never collide on the (sender_id, unique_id) unique key.
+// Unique per-run tag embedded in every client id so concurrent test runs do
+// not collide on the server idempotency keys.
 static std::string RunTag() {
 	static std::atomic<unsigned long long> seq{0};
 	auto s = seq.fetch_add(1);
@@ -84,12 +84,12 @@ static std::string RunTag() {
 	return os.str();
 }
 
-// Delete every chat_message row + Redis key the scenario may have created.
+// Delete every current-schema row and Redis key the scenario may have created.
 // Only touches keys/rows tied to the fixture uids and the "imtest-" prefix.
 // The per-user login token lives in utoken_<uid> (written by Status on every
 // password login, TTL 86400); clear it so each scenario starts clean.
 static void CleanupFootprint(Redis& redis, Mysql& mysql) {
-	mysql.DeleteByUniqueIdLike("imtest-%");
+	mysql.DeleteTestDataByClientIdLike("imtest-%");
 	for (int uid : { SENDER_UID, RECEIVER_UID }) {
 		const std::string u = std::to_string(uid);
 		redis.Del(UserTokenKey(uid));
@@ -236,39 +236,32 @@ static bool LoginUserPinned(TcpClient& c, int uid, Redis& redis,
 	return false;
 }
 
-// Build a 1301 body carrying a single text message (单条化：content/unique_id 顶层平铺;
-// 协议字符串化：thread_id 为十进制字符串).
-static std::string BuildTextReq(int fromuid, int touid, std::int64_t thread_id,
-                                const std::string& content, const std::string& unique_id) {
+// Build a 1301 body carrying one text message. The authenticated session is
+// the sender; 64-bit ids stay decimal strings on the wire.
+static std::string BuildTextReq(int target_user_id, std::int64_t thread_id,
+	const std::string& textContent, const std::string& clientMessageId) {
 	json j;
-	j["fromuid"] = fromuid;
-	j["touid"]   = touid;
+	j["target_user_id"] = target_user_id;
 	j["thread_id"] = ToIdStr(thread_id);
-	j["content"]   = content;
-	j["unique_id"] = unique_id;
+	j["text_content"] = textContent;
+	j["client_message_id"] = clientMessageId;
 	return j.dump();
 }
 
-static std::string BuildFriendApplyReq(int touid, const std::string& description,
-	                                  const std::string& requester_remark,
-	                                  const std::string& unique_id) {
+static std::string BuildFriendApplyReq(int target_user_id, const std::string& description,
+	const std::string& clientRequestId) {
 	json j;
-	j["touid"] = touid;
-	j["applyname"] = description;
-	j["bakname"] = requester_remark;
-	j["unique_id"] = unique_id;
+	j["target_user_id"] = target_user_id;
+	j["request_message"] = description;
+	j["client_request_id"] = clientRequestId;
 	return j.dump();
 }
 
-static std::string BuildFriendHandleReq(std::int64_t apply_message_id,
-	                                   const std::string& action,
-	                                   const std::string& handler_remark = std::string(),
-	                                   const std::string& reason = std::string()) {
+static std::string BuildFriendHandleReq(std::int64_t friendRequestId,
+	const std::string& action) {
 	json j;
-	j["apply_message_id"] = ToIdStr(apply_message_id);
+	j["friend_request_id"] = ToIdStr(friendRequestId);
 	j["action"] = action;
-	if (!handler_remark.empty()) j["back"] = handler_remark;
-	if (!reason.empty()) j["reason"] = reason;
 	return j.dump();
 }
 
@@ -278,68 +271,72 @@ static std::int64_t JsonIdStr(const json& j, const char* key, std::int64_t dfl =
 	return ParseIdStr(j[key].get<std::string>(), dfl);
 }
 
-// Build a 1405 incremental-sync body:
-//   {"after_recv_seq":"<seq十进制字符串>","limit":<n>}
-static std::string BuildSyncReq(int, std::uint64_t after_recv_seq, int limit) {
+static std::string BuildSyncReq(int, std::uint64_t afterEventSeq, int limit) {
 	json j;
-	j["after_recv_seq"] = std::to_string(after_recv_seq);
+	j["after_event_seq"] = std::to_string(afterEventSeq);
 	j["limit"] = limit;
 	return j.dump();
 }
 
-// 1406 增量同步响应的单条 envelope（共享约定：message_id/thread_id/recv_seq 为
-// 十进制字符串；fromuid/touid/msg_type/status 为数字；content_size/chat_time 维持字符串）。
+// One 1406 user-event envelope. Message and friend fields are parsed into the
+// same test value only because the wire itself is a mixed event page.
 struct SyncEnvelope {
+	std::uint64_t event_seq = 0;
+	int event_type = -1;
 	std::int64_t  message_id = 0;
 	std::int64_t  thread_id  = 0;
-	std::uint64_t recv_seq   = 0;
-	int fromuid = 0;
-	int touid   = 0;
-	int msg_type = -1;
-	int status   = -1;
-	std::string unique_id;
-	std::string content;
-	std::string md5;
-	std::string content_size;
-	std::string chat_time;
+	std::int64_t friend_request_id = 0;
+	int sender_user_id = 0;
+	int message_type = -1;
+	int status = -1;
+	std::string client_message_id;
+	std::string text_content;
+	std::string original_file_name;
+	std::string file_size_bytes;
+	std::string sha256;
+	std::string mime_type;
+	std::string created_at;
 };
 
-// Parse the messages array of a 1406 response into envelopes (order preserved).
-static std::vector<SyncEnvelope> ExtractSyncMessages(const json& j) {
+static std::vector<SyncEnvelope> ExtractSyncEvents(const json& j) {
 	std::vector<SyncEnvelope> out;
-	if (!j.is_object() || !j.contains("messages")) return out;
-	const auto& msgs = j["messages"];
-	if (!msgs.is_array()) return out;
-	for (const auto& m : msgs) {
+	if (!j.is_object() || !j.contains("events") || !j["events"].is_array()) {
+		return out;
+	}
+	for (const auto& m : j["events"]) {
 		SyncEnvelope e;
+		e.event_seq = static_cast<std::uint64_t>(JsonIdStr(m, "event_seq", 0));
+		e.event_type = m.value("event_type", -1);
 		e.message_id = JsonIdStr(m, "message_id", 0);
 		e.thread_id  = JsonIdStr(m, "thread_id", 0);
-		e.recv_seq   = static_cast<std::uint64_t>(JsonIdStr(m, "recv_seq", 0));
-		e.fromuid  = m.value("fromuid", 0);
-		e.touid    = m.value("touid", 0);
-		e.msg_type = m.value("msg_type", -1);
+		e.friend_request_id = JsonIdStr(m, "friend_request_id", 0);
+		e.sender_user_id = m.value("sender_user_id", 0);
+		e.message_type = m.value("message_type", -1);
 		e.status   = m.value("status", -1);
-		e.unique_id = m.value("unique_id", "");
-		e.content   = m.value("content", "");
-		e.md5       = m.value("md5", "");
-		e.content_size = m.value("content_size", "");
-		e.chat_time    = m.value("chat_time", "");
+		e.client_message_id = m.value("client_message_id", "");
+		e.text_content = m.value("text_content", "");
+		e.original_file_name = m.value("original_file_name", "");
+		e.file_size_bytes = m.value("file_size_bytes", "");
+		e.sha256 = m.value("sha256", "");
+		e.mime_type = m.value("mime_type", "");
+		e.created_at = m.value("created_at", "");
 		out.push_back(std::move(e));
 	}
 	return out;
 }
 
-// 发送 1405 增量同步请求并等待 1406；成功时填充 messages/next_recv_seq/has_more。
+// Send a 1405 request and return one ordered user-event page.
 static bool DoSyncPage(TcpClient& c, int uid, std::uint64_t after, int limit,
-                       std::vector<SyncEnvelope>& msgs, std::uint64_t& next_seq,
-                       bool& has_more) {
+	                   std::vector<SyncEnvelope>& events, std::uint64_t& nextSeq,
+	                   bool& has_more) {
 	if (!c.Send(ID_SYNC_USER_MESSAGE_REQ, BuildSyncReq(uid, after, limit))) return false;
 	Frame f;
 	if (!c.Wait(ID_SYNC_USER_MESSAGE_RSP, 10000, &f)) return false;
 	auto j = ParseJson(f.body);
 	if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return false;
-	msgs = ExtractSyncMessages(j);
-	next_seq = static_cast<std::uint64_t>(JsonIdStr(j, "next_recv_seq", (std::int64_t)after));
+	events = ExtractSyncEvents(j);
+	nextSeq = static_cast<std::uint64_t>(
+		JsonIdStr(j, "next_event_seq", static_cast<std::int64_t>(after)));
 	has_more = j.value("has_more", false);
 	return true;
 }
@@ -484,7 +481,7 @@ static void OrderConsumer(OrderSide& s, std::atomic<int>& gseq, int deadline_ms)
 		auto j = ParseJson(f.body);
 		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) { s.ok = false; return; }
 		//单条化：1302 成功响应为顶层拍平 envelope（message_id 为十进制字符串）
-		const std::string uid = j.value("unique_id", "");
+		const std::string uid = j.value("client_message_id", "");
 		const std::int64_t mid = JsonIdStr(j, "message_id", 0);
 		if (uid.empty() || mid <= 0) { s.ok = false; return; }
 		auto it = s.uid_to_idx->find(uid);
@@ -506,10 +503,10 @@ static void OrderProducer(OrderSide& s, const std::string& tag,
 	for (int i = 0; i < s.total; ++i) {
 		char buf[64];
 		std::snprintf(buf, sizeof(buf), "%04d", i);
-		const std::string unique_id = "imtest-order-" + tag + "-"
+		const std::string client_message_id = "imtest-order-" + tag + "-"
 			+ std::to_string(s.uid) + "-" + buf;
-		const std::string body = BuildTextReq(s.uid, s.peer, THREAD_ID,
-			"m" + std::to_string(i), unique_id);
+		const std::string body = BuildTextReq(s.peer, THREAD_ID,
+			"m" + std::to_string(i), client_message_id);
 		if (!s.client->Send(ID_TEXT_CHAT_MSG_REQ, body)) { s.ok = false; return; }
 	}
 }
@@ -653,8 +650,8 @@ bool ScenarioProbeCleanup() {
 		std::printf("[probe] redis connect failed\n"); clean = false;
 	}
 	if (mysql.connected()) {
-		const long long rows = mysql.CountByUniqueIdLike("imtest-%");
-		std::printf("[probe] chat_message rows with unique_id LIKE 'imtest-%%': %lld\n", rows);
+		const long long rows = mysql.CountByClientMessageIdLike("imtest-%");
+		std::printf("[probe] chat_messages rows with client_message_id LIKE 'imtest-%%': %lld\n", rows);
 		if (rows != 0) clean = false;
 	}
 	if (redis.connected()) {
@@ -710,13 +707,13 @@ bool ScenarioDedup() {
 		Fail("dedup: login sender", "gate/chat login failed"); cleanup(); return false;
 	}
 
-	// --- Assertion A: identical (sender_id, unique_id) sent twice (pipelined) ->
+	// --- Assertion A: identical (sender_user_id, client_message_id) sent twice (pipelined) ->
 	//     two 1302 with the SAME message_id, exactly one DB row and one sequence.
 	{
 		const std::string uid1 = "imtest-dedup-same-" + tag;
-		const std::string body = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+		const std::string body = BuildTextReq(RECEIVER_UID, THREAD_ID,
 			"hello-dedup", uid1);
-		const std::uint64_t head_before = mysql.LastRecvSeq(RECEIVER_UID);
+		const std::uint64_t head_before = mysql.LastEventSeq(RECEIVER_UID);
 		// Pipeline two requests before reading either: wire-level concurrency.
 		bool s1 = c.Send(ID_TEXT_CHAT_MSG_REQ, body);
 		bool s2 = c.Send(ID_TEXT_CHAT_MSG_REQ, body);
@@ -736,12 +733,12 @@ bool ScenarioDedup() {
 		Check(mid1 > 0 && mid1 == mid2, "dedup: identical message_id returned",
 			("mid1=" + std::to_string(mid1) + " mid2=" + std::to_string(mid2)).c_str());
 
-		const long long rows = mysql.CountByUniqueId(uid1);
-		const std::uint64_t head_after = mysql.LastRecvSeq(RECEIVER_UID);
+		const long long rows = mysql.CountByClientMessageId(uid1);
+		const std::uint64_t head_after = mysql.LastEventSeq(RECEIVER_UID);
 		Check(rows == 1, "dedup: single DB row for identical re-send",
 			("rows=" + std::to_string(rows)).c_str());
 		Check(head_after == head_before + 1,
-			"dedup: duplicate retry consumes exactly one recv_seq",
+			"dedup: duplicate retry consumes exactly one event_seq",
 			("before=" + std::to_string(head_before) +
 			 " after=" + std::to_string(head_after)).c_str());
 		if (!(mid1 > 0 && mid1 == mid2 && rows == 1 &&
@@ -753,9 +750,9 @@ bool ScenarioDedup() {
 	//     row unchanged.
 	{
 		const std::string uid2 = "imtest-dedup-conflict-" + tag;
-		const std::uint64_t head_before = mysql.LastRecvSeq(RECEIVER_UID);
+		const std::uint64_t head_before = mysql.LastEventSeq(RECEIVER_UID);
 		// Establish the canonical row first (deterministic baseline).
-		const std::string body_orig = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+		const std::string body_orig = BuildTextReq(RECEIVER_UID, THREAD_ID,
 			"original-content", uid2);
 		bool so = c.Send(ID_TEXT_CHAT_MSG_REQ, body_orig);
 		Frame ro; bool go = c.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &ro);
@@ -764,36 +761,36 @@ bool ScenarioDedup() {
 			if (err_orig == 0) mid_orig = JsonIdStr(j, "message_id", -1); }
 		Check(so && go && err_orig == 0 && mid_orig > 0, "dedup: establish baseline row",
 			("err=" + std::to_string(err_orig) + " mid=" + std::to_string(mid_orig)).c_str());
-		const std::uint64_t head_after_baseline = mysql.LastRecvSeq(RECEIVER_UID);
+		const std::uint64_t head_after_baseline = mysql.LastEventSeq(RECEIVER_UID);
 
 		// Capture the baseline content straight from MySQL (the durable truth).
 		std::string baseline_content;
-		{ auto rows = mysql.QueryByUniqueId(SENDER_UID, uid2);
-		  if (!rows.empty()) baseline_content = rows[0].content; }
+		{ auto rows = mysql.QueryByClientMessageId(SENDER_UID, uid2);
+		  if (!rows.empty()) baseline_content = rows[0].text_content; }
 
 		// Now send the same key with DIFFERENT content -> expect conflict.
-		const std::string body_diff = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+		const std::string body_diff = BuildTextReq(RECEIVER_UID, THREAD_ID,
 			"DIFFERENT-content", uid2);
 		c.Send(ID_TEXT_CHAT_MSG_REQ, body_diff);
 		Frame rd; bool gd = c.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &rd);
 		int err_diff = -1;
 		if (gd) { auto j = ParseJson(rd.body); err_diff = j.value("error", -1); }
-		const std::uint64_t head_after_conflict = mysql.LastRecvSeq(RECEIVER_UID);
+		const std::uint64_t head_after_conflict = mysql.LastEventSeq(RECEIVER_UID);
 		Check(gd && err_diff == ERR_MESSAGE_CONFLICT, "dedup: conflict returns MESSAGE_CONFLICT",
 			("err=" + std::to_string(err_diff)).c_str());
 		Check(head_after_baseline == head_before + 1 &&
 		      head_after_conflict == head_after_baseline,
-			"dedup: conflict rollback leaves no recv_seq hole",
+			"dedup: conflict rollback leaves no event_seq hole",
 			("before=" + std::to_string(head_before) +
 			 " baseline=" + std::to_string(head_after_baseline) +
 			 " conflict=" + std::to_string(head_after_conflict)).c_str());
 
 		// Original row unchanged: still exactly one row, content == baseline.
-		const long long rows2 = mysql.CountByUniqueId(uid2);
+		const long long rows2 = mysql.CountByClientMessageId(uid2);
 		std::string after_content;
 		std::int64_t after_mid = -1;
-		{ auto rows = mysql.QueryByUniqueId(SENDER_UID, uid2);
-		  if (!rows.empty()) { after_content = rows[0].content; after_mid = rows[0].message_id; } }
+		{ auto rows = mysql.QueryByClientMessageId(SENDER_UID, uid2);
+		  if (!rows.empty()) { after_content = rows[0].text_content; after_mid = rows[0].message_id; } }
 		Check(rows2 == 1 && after_content == baseline_content && after_mid == mid_orig,
 			"dedup: original row unchanged after conflict",
 			("rows=" + std::to_string(rows2) + " content_same=" +
@@ -822,333 +819,221 @@ bool ScenarioFriendWorkflow() {
 	ProcessManager pm;
 	Redis redis;
 	Mysql mysql;
-	FriendPairState original_pair;
-	bool pair_snapshot = false;
-	bool all_ok = true;
+	FriendshipState originalFriendship;
+	bool friendshipSnapshotted = false;
+	bool allOk = true;
 	const std::string tag = RunTag();
 
-	auto expect = [&](bool condition, const std::string& name, const std::string& detail) {
-		if (!Check(condition, name, detail)) all_ok = false;
+	auto expect = [&](bool condition, const std::string& name,
+		const std::string& detail) {
+		if (!Check(condition, name, detail)) allOk = false;
 	};
-	auto cleanup = [&] {
-		CleanupFootprint(redis, mysql);
-		if (pair_snapshot &&
-			!mysql.RestoreFriendPair(SENDER_UID, RECEIVER_UID, original_pair)) {
-			Fail("friend-workflow: restore fixture friendship", "restore failed");
-			all_ok = false;
-		}
-	};
-	auto exchange = [](TcpClient& client, short request_id, short response_id,
-	                  const std::string& body, json& response) {
+	auto exchange = [](TcpClient& client, short requestId, short responseId,
+		const std::string& body, json& response) {
 		Frame frame;
-		if (!client.Send(request_id, body) || !client.Wait(response_id, 10000, &frame)) {
-			return false;
-		}
+		if (!client.Send(requestId, body)
+			|| !client.Wait(responseId, 10000, &frame)) return false;
 		response = ParseJson(frame.body);
 		return response.is_object();
 	};
-	auto wait_notify = [](TcpClient& client, json& notification) {
+	auto waitNotify = [](TcpClient& client, json& notification) {
 		Frame frame;
 		if (!client.Wait(ID_NOTIFY_USER_MESSAGE, 10000, &frame)) return false;
 		notification = ParseJson(frame.body);
 		return notification.is_object();
 	};
-	auto error_of = [](const json& response) {
-		return response.is_object() ? response.value("error", -1) : -1;
+	auto cleanup = [&] {
+		CleanupFootprint(redis, mysql);
+		if (friendshipSnapshotted && !mysql.RestoreFriendship(
+			SENDER_UID, RECEIVER_UID, originalFriendship)) {
+			Fail("friend-workflow: restore fixture friendship", "restore failed");
+			allOk = false;
+		}
 	};
 
-	if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)) {
-		Fail("friend-workflow: connect Redis", "redis connect failed");
-		return false;
-	}
-	if (!mysql.Connect(MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWD, MYSQL_SCHEMA)) {
-		Fail("friend-workflow: connect MySQL", "mysql connect failed");
+	if (!redis.Connect(REDIS_HOST, REDIS_PORT, REDIS_PASSWD)
+		|| !mysql.Connect(MYSQL_HOST, MYSQL_PORT, MYSQL_USER,
+			MYSQL_PASSWD, MYSQL_SCHEMA)) {
+		Fail("friend-workflow: connect dependencies", "connection failed");
 		return false;
 	}
 	CleanupFootprint(redis, mysql);
-	if (!mysql.SnapshotFriendPair(SENDER_UID, RECEIVER_UID, original_pair)) {
+	if (!mysql.SnapshotFriendship(
+		SENDER_UID, RECEIVER_UID, originalFriendship)) {
 		Fail("friend-workflow: snapshot fixture friendship", "snapshot failed");
 		return false;
 	}
-	pair_snapshot = true;
-	if (!mysql.RemoveFriendPair(SENDER_UID, RECEIVER_UID)) {
+	friendshipSnapshotted = true;
+	if (!mysql.RemoveFriendship(SENDER_UID, RECEIVER_UID)) {
 		Fail("friend-workflow: remove fixture friendship", "delete failed");
 		cleanup();
 		return false;
 	}
-
 	if (!pm.Start({ "StatusServer", { "StatusServer", "StatusServer.exe" },
-		MakeStatusIni(), STATUS_GRPC_PORT }, 15000) ||
-		!pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
-		MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
-		CHAT1_TCP_PORT }, 15000)) {
+		MakeStatusIni(), STATUS_GRPC_PORT }, 15000)
+		|| !pm.Start({ "chatserver1", { "chatserver1", "ChatServer.exe" },
+			MakeChatIni("chatserver1", CHAT1_TCP_PORT, CHAT1_GRPC_PORT, 4),
+			CHAT1_TCP_PORT }, 15000)) {
 		Fail("friend-workflow: start servers", "ready timeout");
 		pm.StopAll();
 		cleanup();
 		return false;
 	}
 
-	TcpClient applicant;
-	TcpClient receiver;
-	if (!LoginUser(applicant, SENDER_UID).ok || !LoginUser(receiver, RECEIVER_UID).ok) {
+	TcpClient requester;
+	TcpClient target;
+	if (!LoginUser(requester, SENDER_UID).ok
+		|| !LoginUser(target, RECEIVER_UID).ok) {
 		Fail("friend-workflow: login users", "chat login failed");
-		applicant.Close();
-		receiver.Close();
-		pm.StopAll();
-		cleanup();
+		requester.Close(); target.Close(); pm.StopAll(); cleanup();
 		return false;
 	}
 
-	const std::string reject_unique = "imtest-friend-reject-" + tag;
-	const auto receiver_before = mysql.LastRecvSeq(RECEIVER_UID);
-	json apply_rsp;
-	const bool apply_ok = exchange(applicant, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
-		BuildFriendApplyReq(RECEIVER_UID, "friend request", "applicant remark",
-			reject_unique), apply_rsp);
-	const auto rejected_apply_id = JsonIdStr(apply_rsp, "message_id", 0);
-	const auto rejected_apply_seq = JsonIdStr(apply_rsp, "recv_seq", 0);
-	expect(apply_ok && apply_rsp.value("error", -1) == ERR_SUCCESS &&
-		rejected_apply_id > 0 && rejected_apply_seq > 0 &&
-		apply_rsp.value("msg_type", -1) == MSG_TYPE_FRIEND_APPLY &&
-		apply_rsp.value("business_status", -1) == BUSINESS_PENDING &&
-		mysql.LastRecvSeq(RECEIVER_UID) == receiver_before + 1,
-		"friend-workflow: application stored in receiver stream",
-		"error=" + std::to_string(error_of(apply_rsp)));
-
-	json apply_notify;
-	const bool apply_notified = wait_notify(receiver, apply_notify);
-	expect(apply_notified && JsonIdStr(apply_notify, "message_id", 0) == rejected_apply_id &&
-		JsonIdStr(apply_notify, "recv_seq", 0) == rejected_apply_seq &&
-		apply_notify.value("msg_type", -1) == MSG_TYPE_FRIEND_APPLY,
+	const std::string rejectedClientId = "imtest-friend-reject-" + tag;
+	const std::uint64_t targetHead = mysql.LastEventSeq(RECEIVER_UID);
+	json applyResponse;
+	const bool applyOk = exchange(requester, ID_ADD_FRIEND_REQ,
+		ID_ADD_FRIEND_RSP,
+		BuildFriendApplyReq(RECEIVER_UID, "friend request", rejectedClientId),
+		applyResponse);
+	const std::int64_t rejectedRequestId =
+		JsonIdStr(applyResponse, "friend_request_id", 0);
+	const std::uint64_t applySeq = static_cast<std::uint64_t>(
+		JsonIdStr(applyResponse, "event_seq", 0));
+	expect(applyOk && applyResponse.value("error", -1) == ERR_SUCCESS
+		&& rejectedRequestId > 0 && applySeq > 0
+		&& applyResponse.value("event_type", -1) == MSG_TYPE_FRIEND_APPLY
+		&& applyResponse.value("status", -1) == FRIEND_REQUEST_PENDING
+		&& mysql.LastEventSeq(RECEIVER_UID) == targetHead + 1,
+		"friend-workflow: application creates one event",
+		"friend_request_id=" + std::to_string(rejectedRequestId));
+	json applyNotification;
+	expect(waitNotify(target, applyNotification)
+		&& JsonIdStr(applyNotification, "friend_request_id", 0)
+			== rejectedRequestId
+		&& JsonIdStr(applyNotification, "event_seq", 0)
+			== static_cast<std::int64_t>(applySeq)
+		&& applyNotification.value("event_type", -1) == MSG_TYPE_FRIEND_APPLY,
 		"friend-workflow: application delivered through 1701",
-		"message_id=" + std::to_string(JsonIdStr(apply_notify, "message_id", 0)));
+		"event_seq=" + std::to_string(applySeq));
 
-	const auto duplicate_head = mysql.LastRecvSeq(RECEIVER_UID);
-	json duplicate_apply_rsp;
-	const bool duplicate_apply_ok = exchange(applicant, ID_ADD_FRIEND_REQ,
-		ID_ADD_FRIEND_RSP,
-		BuildFriendApplyReq(RECEIVER_UID, "friend request", "applicant remark",
-			reject_unique), duplicate_apply_rsp);
-	expect(duplicate_apply_ok && duplicate_apply_rsp.value("error", -1) == ERR_SUCCESS &&
-		JsonIdStr(duplicate_apply_rsp, "message_id", 0) == rejected_apply_id &&
-		mysql.LastRecvSeq(RECEIVER_UID) == duplicate_head,
-		"friend-workflow: duplicate application reuses id and sequence",
-		"head=" + std::to_string(mysql.LastRecvSeq(RECEIVER_UID)));
-	json duplicate_apply_notify;
-	expect(wait_notify(receiver, duplicate_apply_notify) &&
-		JsonIdStr(duplicate_apply_notify, "message_id", 0) == rejected_apply_id,
-		"friend-workflow: duplicate pending application may be repushed",
-		"message_id=" + std::to_string(
-			JsonIdStr(duplicate_apply_notify, "message_id", 0)));
+	const std::uint64_t duplicateHead = mysql.LastEventSeq(RECEIVER_UID);
+	json duplicateResponse;
+	expect(exchange(requester, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
+		BuildFriendApplyReq(RECEIVER_UID, "friend request", rejectedClientId),
+		duplicateResponse)
+		&& duplicateResponse.value("error", -1) == ERR_SUCCESS
+		&& JsonIdStr(duplicateResponse, "friend_request_id", 0)
+			== rejectedRequestId
+		&& mysql.LastEventSeq(RECEIVER_UID) == duplicateHead,
+		"friend-workflow: duplicate application is idempotent",
+		"last_event_seq=" + std::to_string(mysql.LastEventSeq(RECEIVER_UID)));
 
-	json forbidden_rsp;
-	const bool forbidden_ok = exchange(applicant, ID_HANDLE_FRIEND_REQ,
-		ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(rejected_apply_id, "reject", std::string(), "forged"),
-		forbidden_rsp);
-	expect(forbidden_ok && forbidden_rsp.value("error", -1) ==
-		ERR_FRIEND_REQUEST_NOT_FOUND,
-		"friend-workflow: applicant cannot handle own application",
-		"error=" + std::to_string(error_of(forbidden_rsp)));
+	json forbiddenResponse;
+	expect(exchange(requester, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(rejectedRequestId, "reject"), forbiddenResponse)
+		&& forbiddenResponse.value("error", -1) == ERR_FRIEND_REQUEST_NOT_FOUND,
+		"friend-workflow: requester cannot handle own application",
+		"error=" + std::to_string(forbiddenResponse.value("error", -1)));
 
-	const auto applicant_before_reject = mysql.LastRecvSeq(SENDER_UID);
-	json reject_rsp;
-	const bool reject_ok = exchange(receiver, ID_HANDLE_FRIEND_REQ,
-		ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(rejected_apply_id, "reject", std::string(), "not now"),
-		reject_rsp);
-	const auto reject_result_id = JsonIdStr(reject_rsp, "message_id", 0);
-	expect(reject_ok && reject_rsp.value("error", -1) == ERR_SUCCESS &&
-		reject_rsp.value("msg_type", -1) == MSG_TYPE_FRIEND_REJECT &&
-		reject_rsp.value("business_status", -1) == BUSINESS_REJECTED &&
-		JsonIdStr(reject_rsp, "related_message_id", 0) == rejected_apply_id &&
-		JsonIdStr(reject_rsp, "recv_seq", 0) > 0 &&
-		mysql.LastRecvSeq(SENDER_UID) == applicant_before_reject + 1,
-		"friend-workflow: reject creates one result message",
-		"error=" + std::to_string(error_of(reject_rsp)));
-	auto rejected_application = mysql.QueryByMessageId(rejected_apply_id);
-	expect(rejected_application.size() == 1 &&
-		rejected_application[0].business_status == BUSINESS_REJECTED,
-		"friend-workflow: rejected application status persisted",
-		"rows=" + std::to_string(rejected_application.size()));
-	json reject_notify;
-	expect(wait_notify(applicant, reject_notify) &&
-		JsonIdStr(reject_notify, "message_id", 0) == reject_result_id &&
-		reject_notify.value("msg_type", -1) == MSG_TYPE_FRIEND_REJECT,
+	const std::uint64_t requesterHead = mysql.LastEventSeq(SENDER_UID);
+	json rejectResponse;
+	expect(exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(rejectedRequestId, "reject"), rejectResponse)
+		&& rejectResponse.value("error", -1) == ERR_SUCCESS
+		&& JsonIdStr(rejectResponse, "friend_request_id", 0) == rejectedRequestId
+		&& rejectResponse.value("event_type", -1) == MSG_TYPE_FRIEND_REJECT
+		&& rejectResponse.value("status", -1) == FRIEND_REQUEST_REJECTED
+		&& mysql.LastEventSeq(SENDER_UID) == requesterHead + 1,
+		"friend-workflow: reject updates the request and emits one event",
+		"event_seq=" + std::to_string(JsonIdStr(rejectResponse, "event_seq", 0)));
+	json rejectNotification;
+	expect(waitNotify(requester, rejectNotification)
+		&& JsonIdStr(rejectNotification, "friend_request_id", 0)
+			== rejectedRequestId
+		&& rejectNotification.value("event_type", -1) == MSG_TYPE_FRIEND_REJECT,
 		"friend-workflow: reject delivered through 1701",
-		"message_id=" + std::to_string(JsonIdStr(reject_notify, "message_id", 0)));
+		"event_seq=" + std::to_string(JsonIdStr(rejectResponse, "event_seq", 0)));
 
-	const auto reject_retry_head = mysql.LastRecvSeq(SENDER_UID);
-	json reject_retry_rsp;
-	const bool reject_retry_ok = exchange(receiver, ID_HANDLE_FRIEND_REQ,
-		ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(rejected_apply_id, "reject", std::string(), "not now"),
-		reject_retry_rsp);
-	expect(reject_retry_ok && reject_retry_rsp.value("error", -1) == ERR_SUCCESS &&
-		JsonIdStr(reject_retry_rsp, "message_id", 0) == reject_result_id &&
-		mysql.LastRecvSeq(SENDER_UID) == reject_retry_head,
-		"friend-workflow: duplicate reject returns original result",
-		"message_id=" + std::to_string(JsonIdStr(reject_retry_rsp, "message_id", 0)));
-	json reject_retry_notify;
-	wait_notify(applicant, reject_retry_notify);
-
-	json opposite_rsp;
-	const bool opposite_ok = exchange(receiver, ID_HANDLE_FRIEND_REQ,
-		ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(rejected_apply_id, "accept", "late accept"), opposite_rsp);
-	expect(opposite_ok && opposite_rsp.value("error", -1) == ERR_FRIEND_REQUEST_HANDLED,
+	const std::uint64_t rejectRetryHead = mysql.LastEventSeq(SENDER_UID);
+	json retryResponse;
+	expect(exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(rejectedRequestId, "reject"), retryResponse)
+		&& retryResponse.value("error", -1) == ERR_SUCCESS
+		&& mysql.LastEventSeq(SENDER_UID) == rejectRetryHead,
+		"friend-workflow: duplicate reject is idempotent",
+		"last_event_seq=" + std::to_string(mysql.LastEventSeq(SENDER_UID)));
+	json oppositeResponse;
+	expect(exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(rejectedRequestId, "accept"), oppositeResponse)
+		&& oppositeResponse.value("error", -1) == ERR_FRIEND_REQUEST_HANDLED,
 		"friend-workflow: opposite action is rejected",
-		"error=" + std::to_string(error_of(opposite_rsp)));
+		"error=" + std::to_string(oppositeResponse.value("error", -1)));
 
-	const std::string forward_unique = "imtest-friend-forward-" + tag;
-	json forward_rsp;
-	const bool forward_ok = exchange(applicant, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
-		BuildFriendApplyReq(RECEIVER_UID, "try again", "forward requester remark",
-			forward_unique), forward_rsp);
-	const auto forward_apply_id = JsonIdStr(forward_rsp, "message_id", 0);
-	expect(forward_ok && forward_rsp.value("error", -1) == ERR_SUCCESS &&
-		forward_apply_id > 0 && forward_apply_id != rejected_apply_id,
+	const std::string acceptedClientId = "imtest-friend-accept-" + tag;
+	json secondApplyResponse;
+	expect(exchange(requester, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
+		BuildFriendApplyReq(RECEIVER_UID, "try again", acceptedClientId),
+		secondApplyResponse)
+		&& secondApplyResponse.value("error", -1) == ERR_SUCCESS,
 		"friend-workflow: rejection permits a new application",
-		"message_id=" + std::to_string(forward_apply_id));
-	json forward_notify;
-	wait_notify(receiver, forward_notify);
+		"error=" + std::to_string(secondApplyResponse.value("error", -1)));
+	const std::int64_t acceptedRequestId =
+		JsonIdStr(secondApplyResponse, "friend_request_id", 0);
+	json ignoredNotification;
+	waitNotify(target, ignoredNotification);
 
-	const std::string reverse_unique = "imtest-friend-reverse-" + tag;
-	json reverse_rsp;
-	const bool reverse_ok = exchange(receiver, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
-		BuildFriendApplyReq(SENDER_UID, "reverse request", "reverse requester remark",
-			reverse_unique), reverse_rsp);
-	const auto reverse_apply_id = JsonIdStr(reverse_rsp, "message_id", 0);
-	expect(reverse_ok && reverse_rsp.value("error", -1) == ERR_SUCCESS &&
-		reverse_apply_id > 0 && reverse_apply_id != forward_apply_id,
-		"friend-workflow: opposite directions may both be pending",
-		"message_id=" + std::to_string(reverse_apply_id));
-	json reverse_notify;
-	wait_notify(applicant, reverse_notify);
-
-	const auto accept_head = mysql.LastRecvSeq(RECEIVER_UID);
-	const std::string accept_body = BuildFriendHandleReq(
-		reverse_apply_id, "accept", "accepted contact remark");
-	const std::string competing_reject_body = BuildFriendHandleReq(
-		reverse_apply_id, "reject", std::string(), "too late");
-	const bool accept_sent = applicant.Send(ID_HANDLE_FRIEND_REQ, accept_body);
-	const bool reject_sent = applicant.Send(ID_HANDLE_FRIEND_REQ, competing_reject_body);
-	Frame race_frame1;
-	Frame race_frame2;
-	const bool race_got1 = applicant.Wait(ID_HANDLE_FRIEND_RSP, 10000, &race_frame1);
-	const bool race_got2 = applicant.Wait(ID_HANDLE_FRIEND_RSP, 10000, &race_frame2);
-	json race_rsp1 = race_got1 ? ParseJson(race_frame1.body) : json();
-	json race_rsp2 = race_got2 ? ParseJson(race_frame2.body) : json();
-	json accept_rsp;
-	int race_success = 0;
-	int race_handled = 0;
-	for (const auto& response : { race_rsp1, race_rsp2 }) {
-		if (!response.is_object()) {
-			continue;
-		} else if (response.value("error", -1) == ERR_SUCCESS) {
-			++race_success;
-			accept_rsp = response;
-		} else if (response.value("error", -1) == ERR_FRIEND_REQUEST_HANDLED) {
-			++race_handled;
-		}
-	}
-	const auto accept_result_id = JsonIdStr(accept_rsp, "message_id", 0);
-	expect(accept_sent && reject_sent && race_got1 && race_got2 &&
-		race_success == 1 && race_handled == 1 && accept_result_id > 0 &&
-		accept_rsp.value("msg_type", -1) == MSG_TYPE_FRIEND_ACCEPT &&
-		accept_rsp.value("business_status", -1) == BUSINESS_ACCEPTED &&
-		JsonIdStr(accept_rsp, "related_message_id", 0) == reverse_apply_id &&
-		JsonIdStr(accept_rsp, "thread_id", 0) == THREAD_ID &&
-		mysql.LastRecvSeq(RECEIVER_UID) == accept_head + 1,
-		"friend-workflow: competing accept/reject creates one accept result",
-		"success=" + std::to_string(race_success) +
-			" handled=" + std::to_string(race_handled));
-
-	json accept_notify;
-	expect(wait_notify(receiver, accept_notify) &&
-		JsonIdStr(accept_notify, "message_id", 0) == accept_result_id &&
-		accept_notify.value("msg_type", -1) == MSG_TYPE_FRIEND_ACCEPT,
+	const std::uint64_t beforeAccept = mysql.LastEventSeq(SENDER_UID);
+	json acceptResponse;
+	expect(exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(acceptedRequestId, "accept"), acceptResponse)
+		&& acceptResponse.value("error", -1) == ERR_SUCCESS
+		&& acceptResponse.value("event_type", -1) == MSG_TYPE_FRIEND_ACCEPT
+		&& acceptResponse.value("status", -1) == FRIEND_REQUEST_ACCEPTED
+		&& JsonIdStr(acceptResponse, "thread_id", 0) > 0
+		&& mysql.LastEventSeq(SENDER_UID) == beforeAccept + 1
+		&& mysql.CountFriendship(SENDER_UID, RECEIVER_UID) == 1,
+		"friend-workflow: accept creates one friendship and private chat",
+		"thread_id=" + std::to_string(JsonIdStr(acceptResponse, "thread_id", 0)));
+	json acceptNotification;
+	expect(waitNotify(requester, acceptNotification)
+		&& JsonIdStr(acceptNotification, "friend_request_id", 0)
+			== acceptedRequestId
+		&& acceptNotification.value("event_type", -1) == MSG_TYPE_FRIEND_ACCEPT,
 		"friend-workflow: accept delivered through 1701",
-		"message_id=" + std::to_string(JsonIdStr(accept_notify, "message_id", 0)));
+		"friend_request_id=" + std::to_string(acceptedRequestId));
 
-	const auto accept_retry_head = mysql.LastRecvSeq(RECEIVER_UID);
-	json accept_retry_rsp;
-	const bool accept_retry_ok = exchange(applicant, ID_HANDLE_FRIEND_REQ,
-		ID_HANDLE_FRIEND_RSP, accept_body, accept_retry_rsp);
-	expect(accept_retry_ok && accept_retry_rsp.value("error", -1) == ERR_SUCCESS &&
-		JsonIdStr(accept_retry_rsp, "message_id", 0) == accept_result_id &&
-		mysql.LastRecvSeq(RECEIVER_UID) == accept_retry_head,
-		"friend-workflow: duplicate accept returns original result",
-		"message_id=" + std::to_string(JsonIdStr(accept_retry_rsp, "message_id", 0)));
-	json accept_retry_notify;
-	wait_notify(receiver, accept_retry_notify);
+	json alreadyFriendsResponse;
+	expect(exchange(requester, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
+		BuildFriendApplyReq(RECEIVER_UID, "again",
+			"imtest-friend-already-" + tag), alreadyFriendsResponse)
+		&& alreadyFriendsResponse.value("error", -1) == ERR_ALREADY_FRIENDS,
+		"friend-workflow: friends cannot create another request",
+		"error=" + std::to_string(alreadyFriendsResponse.value("error", -1)));
 
-	auto forward_application = mysql.QueryByMessageId(forward_apply_id);
-	auto reverse_application = mysql.QueryByMessageId(reverse_apply_id);
-	expect(forward_application.size() == 1 && reverse_application.size() == 1 &&
-		forward_application[0].business_status == BUSINESS_ACCEPTED &&
-		reverse_application[0].business_status == BUSINESS_ACCEPTED,
-		"friend-workflow: accepting one direction closes both pending applications",
-		"forward_rows=" + std::to_string(forward_application.size()) +
-			" reverse_rows=" + std::to_string(reverse_application.size()));
-	expect(mysql.CountFriendDirections(SENDER_UID, RECEIVER_UID) == 2,
-		"friend-workflow: accept creates bilateral friendship", "direction_count=" +
-			std::to_string(mysql.CountFriendDirections(SENDER_UID, RECEIVER_UID)));
-	FriendPairState accepted_pair;
-	const bool accepted_pair_ok = mysql.SnapshotFriendPair(
-		SENDER_UID, RECEIVER_UID, accepted_pair);
-	expect(accepted_pair_ok && accepted_pair.first_remark == "accepted contact remark" &&
-		accepted_pair.second_remark == "reverse requester remark",
-		"friend-workflow: both contact remarks use authoritative request fields",
-		"first=" + accepted_pair.first_remark + " second=" + accepted_pair.second_remark);
-
-	json closed_forward_rsp;
-	const bool closed_forward_ok = exchange(receiver, ID_HANDLE_FRIEND_REQ,
-		ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(forward_apply_id, "accept", "unused"), closed_forward_rsp);
-	expect(closed_forward_ok &&
-		closed_forward_rsp.value("error", -1) == ERR_FRIEND_REQUEST_HANDLED,
-		"friend-workflow: other closed application cannot create another result",
-		"error=" + std::to_string(error_of(closed_forward_rsp)));
-
-	json already_friends_rsp;
-	const bool already_friends_ok = exchange(applicant, ID_ADD_FRIEND_REQ,
-		ID_ADD_FRIEND_RSP,
-		BuildFriendApplyReq(RECEIVER_UID, "again", "again",
-			"imtest-friend-already-" + tag), already_friends_rsp);
-	expect(already_friends_ok &&
-		already_friends_rsp.value("error", -1) == ERR_ALREADY_FRIENDS,
-		"friend-workflow: friends cannot create a new pending application",
-		"error=" + std::to_string(error_of(already_friends_rsp)));
-
-	applicant.Close();
-	receiver.Close();
-	pm.StopAll();
-	cleanup();
-	return all_ok;
+	requester.Close(); target.Close(); pm.StopAll(); cleanup();
+	return allOk;
 }
-
 // ---------------------------------------------------------------------------
 // Shared helpers for Verification.6 second half (offline / pull-
 // bytes / cross-server / resource-offline)
 // ---------------------------------------------------------------------------
 
 // Build a 1503 create-resource-message body (图片/文件统一协议)。
-// thread_id/content_size/message_id 按协议字符串化；msg_type 1=图片 3=文件。
-static std::string BuildResourceCreateReq(int fromuid, int touid, std::int64_t thread_id,
-	                                  const std::string& unique_id, int msg_type,
-	                                  const std::string& file_name, long long content_size,
-	                                  const std::string& content_hash,
-	                                  const std::string& mime_type) {
+// thread_id/file_size_bytes/message_id 按协议字符串化；message_type 1=图片 3=文件。
+static std::string BuildResourceCreateReq(int target_user_id,
+	std::int64_t thread_id, const std::string& client_message_id,
+	int message_type, const std::string& original_file_name,
+	long long file_size_bytes, const std::string& sha256,
+	const std::string& mime_type) {
 	json j;
-	j["fromuid"] = fromuid;
-	j["touid"]   = touid;
+	j["target_user_id"] = target_user_id;
 	j["thread_id"] = ToIdStr(thread_id);
-	j["unique_id"] = unique_id;
-	j["msg_type"]  = msg_type;
-	j["file_name"] = file_name;
-	j["content_size"] = std::to_string(content_size);
-	j["content_hash"] = content_hash;
+	j["client_message_id"] = client_message_id;
+	j["message_type"]  = message_type;
+	j["original_file_name"] = original_file_name;
+	j["file_size_bytes"] = std::to_string(file_size_bytes);
+	j["sha256"] = sha256;
 	j["mime_type"] = mime_type;
 	return j.dump();
 }
@@ -1366,8 +1251,8 @@ private:
 // ---------------------------------------------------------------------------
 // offline (Verification.6)
 //
-// receiver 离线期间 sender 发 100 条，每条在写入事务中分配 recv_seq；receiver
-// 重连后经 1405/1406 按 recv_seq 升序补齐，每个 ID 只出现一次。
+// receiver 离线期间 sender 发 100 条，每条在写入事务中分配 event_seq；receiver
+// 重连后经 1405/1406 按 event_seq 升序补齐，每个 ID 只出现一次。
 // ---------------------------------------------------------------------------
 bool ScenarioOffline() {
 	std::printf("\n=== scenario: offline ===\n");
@@ -1429,7 +1314,7 @@ bool ScenarioOffline() {
 	for (int i = 0; i < MSG_COUNT; ++i) {
 		char buf[64]; std::snprintf(buf, sizeof(buf), "%03d", i);
 		const std::string uid_str = "imtest-offline-" + tag + "-" + buf;
-		const std::string body = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+		const std::string body = BuildTextReq(RECEIVER_UID, THREAD_ID,
 			"offline-" + std::to_string(i), uid_str);
 		if (!cS.Send(ID_TEXT_CHAT_MSG_REQ, body)) { send_ok = false; break; }
 	}
@@ -1449,17 +1334,17 @@ bool ScenarioOffline() {
 	// (1) MySQL: all 100 rows are visible and have receiver sequence numbers.
 	{
 		const std::string pattern = "imtest-offline-" + tag + "-%";
-		const long long total = mysql.CountByUniqueIdLike(pattern);
-		const long long visible = mysql.CountVisibleByUniqueIdLike(pattern);
+		const long long total = mysql.CountByClientMessageIdLike(pattern);
+		const long long visible = mysql.CountPublishedByClientMessageIdLike(pattern);
 		Check(total == MSG_COUNT && visible == MSG_COUNT,
 			"offline: MySQL has 100 sequenced messages",
 			("total=" + std::to_string(total) + " visible=" + std::to_string(visible)).c_str());
 		if (total != MSG_COUNT || visible != MSG_COUNT) all_ok = false;
 	}
 
-	// (2) chat_message receiver stream has exactly 100 rows after checkpoint.
+	// (2) chat_messages receiver stream has exactly 100 rows after checkpoint.
 	{
-		const auto rows = mysql.QueryRecvRows(RECEIVER_UID, checkpoint, 0);
+		const auto rows = mysql.QueryUserEvents(RECEIVER_UID, checkpoint, 0);
 		Check((int)rows.size() == MSG_COUNT,
 			"offline: receiver has 100 new stream rows after checkpoint",
 			("rows=" + std::to_string(rows.size())).c_str());
@@ -1472,7 +1357,7 @@ bool ScenarioOffline() {
 		Fail("offline: login receiver", "gate/chat login failed"); cS.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
-	// 分页同步：after_recv_seq=checkpoint，limit=30 强制多页。
+	// 分页同步：after_event_seq=checkpoint，limit=30 强制多页。
 	std::vector<std::int64_t> pulled_ids;
 	std::uint64_t cursor = checkpoint;
 	bool pull_ok = true;
@@ -1489,13 +1374,13 @@ bool ScenarioOffline() {
 			pull_ok = false; break;
 		}
 		for (const auto& m : msgs) {
-			if (m.recv_seq <= prev_seq && !pulled_ids.empty()) seq_increasing = false;
-			prev_seq = m.recv_seq;
+			if (m.event_seq <= prev_seq && !pulled_ids.empty()) seq_increasing = false;
+			prev_seq = m.event_seq;
 			pulled_ids.push_back(m.message_id);
 		}
-		// 非空页 next_recv_seq 应等于本页最后一条的 recv_seq。
-		if (!msgs.empty() && next_seq != msgs.back().recv_seq) cursor_consistent = false;
-		// 空页 next_recv_seq 应等于 after_recv_seq 且 has_more=false。
+		// 非空页 next_event_seq 应等于本页最后一条的 event_seq。
+		if (!msgs.empty() && next_seq != msgs.back().event_seq) cursor_consistent = false;
+		// 空页 next_event_seq 应等于 after_event_seq 且 has_more=false。
 		if (msgs.empty() && (next_seq != cursor || has_more)) cursor_consistent = false;
 		cursor = next_seq;
 		if (!has_more) break;
@@ -1515,7 +1400,7 @@ bool ScenarioOffline() {
 	if (!(pull_ok && no_dup && all_present)) all_ok = false;
 
 	Check(seq_increasing && cursor_consistent && pages >= 2,
-		"offline: recv_seq strictly increasing, next_recv_seq consistent",
+		"offline: event_seq strictly increasing, next_event_seq consistent",
 		("pages=" + std::to_string(pages) +
 		 " increasing=" + std::to_string(seq_increasing) +
 		 " consistent=" + std::to_string(cursor_consistent)).c_str());
@@ -1531,7 +1416,7 @@ bool ScenarioOffline() {
 // pull-bytes (Verification.6)
 //
 // 多页同步：制造超过一页的消息量（250 条，limit=100 → 3 页），逐页
-// after_recv_seq 推进；断言无遗漏无重复、recv_seq 严格递增、has_more 正确。
+// after_event_seq 推进；断言无遗漏无重复、event_seq 严格递增、has_more 正确。
 // ---------------------------------------------------------------------------
 bool ScenarioPullBytes() {
 	std::printf("\n=== scenario: pull-bytes ===\n");
@@ -1571,14 +1456,14 @@ bool ScenarioPullBytes() {
 	}
 
 	// 同步起点：发送前 receiver 的序号头。
-	const std::uint64_t checkpoint = mysql.LastRecvSeq(RECEIVER_UID);
+	const std::uint64_t checkpoint = mysql.LastEventSeq(RECEIVER_UID);
 
 	// Send MSG_COUNT messages to offline receiver.
 	const std::string pattern = "imtest-pullbytes-" + tag + "-%";
 	for (int i = 0; i < MSG_COUNT; ++i) {
 		char buf[64]; std::snprintf(buf, sizeof(buf), "%03d", i);
 		const std::string uid_str = "imtest-pullbytes-" + tag + "-" + buf;
-		std::string body = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+		std::string body = BuildTextReq(RECEIVER_UID, THREAD_ID,
 			"pullbytes-" + std::to_string(i), uid_str);
 		cS.Send(ID_TEXT_CHAT_MSG_REQ, body);
 	}
@@ -1619,8 +1504,8 @@ bool ScenarioPullBytes() {
 		const bool expect_more = ((int)all_pulled.size() + (int)msgs.size()) < MSG_COUNT;
 		if (has_more != expect_more) has_more_ok = false;
 		for (const auto& m : msgs) {
-			if (m.recv_seq <= prev_seq) seq_increasing = false;
-			prev_seq = m.recv_seq;
+			if (m.event_seq <= prev_seq) seq_increasing = false;
+			prev_seq = m.event_seq;
 			all_pulled.push_back(m.message_id);
 		}
 		cursor = next_seq;
@@ -1638,7 +1523,7 @@ bool ScenarioPullBytes() {
 	if (!pull_ok || (int)pulled_set.size() != MSG_COUNT) all_ok = false;
 
 	Check(seq_increasing && has_more_ok && pages == 3,
-		"pull-bytes: recv_seq strictly increasing across pages, has_more correct",
+		"pull-bytes: event_seq strictly increasing across pages, has_more correct",
 		("pages=" + std::to_string(pages) +
 		 " increasing=" + std::to_string(seq_increasing) +
 		 " has_more_ok=" + std::to_string(has_more_ok)).c_str());
@@ -1719,11 +1604,11 @@ bool ScenarioCrossServer() {
 	}
 
 	// 同步起点：发送前 receiver 的序号头。
-	const std::uint64_t checkpoint = mysql.LastRecvSeq(RECEIVER_UID);
+	const std::uint64_t checkpoint = mysql.LastEventSeq(RECEIVER_UID);
 
 	// Sender sends one message to receiver (cross-server via proxy → broken).
 	const std::string uid_str = "imtest-cross-" + tag;
-	std::string body = BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+	std::string body = BuildTextReq(RECEIVER_UID, THREAD_ID,
 		"cross-server-msg", uid_str);
 	auto t_start = std::chrono::steady_clock::now();
 	cS.Send(ID_TEXT_CHAT_MSG_REQ, body);
@@ -1763,14 +1648,14 @@ bool ScenarioCrossServer() {
 
 	// 数据库提交先于跨服 RPC；实时推送失败不影响消息进入 receiver 序号流。
 	{
-		auto rows = mysql.QueryByUniqueId(SENDER_UID, uid_str);
-		bool db_visible = rows.size() == 1 && rows[0].recv_seq > checkpoint;
-		Check(db_visible, "cross-server: committed message has recv_seq",
-			rows.empty() ? "no row" : ("recv_seq=" + std::to_string(rows[0].recv_seq)).c_str());
+		auto rows = mysql.QueryByClientMessageId(SENDER_UID, uid_str);
+		bool db_visible = rows.size() == 1 && rows[0].status == MESSAGE_PUBLISHED;
+		Check(db_visible, "cross-server: committed message is published",
+			rows.empty() ? "no row" : ("status=" + std::to_string(rows[0].status)).c_str());
 		if (!db_visible) all_ok = false;
 	}
 	{
-		const auto sync_rows = mysql.QueryRecvRows(RECEIVER_UID, checkpoint, 0);
+		const auto sync_rows = mysql.QueryUserEvents(RECEIVER_UID, checkpoint, 0);
 		bool sync_pending = false;
 		for (const auto& r : sync_rows) {
 			if (r.message_id == (std::uint64_t)sent_mid) { sync_pending = true; break; }
@@ -1834,9 +1719,9 @@ bool ScenarioCrossServer() {
 // ---------------------------------------------------------------------------
 // resource-offline（原 image-offline，统一资源协议改造）
 //
-// 走 ResourceServer 分片上传：创建（1503）后 resource_status=Uploading 的行绝不
-// 出现在增量同步流；分片收齐且整文件 SHA-256 校验通过后（1506 resource_status=1），
-// recv_seq 分配后，同步流出现 msg_type=PIC/content_hash 正确的消息。
+// 走 ResourceServer 分片上传：创建（1503）后 status=Uploading 的行绝不
+// 出现在增量同步流；分片收齐且整文件 SHA-256 校验通过后（1506 status=1），
+// event_seq 分配后，同步流出现 message_type=PIC/sha256 正确的消息。
 // ---------------------------------------------------------------------------
 bool ScenarioResourceOffline() {
 	std::printf("\n=== scenario: resource-offline ===\n");
@@ -1882,14 +1767,14 @@ bool ScenarioResourceOffline() {
 
 	// Step 1: send 1503 resource metadata to ChatServer.
 	const std::string uid_str = "imtest-res-" + tag;
-	const std::string file_name = "test_img_" + tag + ".png";
+	const std::string original_file_name = "test_img_" + tag + ".png";
 	const long long file_size = 70000;  // >2 片（32KiB），覆盖多分片路径
 	const std::string blob = MakeBlob(file_size);
-	const std::string content_hash = llfc::Sha256Hex(blob);
+	const std::string sha256 = llfc::Sha256Hex(blob);
 	// 同步起点：元数据写入前 receiver 的序号头。
-	const std::uint64_t checkpoint = mysql.LastRecvSeq(RECEIVER_UID);
-	std::string meta_body = BuildResourceCreateReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
-		uid_str, MSG_TYPE_PIC, file_name, file_size, content_hash, "image/png");
+	const std::uint64_t checkpoint = mysql.LastEventSeq(RECEIVER_UID);
+	std::string meta_body = BuildResourceCreateReq(RECEIVER_UID, THREAD_ID,
+		uid_str, MSG_TYPE_PIC, original_file_name, file_size, sha256, "image/png");
 	cS.Send(ID_CREATE_RESOURCE_MSG_REQ, meta_body);
 	Frame mrs; bool got_1504 = cS.Wait(ID_CREATE_RESOURCE_MSG_RSP, 10000, &mrs);
 	std::int64_t msg_id = -1;
@@ -1907,22 +1792,21 @@ bool ScenarioResourceOffline() {
 		cS.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
-	// Step 2: verify Uploading row has no recv_seq and is not visible to sync.
+	// Step 2: PENDING metadata has no user_event and is not visible to sync.
 	{
-		auto rows = mysql.QueryByMessageId(msg_id);
+		auto rows = mysql.QueryMessageById(msg_id);
 		bool is_uploading = !rows.empty() &&
-			rows[0].resource_status == RESOURCE_UPLOADING &&
-			rows[0].recv_seq == 0 &&
-			rows[0].msg_type == MSG_TYPE_PIC &&
-			rows[0].content_hash == content_hash;
+			rows[0].status == MESSAGE_PENDING &&
+			rows[0].message_type == MSG_TYPE_PIC &&
+			rows[0].sha256 == sha256;
 		Check(is_uploading, "resource-offline: row is Uploading/PIC with hash before upload",
 			rows.empty() ? "no row"
-				: ("rs=" + std::to_string(rows[0].resource_status)).c_str());
+				: ("rs=" + std::to_string(rows[0].status)).c_str());
 		if (!is_uploading) all_ok = false;
 	}
 	// 元数据阶段还没有为接收者分配序号。
 	{
-		const auto sync_rows = mysql.QueryRecvRows(RECEIVER_UID, checkpoint, 0);
+		const auto sync_rows = mysql.QueryUserEvents(RECEIVER_UID, checkpoint, 0);
 		bool absent = true;
 		for (const auto& r : sync_rows) {
 			if (r.message_id == (std::uint64_t)msg_id) { absent = false; break; }
@@ -1954,7 +1838,7 @@ bool ScenarioResourceOffline() {
 
 	// Step 3: connect to ResourceServer, authenticate (1501), then upload all chunks
 	// via 1505（offset/chunk_sha256/data）。最后一片收齐后服务端做整文件 SHA-256
-	// 校验并在同一事务中置 Ready、分配 recv_seq。
+	// 校验并在同一事务中置 Ready、分配 event_seq。
 	ResClient res;
 	if (!res.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
 		Fail("resource-offline: connect ResourceServer", "connect failed"); all_ok = false;
@@ -1965,7 +1849,7 @@ bool ScenarioResourceOffline() {
 		if (ra != ERR_SUCCESS) all_ok = false;
 	}
 	int final_rs = -1;
-	std::uint64_t final_recv_seq = 0;
+	std::uint64_t final_event_seq = 0;
 	for (long long off = 0; off < file_size; ) {
 		const long long n = (std::min<long long>)(file_size - off, 32768);
 		const std::string chunk = blob.substr(static_cast<std::size_t>(off),
@@ -1979,33 +1863,32 @@ bool ScenarioResourceOffline() {
 			final_rs = j.is_object() ? j.value("error", -1) : -3;
 			break;
 		}
-		final_rs = j.value("resource_status", -1);
-		if (j.contains("recv_seq")) {
-			final_recv_seq = static_cast<std::uint64_t>(JsonIdStr(j, "recv_seq", 0));
+		final_rs = j.value("status", -1);
+		if (j.contains("event_seq")) {
+			final_event_seq = static_cast<std::uint64_t>(JsonIdStr(j, "event_seq", 0));
 		}
 		off += n;
 	}
 	res.Close();
-	Check(final_rs == RESOURCE_READY,
-		"resource-offline: all chunks uploaded, last rsp resource_status=Ready",
+	Check(final_rs == MESSAGE_PUBLISHED,
+		"resource-offline: all chunks uploaded, last rsp status=Ready",
 		("rs=" + std::to_string(final_rs)).c_str());
-	if (final_rs != RESOURCE_READY) all_ok = false;
+	if (final_rs != MESSAGE_PUBLISHED) all_ok = false;
 
 	// Step 4: after upload, verify sync activation.
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	{
-		auto rows = mysql.QueryByMessageId(msg_id);
-		bool ready = !rows.empty() && rows[0].resource_status == RESOURCE_READY &&
-			rows[0].recv_seq > checkpoint && rows[0].recv_seq == final_recv_seq;
-		Check(ready, "resource-offline: resource_status migrated to Ready after upload",
+		auto rows = mysql.QueryMessageById(msg_id);
+		bool ready = !rows.empty() && rows[0].status == MESSAGE_PUBLISHED;
+		Check(ready, "resource-offline: status migrated to Ready after upload",
 			rows.empty() ? "no row"
-				: ("rs=" + std::to_string(rows[0].resource_status)).c_str());
+				: ("rs=" + std::to_string(rows[0].status)).c_str());
 		if (!ready) all_ok = false;
 	}
 	// 上传完成后 receiver stream 应出现该 message_id。
 	bool sync_row_present = false;
 	for (int poll = 0; poll < 50 && !sync_row_present; ++poll) {
-		const auto sync_rows = mysql.QueryRecvRows(RECEIVER_UID, cursor, 0);
+		const auto sync_rows = mysql.QueryUserEvents(RECEIVER_UID, cursor, 0);
 		for (const auto& r : sync_rows) {
 			if (r.message_id == (std::uint64_t)msg_id) { sync_row_present = true; break; }
 		}
@@ -2015,7 +1898,7 @@ bool ScenarioResourceOffline() {
 		sync_row_present ? "ok" : "absent after upload!");
 	if (!sync_row_present) all_ok = false;
 
-	// Step 5: receiver 再次同步 → 出现 PIC 消息且 content_size 正确。
+	// Step 5: receiver 再次同步 → 出现 PIC 消息且 file_size_bytes 正确。
 	bool got_pic = false;
 	long long pulled_size = -1;
 	{
@@ -2024,16 +1907,16 @@ bool ScenarioResourceOffline() {
 		bool has_more = false;
 		if (DoSyncPage(cR, RECEIVER_UID, cursor, 100, msgs, next_seq, has_more)) {
 			for (const auto& m : msgs) {
-				if (m.message_id == msg_id && m.msg_type == MSG_TYPE_PIC) {
+				if (m.message_id == msg_id && m.message_type == MSG_TYPE_PIC) {
 					got_pic = true;
-					pulled_size = ParseIdStr(m.content_size, -1);
+					pulled_size = ParseIdStr(m.file_size_bytes, -1);
 					break;
 				}
 			}
 		}
 	}
 	Check(got_pic && pulled_size == file_size,
-		"resource-offline: receiver synced PIC msg with correct content_size",
+		"resource-offline: receiver synced PIC msg with correct file_size_bytes",
 		("got_pic=" + std::to_string(got_pic) + " size=" + std::to_string(pulled_size)).c_str());
 	if (!(got_pic && pulled_size == file_size)) all_ok = false;
 
@@ -2384,10 +2267,10 @@ bool ScenarioChatFailover() {
 		sender.Close(); cleanup(); pm.StopAll(); return false;
 	}
 
-	const std::string unique_id = "imtest-failover-" + tag;
+	const std::string client_message_id = "imtest-failover-" + tag;
 	const std::string content = "message-during-chatserver-failure";
 	const std::string text_body = BuildTextReq(
-		message_sender_uid, failover_uid, THREAD_ID, content, unique_id);
+		failover_uid, THREAD_ID, content, client_message_id);
 	Frame sender_rsp;
 	json sender_envelope;
 	std::int64_t message_id = -1;
@@ -2402,7 +2285,7 @@ bool ScenarioChatFailover() {
 			sender_envelope = response_json;
 			message_id = JsonIdStr(sender_envelope, "message_id", -1);
 			sender_response_ok = message_id > 0 &&
-				sender_envelope.value("unique_id", "") == unique_id;
+				sender_envelope.value("client_message_id", "") == client_message_id;
 		}
 	}
 	Check(sender_response_ok, "chat-failover: sender receives persisted response during failure",
@@ -2410,20 +2293,20 @@ bool ScenarioChatFailover() {
 	if (!sender_response_ok) all_ok = false;
 
 	ChatMessageRow stored_message;
-	const auto pending_rows = mysql.QueryByUniqueId(message_sender_uid, unique_id);
+	const auto pending_rows = mysql.QueryByClientMessageId(message_sender_uid, client_message_id);
 	const bool mysql_visible = pending_rows.size() == 1 &&
 		pending_rows[0].message_id == message_id &&
-		pending_rows[0].recv_seq > checkpoint;
+		pending_rows[0].status == MESSAGE_PUBLISHED;
 	if (!pending_rows.empty()) stored_message = pending_rows[0];
 	Check(mysql_visible, "chat-failover: MySQL has exactly one sequenced row",
 		("rows=" + std::to_string(pending_rows.size()) +
 		 " message_id=" + std::to_string(message_id)).c_str());
 	if (!mysql_visible) all_ok = false;
 
-	// 故障期间的实时推送失败不影响可恢复性：recv_seq 与消息同事务落库。
+	// 故障期间的实时推送失败不影响可恢复性：event_seq 与消息同事务落库。
 	bool sync_row_present = false;
 	{
-		const auto sync_rows = mysql.QueryRecvRows(failover_uid, checkpoint, 0);
+		const auto sync_rows = mysql.QueryUserEvents(failover_uid, checkpoint, 0);
 		for (const auto& r : sync_rows) {
 			if (r.message_id == (std::uint64_t)message_id) { sync_row_present = true; break; }
 		}
@@ -2499,13 +2382,12 @@ bool ScenarioChatFailover() {
 
 	const bool envelope_preserved = recovered_message && mysql_visible &&
 		recovered_envelope.message_id == stored_message.message_id &&
-		recovered_envelope.unique_id == stored_message.unique_id &&
+		recovered_envelope.client_message_id == stored_message.client_message_id &&
 		recovered_envelope.thread_id == stored_message.thread_id &&
-		recovered_envelope.fromuid == stored_message.sender_id &&
-		recovered_envelope.touid == stored_message.recv_id &&
-		recovered_envelope.content == stored_message.content &&
-		!stored_message.chat_time.empty() &&
-		recovered_envelope.chat_time == stored_message.chat_time;
+		recovered_envelope.sender_user_id == stored_message.sender_user_id &&
+		recovered_envelope.text_content == stored_message.text_content &&
+		!stored_message.created_at.empty() &&
+		recovered_envelope.created_at == stored_message.created_at;
 	Check(envelope_preserved,
 		"chat-failover: recovered envelope preserves persisted message",
 		("recovered=" + std::to_string(recovered_message) +
@@ -2781,7 +2663,7 @@ bool ScenarioSimpleAuth() {
 // sync-bootstrap (增量同步 checkpoint)
 //
 // 先分页拉到当前序号头作为 checkpoint；checkpoint 之后产生的消息全部同步到、
-// 之前的不推；空页 next_recv_seq=after_recv_seq、has_more=false。
+// 之前的不推；空页 next_event_seq=after_event_seq、has_more=false。
 // ---------------------------------------------------------------------------
 bool ScenarioSyncBootstrap() {
 	std::printf("\n=== scenario: sync-bootstrap ===\n");
@@ -2825,8 +2707,8 @@ bool ScenarioSyncBootstrap() {
 	Check(boot_ok, "sync-bootstrap: paging to the head returns checkpoint", "bootstrap failed");
 	if (!boot_ok) { cleanup(); pm.StopAll(); return false; }
 	{
-		const std::uint64_t db_max = mysql.LastRecvSeq(RECEIVER_UID);
-		Check(checkpoint == db_max, "sync-bootstrap: checkpoint == DB last_recv_seq",
+		const std::uint64_t db_max = mysql.LastEventSeq(RECEIVER_UID);
+		Check(checkpoint == db_max, "sync-bootstrap: checkpoint == DB last_event_seq",
 			("checkpoint=" + std::to_string(checkpoint) +
 			 " db_max=" + std::to_string(db_max)).c_str());
 		if (checkpoint != db_max) all_ok = false;
@@ -2841,7 +2723,7 @@ bool ScenarioSyncBootstrap() {
 	bool send_ok = true;
 	for (int i = 0; i < MSG_COUNT; ++i) {
 		const std::string uid_str = "imtest-boot-" + tag + "-" + std::to_string(i);
-		if (!cS.Send(ID_TEXT_CHAT_MSG_REQ, BuildTextReq(SENDER_UID, RECEIVER_UID,
+		if (!cS.Send(ID_TEXT_CHAT_MSG_REQ, BuildTextReq(RECEIVER_UID,
 			THREAD_ID, "boot-" + std::to_string(i), uid_str))) { send_ok = false; break; }
 		Frame f;
 		if (!cS.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &f)) { send_ok = false; break; }
@@ -2854,7 +2736,7 @@ bool ScenarioSyncBootstrap() {
 		("sent=" + std::to_string(sent_mids.size())).c_str());
 	if (!send_ok || (int)sent_mids.size() != MSG_COUNT) all_ok = false;
 
-	// 从 checkpoint 同步：恰得 3 条新消息，recv_seq 严格递增。
+	// 从 checkpoint 同步：恰得 3 条新消息，event_seq 严格递增。
 	std::vector<SyncEnvelope> msgs;
 	std::uint64_t next_seq = checkpoint;
 	bool has_more = false;
@@ -2863,8 +2745,8 @@ bool ScenarioSyncBootstrap() {
 	{
 		std::uint64_t prev = checkpoint;
 		for (const auto& m : msgs) {
-			if (m.recv_seq <= prev) increasing = false;
-			prev = m.recv_seq;
+			if (m.event_seq <= prev) increasing = false;
+			prev = m.event_seq;
 		}
 	}
 	std::set<std::int64_t> sent_set(sent_mids.begin(), sent_mids.end());
@@ -2877,15 +2759,15 @@ bool ScenarioSyncBootstrap() {
 		 " has_more=" + std::to_string(has_more)).c_str());
 	if (!(sync_ok && increasing && got_set == sent_set)) all_ok = false;
 
-	// 再次拉到当前头：checkpoint 推进到最后一条的 recv_seq。
+	// 再次拉到当前头：checkpoint 推进到最后一条的 event_seq。
 	std::uint64_t checkpoint2 = 0;
 	bool boot2_ok = DoSyncBootstrap(cR, RECEIVER_UID, checkpoint2);
-	bool advanced = boot2_ok && !msgs.empty() && checkpoint2 == msgs.back().recv_seq;
+	bool advanced = boot2_ok && !msgs.empty() && checkpoint2 == msgs.back().event_seq;
 	Check(advanced, "sync-bootstrap: checkpoint advances past synced messages",
 		("checkpoint2=" + std::to_string(checkpoint2)).c_str());
 	if (!advanced) all_ok = false;
 
-	// 从 checkpoint2 同步：空页，next_recv_seq=after_recv_seq、has_more=false。
+	// 从 checkpoint2 同步：空页，next_event_seq=after_event_seq、has_more=false。
 	{
 		std::vector<SyncEnvelope> empty_msgs;
 		std::uint64_t next2 = 0;
@@ -2922,7 +2804,7 @@ bool ScenarioSyncBootstrap() {
 // ---------------------------------------------------------------------------
 // big-ids (64 位 message_id 链路)
 //
-// ALTER TABLE chat_message AUTO_INCREMENT=4294967300（>2^32）后收发一条文本，
+// ALTER TABLE chat_messages AUTO_INCREMENT=4294967300（>2^32）后收发一条文本，
 // 断言 >32 位 message_id 以十进制字符串在 1302/1406 全链路无损、同步游标正常
 // 推进；场景结束（含失败路径）恢复原 AUTO_INCREMENT。
 // ---------------------------------------------------------------------------
@@ -2943,14 +2825,14 @@ bool ScenarioBigIds() {
 
 	// 先删测试行（含大 id 行）再把 AUTO_INCREMENT 调回原值，顺序不能反：
 	// 大 id 行还在时无法把 AUTO_INCREMENT 调到其之下。
-	const long long orig_ai = mysql.GetChatMessageAutoIncrement();
+	const long long orig_ai = mysql.GetChatMessagesAutoIncrement();
 	auto cleanup = [&] {
 		CleanupFootprint(redis, mysql);
-		if (orig_ai > 0) mysql.SetChatMessageAutoIncrement(orig_ai);
+		if (orig_ai > 0) mysql.SetChatMessagesAutoIncrement(orig_ai);
 	};
 	cleanup();
 
-	if (orig_ai <= 0 || !mysql.SetChatMessageAutoIncrement(BIG_BASE)) {
+	if (orig_ai <= 0 || !mysql.SetChatMessagesAutoIncrement(BIG_BASE)) {
 		Fail("big-ids: raise AUTO_INCREMENT", "alter table failed");
 		cleanup(); return false;
 	}
@@ -2986,7 +2868,7 @@ bool ScenarioBigIds() {
 		Fail("big-ids: login sender", "gate/chat login failed"); cR.Close(); cleanup(); pm.StopAll(); return false;
 	}
 	const std::string uid_str = "imtest-bigids-" + tag;
-	cS.Send(ID_TEXT_CHAT_MSG_REQ, BuildTextReq(SENDER_UID, RECEIVER_UID, THREAD_ID,
+	cS.Send(ID_TEXT_CHAT_MSG_REQ, BuildTextReq(RECEIVER_UID, THREAD_ID,
 		"big-ids-msg", uid_str));
 	Frame rsp; bool got_rsp = cS.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &rsp);
 	std::int64_t sent_mid = -1;
@@ -3016,14 +2898,14 @@ bool ScenarioBigIds() {
 
 	// DB 直读：64 位值无损落库。
 	{
-		auto rows = mysql.QueryByUniqueId(SENDER_UID, uid_str);
+		auto rows = mysql.QueryByClientMessageId(SENDER_UID, uid_str);
 		Check(rows.size() == 1 && rows[0].message_id == sent_mid,
 			"big-ids: DB row keeps >32-bit message_id",
 			rows.empty() ? "no row" : ("mid=" + std::to_string(rows[0].message_id)).c_str());
 		if (!(rows.size() == 1 && rows[0].message_id == sent_mid)) all_ok = false;
 	}
 
-	// 1406 同步流：大 id envelope 无损，recv_seq 游标正常推进。
+	// 1406 同步流：大 id envelope 无损，event_seq 游标正常推进。
 	{
 		std::vector<SyncEnvelope> msgs;
 		std::uint64_t next_seq = checkpoint;
@@ -3032,7 +2914,7 @@ bool ScenarioBigIds() {
 		bool found = false;
 		std::uint64_t msg_seq = 0;
 		for (const auto& m : msgs) {
-			if (m.message_id == sent_mid) { found = true; msg_seq = m.recv_seq; break; }
+			if (m.message_id == sent_mid) { found = true; msg_seq = m.event_seq; break; }
 		}
 		Check(synced && found && msg_seq > checkpoint && next_seq == msg_seq,
 			"big-ids: 1406 sync delivers big id, cursor advances",
@@ -3109,13 +2991,13 @@ std::shared_ptr<ResClient> ResLogin(const std::string& token, int uid, const cha
 }
 
 //发 1503 创建资源消息并回 message_id；失败返回 -1（err_out 带出服务端错误码）
-std::int64_t CreateResource(TcpClient& chat, int fromuid, int touid,
-	const std::string& unique_id, int msg_type, const std::string& file_name,
-	long long size, const std::string& content_hash, const std::string& mime,
+std::int64_t CreateResource(TcpClient& chat, int target_user_id,
+	const std::string& client_message_id, int message_type, const std::string& original_file_name,
+	long long size, const std::string& sha256, const std::string& mime,
 	int* err_out) {
 	chat.Send(ID_CREATE_RESOURCE_MSG_REQ,
-		BuildResourceCreateReq(fromuid, touid, THREAD_ID, unique_id, msg_type,
-			file_name, size, content_hash, mime));
+		BuildResourceCreateReq(target_user_id, THREAD_ID, client_message_id, message_type,
+			original_file_name, size, sha256, mime));
 	Frame rsp;
 	if (!chat.Wait(ID_CREATE_RESOURCE_MSG_RSP, 10000, &rsp)) {
 		if (err_out) *err_out = -2;
@@ -3129,13 +3011,13 @@ std::int64_t CreateResource(TcpClient& chat, int fromuid, int touid,
 }
 
 //上传 [from_offset, total) 区间全部分片；返回最后一片 1506 的 error（ready_out
-//带回 resource_status）。遇到非 0 error 即停。
+//带回 status）。遇到非 0 error 即停。
 int UploadChunks(ResClient& res, std::int64_t msg_id, const std::string& blob,
-	long long from_offset, int* ready_out, std::uint64_t* recv_seq_out = nullptr) {
+	long long from_offset, int* ready_out, std::uint64_t* event_seq_out = nullptr) {
 	const long long total = static_cast<long long>(blob.size());
 	int err = ERR_SUCCESS;
-	int rs = RESOURCE_UPLOADING;
-	std::uint64_t recv_seq = 0;
+	int rs = MESSAGE_PENDING;
+	std::uint64_t event_seq = 0;
 	for (long long off = from_offset; off < total; ) {
 		const long long n = (std::min<long long>)(total - off, 32768);
 		const std::string chunk = blob.substr(static_cast<std::size_t>(off),
@@ -3149,22 +3031,22 @@ int UploadChunks(ResClient& res, std::int64_t msg_id, const std::string& blob,
 		if (!res.Wait(ID_RESOURCE_CHUNK_UPLOAD_RSP, 10000, &uf)) return -5;
 		auto j = ParseJson(uf.body);
 		err = j.is_object() ? j.value("error", -6) : -6;
-		rs = j.is_object() ? j.value("resource_status", -1) : -1;
-		if (j.is_object() && j.contains("recv_seq")) {
-			recv_seq = static_cast<std::uint64_t>(JsonIdStr(j, "recv_seq", 0));
+		rs = j.is_object() ? j.value("status", -1) : -1;
+		if (j.is_object() && j.contains("event_seq")) {
+			event_seq = static_cast<std::uint64_t>(JsonIdStr(j, "event_seq", 0));
 		}
 		if (err != ERR_SUCCESS) break;
 		off += n;
 	}
 	if (ready_out) *ready_out = rs;
-	if (recv_seq_out) *recv_seq_out = recv_seq;
+	if (event_seq_out) *event_seq_out = event_seq;
 	return err;
 }
 
 //单片上传（供越界/篡改/重复片场景）；回包 error 与 server_offset 带出
 int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
 	const std::string& chunk, const std::string& chunk_sha, long long* server_offset,
-	std::uint64_t* recv_seq_out = nullptr) {
+	std::uint64_t* event_seq_out = nullptr) {
 	res.Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
 		BuildChunkUploadReq(msg_id, offset, chunk_sha, Base64Encode(chunk)));
 	Frame uf;
@@ -3174,9 +3056,9 @@ int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
 		*server_offset = j.is_object()
 			? static_cast<long long>(JsonIdStr(j, "server_offset", -1)) : -1;
 	}
-	if (recv_seq_out) {
-		*recv_seq_out = j.is_object()
-			? static_cast<std::uint64_t>(JsonIdStr(j, "recv_seq", 0)) : 0;
+	if (event_seq_out) {
+		*event_seq_out = j.is_object()
+			? static_cast<std::uint64_t>(JsonIdStr(j, "event_seq", 0)) : 0;
 	}
 	return j.is_object() ? j.value("error", -6) : -6;
 }
@@ -3188,7 +3070,7 @@ long long QueryServerOffset(ResClient& res, std::int64_t msg_id, int* status_out
 	if (!res.Wait(ID_RESOURCE_UPLOAD_PROGRESS_RSP, 10000, &f)) return -1;
 	auto j = ParseJson(f.body);
 	if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return -1;
-	if (status_out) *status_out = j.value("resource_status", -1);
+	if (status_out) *status_out = j.value("status", -1);
 	return static_cast<long long>(JsonIdStr(j, "server_offset", -1));
 }
 
@@ -3214,7 +3096,7 @@ std::string DownloadWhole(ResClient& res, std::int64_t msg_id, long long total) 
 
 // ---------------------------------------------------------------------------
 // resource-create：1503 校验链 —— 合法创建 / 超限 2020 / 坏哈希 2019 /
-// 重复 unique_id 幂等同 id / 内容冲突 2017 / 伪造 fromuid 拒绝 / 非成员会话拒绝
+// 重复 client_message_id 幂等同 id / 内容冲突 2017 / 非成员会话拒绝
 // ---------------------------------------------------------------------------
 bool ScenarioResourceCreate() {
 	std::printf("\n=== scenario: resource-create ===\n");
@@ -3235,33 +3117,33 @@ bool ScenarioResourceCreate() {
 
 	//1) 合法创建
 	int err = -1;
-	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-ok-" + tag, MSG_TYPE_PIC, name, (long long)blob.size(),
 		good_hash, "image/png", &err);
 	Check(err == ERR_SUCCESS && mid > 0, "resource-create: valid create succeeds",
 		("err=" + std::to_string(err)).c_str());
 	if (mid <= 0) all_ok = false;
 
-	//2) 重复 unique_id 同内容 → 幂等返回同一 message_id
+	//2) 重复 client_message_id 同内容 → 幂等返回同一 message_id
 	{
 		int err2 = -1;
-		const std::int64_t mid2 = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		const std::int64_t mid2 = CreateResource(cS, RECEIVER_UID,
 			"imtest-ok-" + tag, MSG_TYPE_PIC, name, (long long)blob.size(),
 			good_hash, "image/png", &err2);
 		Check(err2 == ERR_SUCCESS && mid2 == mid,
-			"resource-create: duplicate unique_id is idempotent (same message_id)",
+			"resource-create: duplicate client_message_id is idempotent (same message_id)",
 			("err=" + std::to_string(err2) + " mid2=" + std::to_string(mid2)).c_str());
 		if (mid2 != mid) all_ok = false;
 	}
 
-	//3) 重复 unique_id 不同内容 → MESSAGE_CONFLICT
+	//3) 重复 client_message_id 不同内容 → MESSAGE_CONFLICT
 	{
 		int err3 = -1;
-		const std::int64_t mid3 = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+		const std::int64_t mid3 = CreateResource(cS, RECEIVER_UID,
 			"imtest-ok-" + tag, MSG_TYPE_PIC, "other_" + name, 1234,
 			good_hash, "image/png", &err3);
 		Check(err3 == ERR_MESSAGE_CONFLICT && mid3 < 0,
-			"resource-create: same unique_id different content -> 2017 conflict",
+			"resource-create: same client_message_id different content -> 2017 conflict",
 			("err=" + std::to_string(err3)).c_str());
 		if (err3 != ERR_MESSAGE_CONFLICT) all_ok = false;
 	}
@@ -3269,7 +3151,7 @@ bool ScenarioResourceCreate() {
 	//4) 坏哈希（非 64 位 hex）→ ResourceInvalid(2019)
 	{
 		int err4 = -1;
-		CreateResource(cS, SENDER_UID, RECEIVER_UID, "imtest-badhash-" + tag,
+		CreateResource(cS, RECEIVER_UID, "imtest-badhash-" + tag,
 			MSG_TYPE_PIC, name, (long long)blob.size(), "not-a-sha256", "image/png", &err4);
 		Check(err4 == ERR_RESOURCE_INVALID, "resource-create: bad hash -> 2019",
 			("err=" + std::to_string(err4)).c_str());
@@ -3279,28 +3161,18 @@ bool ScenarioResourceCreate() {
 	//5) 超限（图片 20MB+1）→ ResourceSizeExceeded(2020)
 	{
 		int err5 = -1;
-		CreateResource(cS, SENDER_UID, RECEIVER_UID, "imtest-oversize-" + tag,
+		CreateResource(cS, RECEIVER_UID, "imtest-oversize-" + tag,
 			MSG_TYPE_PIC, name, 20LL * 1024 * 1024 + 1, good_hash, "image/png", &err5);
 		Check(err5 == ERR_RESOURCE_SIZE_EXCEEDED, "resource-create: oversize -> 2020",
 			("err=" + std::to_string(err5)).c_str());
 		if (err5 != ERR_RESOURCE_SIZE_EXCEEDED) all_ok = false;
 	}
 
-	//6) 伪造 fromuid（session 是 SENDER，JSON 里写 RECEIVER）→ 拒绝
-	{
-		int err6 = -1;
-		CreateResource(cS, RECEIVER_UID, SENDER_UID, "imtest-forge-" + tag,
-			MSG_TYPE_PIC, name, (long long)blob.size(), good_hash, "image/png", &err6);
-		Check(err6 == ERR_UID_INVALID, "resource-create: forged fromuid -> 2011",
-			("err=" + std::to_string(err6)).c_str());
-		if (err6 != ERR_UID_INVALID) all_ok = false;
-	}
-
-	//7) 非成员会话（fixture 中不存在的 thread）→ CREATE_CHAT_FAILED
+	//6) 非成员会话（fixture 中不存在的 thread）→ CREATE_CHAT_FAILED
 	{
 		const std::int64_t bogus_thread = 99999999;
 		cS.Send(ID_CREATE_RESOURCE_MSG_REQ,
-			BuildResourceCreateReq(SENDER_UID, RECEIVER_UID, bogus_thread,
+			BuildResourceCreateReq(RECEIVER_UID, bogus_thread,
 				"imtest-badthread-" + tag, MSG_TYPE_PIC, name,
 				(long long)blob.size(), good_hash, "image/png"));
 		Frame rsp;
@@ -3335,7 +3207,7 @@ bool ScenarioResourceUpload() {
 	const std::string tag = RunTag();
 	const std::string blob = MakeBlob(100000);  // 4 片（3×32KiB + 2176B）
 	const std::string hash = llfc::Sha256Hex(blob);
-	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-up-" + tag, MSG_TYPE_FILE, "upload_" + tag + ".bin",
 		(long long)blob.size(), hash, "application/octet-stream", nullptr);
 	Check(mid > 0, "resource-upload: create resource msg", ("mid=" + std::to_string(mid)).c_str());
@@ -3346,16 +3218,16 @@ bool ScenarioResourceUpload() {
 
 	int rs = -1;
 	const int up_err = UploadChunks(*res, mid, blob, 0, &rs);
-	Check(up_err == ERR_SUCCESS && rs == RESOURCE_READY,
+	Check(up_err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED,
 		"resource-upload: all chunks uploaded -> Ready",
 		("err=" + std::to_string(up_err) + " rs=" + std::to_string(rs)).c_str());
-	if (rs != RESOURCE_READY) all_ok = false;
+	if (rs != MESSAGE_PUBLISHED) all_ok = false;
 
 	//1507：就绪后 server_offset == total
 	{
 		int st = -1;
 		const long long off = QueryServerOffset(*res, mid, &st);
-		Check(off == (long long)blob.size() && st == RESOURCE_READY,
+		Check(off == (long long)blob.size() && st == MESSAGE_PUBLISHED,
 			"resource-upload: 1507 reports total_size & Ready",
 			("off=" + std::to_string(off) + " st=" + std::to_string(st)).c_str());
 		if (off != (long long)blob.size()) all_ok = false;
@@ -3376,8 +3248,8 @@ bool ScenarioResourceUpload() {
 		bool ok = rc->Wait(ID_RESOURCE_DOWN_INFO_RSP, 10000, &f);
 		auto j = ok ? ParseJson(f.body) : json();
 		bool good = ok && j.is_object() && j.value("error", -1) == ERR_SUCCESS
-			&& j.value("content_hash", "") == hash
-			&& j.value("file_name", "") == "upload_" + tag + ".bin";
+			&& j.value("sha256", "") == hash
+			&& j.value("original_file_name", "") == "upload_" + tag + ".bin";
 		Check(good, "resource-upload: 1509 down info (name/hash match)",
 			ok ? j.dump() : "no rsp");
 		if (!good) all_ok = false;
@@ -3418,7 +3290,7 @@ bool ScenarioResourceResume() {
 	const std::string tag = RunTag();
 	const std::string blob = MakeBlob(100000);
 	const std::string hash = llfc::Sha256Hex(blob);
-	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-resume-" + tag, MSG_TYPE_FILE, "resume_" + tag + ".bin",
 		(long long)blob.size(), hash, "application/octet-stream", nullptr);
 	Check(mid > 0, "resource-resume: create resource msg", ("mid=" + std::to_string(mid)).c_str());
@@ -3455,10 +3327,10 @@ bool ScenarioResourceResume() {
 	//从服务端偏移续传剩余分片（不重传前 2 片）
 	int rs = -1;
 	const int err = UploadChunks(*res2, mid, blob, offset > 0 ? offset : 0, &rs);
-	Check(err == ERR_SUCCESS && rs == RESOURCE_READY,
+	Check(err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED,
 		"resource-resume: resume from server offset completes",
 		("err=" + std::to_string(err) + " rs=" + std::to_string(rs)).c_str());
-	if (rs != RESOURCE_READY) all_ok = false;
+	if (rs != MESSAGE_PUBLISHED) all_ok = false;
 
 	//整文件内容一致性（1511 全量下载比对）
 	const std::string got = DownloadWhole(*res2, mid, (long long)blob.size());
@@ -3491,7 +3363,7 @@ bool ScenarioResourceIdempotent() {
 	const std::string tag = RunTag();
 	const std::string blob = MakeBlob(65536);  // 恰 2 片
 	const std::string hash = llfc::Sha256Hex(blob);
-	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-idem-" + tag, MSG_TYPE_FILE, "idem_" + tag + ".bin",
 		(long long)blob.size(), hash, "application/octet-stream", nullptr);
 	Check(mid > 0, "resource-idempotent: create", ("mid=" + std::to_string(mid)).c_str());
@@ -3523,25 +3395,25 @@ bool ScenarioResourceIdempotent() {
 
 	//第二片完成后整文件就绪
 	int rs = -1;
-	std::uint64_t first_recv_seq = 0;
-	err = UploadChunks(*res, mid, blob, 32768, &rs, &first_recv_seq);
-	Check(err == ERR_SUCCESS && rs == RESOURCE_READY && first_recv_seq > 0,
+	std::uint64_t first_event_seq = 0;
+	err = UploadChunks(*res, mid, blob, 32768, &rs, &first_event_seq);
+	Check(err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED && first_event_seq > 0,
 		"resource-idempotent: completes after duplicate chunk",
 		("err=" + std::to_string(err) + " rs=" + std::to_string(rs) +
-		 " recv_seq=" + std::to_string(first_recv_seq)).c_str());
-	if (rs != RESOURCE_READY || first_recv_seq == 0) all_ok = false;
+		 " event_seq=" + std::to_string(first_event_seq)).c_str());
+	if (rs != MESSAGE_PUBLISHED || first_event_seq == 0) all_ok = false;
 
 	//完成响应丢失后再次发送原末片，必须返回同一个接收者序号。
 	const std::string chunk1 = blob.substr(32768);
-	std::uint64_t retry_recv_seq = 0;
+	std::uint64_t retry_event_seq = 0;
 	err = UploadOneChunk(*res, mid, 32768, chunk1, llfc::Sha256Hex(chunk1),
-		&so, &retry_recv_seq);
+		&so, &retry_event_seq);
 	Check(err == ERR_SUCCESS && so == static_cast<long long>(blob.size()) &&
-		retry_recv_seq == first_recv_seq,
-		"resource-idempotent: Ready retry returns original recv_seq",
-		("first=" + std::to_string(first_recv_seq) +
-		 " retry=" + std::to_string(retry_recv_seq)).c_str());
-	if (retry_recv_seq != first_recv_seq) all_ok = false;
+		retry_event_seq == first_event_seq,
+		"resource-idempotent: Ready retry returns original event_seq",
+		("first=" + std::to_string(first_event_seq) +
+		 " retry=" + std::to_string(retry_event_seq)).c_str());
+	if (retry_event_seq != first_event_seq) all_ok = false;
 
 	res->Close();
 	cS.Close();
@@ -3567,9 +3439,9 @@ bool ScenarioResourceCorrupt() {
 
 	const std::string tag = RunTag();
 	const std::string blob = MakeBlob(65536);
-	//content_hash 故意写成另一份数据的哈希：分片校验全对、整文件校验必败
+	//sha256 故意写成另一份数据的哈希：分片校验全对、整文件校验必败
 	const std::string wrong_whole_hash = llfc::Sha256Hex(MakeBlob(1));
-	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-corrupt-" + tag, MSG_TYPE_FILE, "corrupt_" + tag + ".bin",
 		(long long)blob.size(), wrong_whole_hash, "application/octet-stream", nullptr);
 	Check(mid > 0, "resource-corrupt: create", ("mid=" + std::to_string(mid)).c_str());
@@ -3587,7 +3459,7 @@ bool ScenarioResourceCorrupt() {
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
 	if (err != ERR_RS_HASH_MISMATCH) all_ok = false;
 
-	//2) 正确分片全部传完 → 完成点整文件 SHA-256 与 content_hash 不符 →
+	//2) 正确分片全部传完 → 完成点整文件 SHA-256 与 sha256 不符 →
 	//   2112 且服务端清掉 .part（server_offset=0，客户端从 0 重传）
 	err = UploadChunks(*res, mid, blob, 0, nullptr);
 	Check(err == ERR_RS_HASH_MISMATCH,
@@ -3625,7 +3497,7 @@ bool ScenarioResourcePerm() {
 	const std::string tag = RunTag();
 	const std::string blob = MakeBlob(32768);
 	const std::string hash = llfc::Sha256Hex(blob);
-	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-perm-" + tag, MSG_TYPE_FILE, "perm_" + tag + ".bin",
 		(long long)blob.size(), hash, "application/octet-stream", nullptr);
 	Check(mid > 0, "resource-perm: create", ("mid=" + std::to_string(mid)).c_str());
@@ -3636,7 +3508,7 @@ bool ScenarioResourcePerm() {
 	if (!res) { cS.Close(); stack.StopAll(); return false; }
 	int rs = -1;
 	UploadChunks(*res, mid, blob, 0, &rs);
-	Check(rs == RESOURCE_READY, "resource-perm: upload completes",
+	Check(rs == MESSAGE_PUBLISHED, "resource-perm: upload completes",
 		("rs=" + std::to_string(rs)).c_str());
 	res->Close();
 
@@ -3676,7 +3548,7 @@ bool ScenarioResourcePerm() {
 		std::int64_t mid2 = -1;
 		if (li2.ok) {
 			const std::string blob2 = MakeBlob(32768);
-			mid2 = CreateResource(cS2, RECEIVER_UID, SENDER_UID,
+			mid2 = CreateResource(cS2, SENDER_UID,
 				"imtest-perm2-" + tag, MSG_TYPE_FILE, "perm2_" + tag + ".bin",
 				(long long)blob2.size(), llfc::Sha256Hex(blob2),
 				"application/octet-stream", nullptr);
@@ -3724,7 +3596,7 @@ bool ScenarioResourceOffset() {
 	const std::string tag = RunTag();
 	const std::string blob = MakeBlob(98304);  // 3 片
 	const std::string hash = llfc::Sha256Hex(blob);
-	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-off-" + tag, MSG_TYPE_FILE, "off_" + tag + ".bin",
 		(long long)blob.size(), hash, "application/octet-stream", nullptr);
 	Check(mid > 0, "resource-offset: create", ("mid=" + std::to_string(mid)).c_str());
@@ -3745,10 +3617,10 @@ bool ScenarioResourceOffset() {
 	//按 server_offset 对齐后从 0 顺序上传 → 完成
 	int rs = -1;
 	err = UploadChunks(*res, mid, blob, 0, &rs);
-	Check(err == ERR_SUCCESS && rs == RESOURCE_READY,
+	Check(err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED,
 		"resource-offset: aligned re-upload completes",
 		("err=" + std::to_string(err) + " rs=" + std::to_string(rs)).c_str());
-	if (rs != RESOURCE_READY) all_ok = false;
+	if (rs != MESSAGE_PUBLISHED) all_ok = false;
 
 	res->Close();
 	cS.Close();
@@ -3758,7 +3630,7 @@ bool ScenarioResourceOffset() {
 
 // ---------------------------------------------------------------------------
 // resource-expiry：创建后只传一片，回拨 updated_at 到 8 天前并 touch .part
-// mtime 为 8 天前，重启 ResourceServer 触发启动清理 → resource_status=2、
+// mtime 为 8 天前，重启 ResourceServer 触发启动清理 → status=2、
 // 双方 sync 行补齐、.part 被删除
 // ---------------------------------------------------------------------------
 bool ScenarioResourceExpiry() {
@@ -3776,7 +3648,7 @@ bool ScenarioResourceExpiry() {
 	const std::string tag = RunTag();
 	const std::string blob = MakeBlob(98304);
 	const std::string hash = llfc::Sha256Hex(blob);
-	const std::int64_t mid = CreateResource(cS, SENDER_UID, RECEIVER_UID,
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-expiry-" + tag, MSG_TYPE_FILE, "expiry_" + tag + ".bin",
 		(long long)blob.size(), hash, "application/octet-stream", nullptr);
 	Check(mid > 0, "resource-expiry: create", ("mid=" + std::to_string(mid)).c_str());
@@ -3802,7 +3674,7 @@ bool ScenarioResourceExpiry() {
 		part_path.string().c_str());
 
 	//回拨 DB updated_at 与文件 mtime 到 8 天前（7 天保留期之外）
-	stack.mysql.BackdateMessageUpdatedAt(mid, 8);
+	stack.mysql.BackdateMessageCreatedAt(mid, 8);
 	fs::last_write_time(part_path, std::time(nullptr) - 8LL * 24 * 3600, fs_ec);
 
 	//重启 ResourceServer → 启动清理立即执行
@@ -3817,21 +3689,21 @@ bool ScenarioResourceExpiry() {
 	std::this_thread::sleep_for(std::chrono::milliseconds(800));
 	bool expired = false;
 	for (int poll = 0; poll < 30 && !expired; ++poll) {
-		auto rows = stack.mysql.QueryByMessageId(mid);
-		if (!rows.empty() && rows[0].resource_status == RESOURCE_EXPIRED) expired = true;
+		auto rows = stack.mysql.QueryMessageById(mid);
+		if (!rows.empty() && rows[0].status == MESSAGE_FAILED) expired = true;
 		else std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	}
 	Check(expired, "resource-expiry: stale message marked Expired(2)",
-		"resource_status != 2 after cleanup");
+		"status != 2 after cleanup");
 	if (!expired) all_ok = false;
 
 	const bool part_gone = !fs::exists(part_path, fs_ec);
 	Check(part_gone, "resource-expiry: stale .part removed", part_path.string().c_str());
 	if (!part_gone) all_ok = false;
 
-	//失败或过期的未发布资源不分配 recv_seq，也不通知接收者。
+	//失败或过期的未发布资源不分配 event_seq，也不通知接收者。
 	{
-		const auto sync_rows = stack.mysql.QueryRecvRows(RECEIVER_UID, 0, 0);
+		const auto sync_rows = stack.mysql.QueryUserEvents(RECEIVER_UID, 0, 0);
 		bool present = false;
 		for (const auto& r : sync_rows) {
 			if (r.message_id == (std::uint64_t)mid) { present = true; break; }

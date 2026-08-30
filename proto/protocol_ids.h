@@ -55,16 +55,16 @@ enum MsgId {
 	MSG_LOAD_CHAT_THREAD_RSP = 1402, ///< 加载聊天会话列表响应
 	MSG_LOAD_CHAT_MSG_REQ    = 1403, ///< 加载历史聊天消息请求（分页）
 	MSG_LOAD_CHAT_MSG_RSP    = 1404, ///< 加载历史聊天消息响应
-	MSG_SYNC_USER_MESSAGE_REQ = 1405, ///< 按接收者 recv_seq 游标增量同步统一消息
-	MSG_SYNC_USER_MESSAGE_RSP = 1406, ///< 统一消息增量同步响应
+	MSG_SYNC_USER_MESSAGE_REQ = 1405, ///< 按接收者 event_seq 游标增量同步用户事件
+	MSG_SYNC_USER_MESSAGE_RSP = 1406, ///< 用户事件增量同步响应
 
 	// --- 15xx 资源域（ResourceServer TCP；1503/1504 创建元数据由 ChatServer 处理）
 	MSG_RESOURCE_LOGIN_REQ   = 1501, ///< 资源服务器登录鉴权请求（每连接一次，Gate token）
 	MSG_RESOURCE_LOGIN_RSP   = 1502, ///< 资源服务器登录鉴权响应
 	MSG_CREATE_RESOURCE_REQ  = 1503, ///< 创建资源消息请求（图片/文件统一，元数据先行）
-	MSG_CREATE_RESOURCE_RSP  = 1504, ///< 创建资源消息响应（返回 message_id，resource_status=0）
+	MSG_CREATE_RESOURCE_RSP  = 1504, ///< 创建资源消息响应（返回 message_id，status=Pending）
 	MSG_RESOURCE_CHUNK_UPLOAD_REQ     = 1505, ///< 上传资源分片请求（message_id/offset/chunk_sha256）
-	MSG_RESOURCE_CHUNK_UPLOAD_RSP     = 1506, ///< 上传资源分片响应（带 server_offset/resource_status）
+	MSG_RESOURCE_CHUNK_UPLOAD_RSP     = 1506, ///< 上传资源分片响应（带 server_offset/status）
 	MSG_RESOURCE_UPLOAD_PROGRESS_REQ  = 1507, ///< 查询上传进度请求（返回服务端 .part 实际字节数）
 	MSG_RESOURCE_UPLOAD_PROGRESS_RSP  = 1508, ///< 查询上传进度响应
 	MSG_RESOURCE_DOWN_INFO_REQ        = 1509, ///< 查询资源下载信息请求（含权限校验）
@@ -111,7 +111,7 @@ enum CommonErrCode {
 	ERR_FRIEND_REQUEST_HANDLED   = 2022, ///< 好友申请已被其他动作处理
 	ERR_ALREADY_FRIENDS          = 2023, ///< 双方已经是好友
 	ERR_FRIEND_ACTION_INVALID    = 2024, ///< 好友申请处理动作不是 accept/reject
-	ERR_SYNC_CURSOR_INVALID      = 2025, ///< 客户端 recv_seq 游标超过服务端序号头
+	ERR_SYNC_CURSOR_INVALID      = 2025, ///< 客户端 event_seq 游标超过服务端序号头
 };
 
 // ===== 错误码：21xx 资源文件表 ==============================================
@@ -132,7 +132,7 @@ enum ResourceErrCode {
 	RS_MSG_ID_ERR              = 2111, ///< 消息不存在（permanent，标失败）
 	RS_FILE_HASH_MISMATCH      = 2112, ///< 分片/整文件 SHA-256 校验失败（重传该片/整文件）
 	RS_FILE_SIZE_EXCEEDED      = 2113, ///< 资源超过类型上限
-	RS_RESOURCE_NOT_READY      = 2114, ///< resource_status != Ready 时请求下载（稍后重试）
+	RS_RESOURCE_NOT_READY      = 2114, ///< chat_messages.status 不是 Published
 	RS_RESOURCE_FORBIDDEN      = 2115, ///< 请求者不是消息发送者或接收者（permanent）
 	RS_RESOURCE_STATE_INVALID  = 2116, ///< 对已失败/已就绪资源的非法上传操作（permanent）
 };

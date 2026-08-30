@@ -331,14 +331,14 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_ty
 	//构造响应：保留原有用户字段（不含 pwd、token 等任何凭证字段）
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["uid"] = uid;
-	rtvalue["name"] = user_info->name;
+	rtvalue["name"] = user_info->username;
 	rtvalue["email"] = user_info->email;
-	rtvalue["nick"] = user_info->nick;
-	rtvalue["desc"] = user_info->desc;
-	rtvalue["sex"] = user_info->sex;
-	rtvalue["icon"] = user_info->icon;
+	rtvalue["nick"] = user_info->nickname;
+	rtvalue["desc"] = user_info->profile_bio;
+	rtvalue["sex"] = user_info->gender;
+	rtvalue["icon"] = user_info->avatar_key;
 	std::uint64_t checkpoint = 0;
-	if (!MysqlMgr::GetInstance()->GetLastRecvSeq(uid, checkpoint)) {
+	if (!MysqlMgr::GetInstance()->GetLastEventSeq(uid, checkpoint)) {
 		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
 		return;
 	}
@@ -352,41 +352,39 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_ty
 		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
 		return;
 	}
-	for (auto& apply : apply_list) {
-			json obj;
-			obj["message_id"] = std::to_string(apply->_message_id);
-			obj["from_uid"] = apply->_from_uid;
-			obj["to_uid"] = apply->_to_uid;
-			obj["name"] = apply->_name;
-			obj["uid"] = apply->_uid;
-			obj["icon"] = apply->_icon;
-			obj["nick"] = apply->_nick;
-			obj["sex"] = apply->_sex;
-			obj["desc"] = apply->_desc;
-			obj["requester_remark"] = apply->_requester_remark;
-			obj["profile_desc"] = apply->_profile_desc;
-			obj["created_at"] = apply->_created_at;
-			obj["status"] = apply->_status;
-		rtvalue["apply_list"].push_back(obj);
+	for (const auto& apply : apply_list) {
+		if (!apply || !apply->request || !apply->peer) continue;
+		json obj;
+		obj["friend_request_id"] = std::to_string(apply->request->friend_request_id);
+		obj["requester_user_id"] = apply->request->requester_user_id;
+		obj["target_user_id"] = apply->request->target_user_id;
+		obj["request_message"] = apply->request->request_message;
+		obj["status"] = static_cast<int>(apply->request->status);
+		obj["thread_id"] = apply->request->thread_id > 0
+			? json(std::to_string(apply->request->thread_id)) : json(nullptr);
+		obj["peer_username"] = apply->peer->username;
+		obj["peer_nickname"] = apply->peer->nickname;
+		obj["peer_avatar_key"] = apply->peer->avatar_key;
+		obj["peer_gender"] = apply->peer->gender;
+		rtvalue["apply_list"].push_back(std::move(obj));
 	}
 
 	//获取好友列表
-	std::vector<std::shared_ptr<UserInfo>> friend_list;
-	if (!GetFriendList(uid, friend_list)) {
+	std::vector<ContactInfo> contacts;
+	if (!GetFriendList(uid, contacts)) {
 		rtvalue["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
 		return;
 	}
-	for (auto& friend_ele : friend_list) {
+	for (const auto& contact : contacts) {
+		if (!contact.user) continue;
 		json obj;
-		obj["name"] = friend_ele->name;
-		obj["uid"] = friend_ele->uid;
-		obj["icon"] = friend_ele->icon;
-		obj["nick"] = friend_ele->nick;
-		obj["sex"] = friend_ele->sex;
-		obj["desc"] = friend_ele->desc;
-		obj["back"] = friend_ele->back;
-		obj["thread_id"] = friend_ele->thread_id > 0
-			? json(std::to_string(friend_ele->thread_id)) : json(nullptr);
+		obj["user_id"] = contact.user->user_id;
+		obj["username"] = contact.user->username;
+		obj["nickname"] = contact.user->nickname;
+		obj["avatar_key"] = contact.user->avatar_key;
+		obj["gender"] = contact.user->gender;
+		obj["thread_id"] = contact.thread_id > 0
+			? json(std::to_string(contact.thread_id)) : json(nullptr);
 		rtvalue["friend_list"].push_back(obj);
 	}
 
@@ -468,29 +466,29 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 {
 	json rsp;
 	auto root = json::parse(msg_data, nullptr, false);
-	int to_uid = 0;
-	if (!root.is_object() || !root.contains("touid") || !ParseJsonUid(root["touid"], to_uid) ||
-		(root.contains("applyname") && !root["applyname"].is_string()) ||
-		(root.contains("bakname") && !root["bakname"].is_string()) ||
-		!root.contains("unique_id") || !root["unique_id"].is_string() ||
-		root["unique_id"].get<std::string>().empty()) {
+	int target_user_id = 0;
+	if (!root.is_object() || !root.contains("target_user_id") ||
+		!ParseJsonUid(root["target_user_id"], target_user_id) ||
+		(root.contains("request_message") && !root["request_message"].is_string()) ||
+		!root.contains("client_request_id") || !root["client_request_id"].is_string() ||
+		root["client_request_id"].get<std::string>().empty()) {
 		rsp["error"] = ErrorCodes::Error_Json;
 		session->Send(rsp.dump(), ID_ADD_FRIEND_RSP);
 		return;
 	}
-	const int from_uid = session->GetUserId();
-	const std::string desc = root.value("applyname", std::string());
-	const std::string remark = root.value("bakname", std::string());
-	const std::string unique_id = root["unique_id"].get<std::string>();
-	if (to_uid <= 0 || to_uid == from_uid || unique_id.size() > 64 || remark.size() > 255) {
+	const int requester_user_id = session->GetUserId();
+	const std::string request_message = root.value("request_message", std::string());
+	const std::string client_request_id = root["client_request_id"].get<std::string>();
+	if (target_user_id <= 0 || target_user_id == requester_user_id ||
+		client_request_id.size() > 64 || request_message.size() > 255) {
 		rsp["error"] = ErrorCodes::Error_Json;
 		session->Send(rsp.dump(), ID_ADD_FRIEND_RSP);
 		return;
 	}
 
-	std::shared_ptr<ChatMessage> application;
+	std::shared_ptr<FriendRequest> request;
 	const auto result = MysqlMgr::GetInstance()->AddFriendApply(
-		from_uid, to_uid, desc, remark, unique_id, application);
+		requester_user_id, target_user_id, request_message, client_request_id, request);
 	bool should_deliver = false;
 	if (result == FriendOperationResult::AlreadyFriends) {
 		rsp["error"] = ErrorCodes::AlreadyFriends;
@@ -498,22 +496,21 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session,
 		rsp["error"] = ErrorCodes::UidInvalid;
 	} else if (result == FriendOperationResult::Conflict) {
 		rsp["error"] = ErrorCodes::MESSAGE_CONFLICT;
-	} else if (result == FriendOperationResult::Failed || !application) {
+	} else if (result == FriendOperationResult::Failed || !request) {
 		rsp["error"] = ErrorCodes::MESSAGE_STORE_FAILED;
 	} else {
 		rsp["error"] = ErrorCodes::Success;
-		rsp.update(BuildMessageEnvelope(application));
-		auto peer = MysqlMgr::GetInstance()->GetUser(to_uid);
-		if (peer) {
-			rsp["peer_profile"] = {
-				{ "uid", peer->uid }, { "name", peer->name }, { "nick", peer->nick },
-				{ "icon", peer->icon }, { "sex", peer->sex }, { "desc", peer->desc }
-			};
-		}
-		should_deliver = application->business_status == BusinessStatus::Pending;
+		rsp.update(BuildFriendRequestEnvelope(request, requester_user_id));
+		should_deliver = result == FriendOperationResult::Stored;
 	}
 	session->Send(rsp.dump(), ID_ADD_FRIEND_RSP);
-	if (should_deliver) DeliverUserMessage(application);
+	if (should_deliver) {
+		UserEvent event;
+		event.event_seq = request->event_seq;
+		event.event_type = static_cast<int>(UserEventType::FRIEND_APPLY);
+		event.friend_request = request;
+		DeliverUserEvent(event, target_user_id);
+	}
 }
 
 void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
@@ -521,14 +518,12 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 {
 	json rsp;
 	auto root = json::parse(msg_data, nullptr, false);
-	std::int64_t apply_message_id = 0;
-	if (!root.is_object() || !root.contains("apply_message_id") ||
-		!root["apply_message_id"].is_string() ||
-		!ParseJsonId(root["apply_message_id"], apply_message_id) ||
+	std::int64_t friend_request_id = 0;
+	if (!root.is_object() || !root.contains("friend_request_id") ||
+		!root["friend_request_id"].is_string() ||
+		!ParseJsonId(root["friend_request_id"], friend_request_id) ||
 		!root.contains("action") || !root["action"].is_string() ||
-		(root.contains("back") && !root["back"].is_string()) ||
-		(root.contains("reason") && !root["reason"].is_string()) ||
-		apply_message_id <= 0) {
+		friend_request_id <= 0) {
 		rsp["error"] = ErrorCodes::Error_Json;
 		session->Send(rsp.dump(), ID_HANDLE_FRIEND_RSP);
 		return;
@@ -539,30 +534,18 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 		session->Send(rsp.dump(), ID_HANDLE_FRIEND_RSP);
 		return;
 	}
-	if (root.value("back", std::string()).size() > 255) {
-		rsp["error"] = ErrorCodes::Error_Json;
-		session->Send(rsp.dump(), ID_HANDLE_FRIEND_RSP);
-		return;
-	}
-
 	FriendHandleOutput output;
 	const auto result = MysqlMgr::GetInstance()->HandleFriendApply(
-		session->GetUserId(), apply_message_id, action == "accept",
-		root.value("back", std::string()), root.value("reason", std::string()), output);
+		session->GetUserId(), friend_request_id, action == "accept", output);
 	bool should_deliver = false;
 	switch (result) {
 	case FriendOperationResult::Stored:
 	case FriendOperationResult::Duplicate:
 		rsp["error"] = ErrorCodes::Success;
-		if (output.result_message) rsp.update(BuildMessageEnvelope(output.result_message));
-		if (output.application) {
-			auto application = BuildMessageEnvelope(output.application);
-			if (application.contains("sender_profile")) {
-				rsp["peer_profile"] = application["sender_profile"];
-			}
+		if (output.request) {
+			rsp.update(BuildFriendRequestEnvelope(output.request, session->GetUserId()));
 		}
-		if (action == "accept") rsp["contact_remark"] = output.handler_contact_remark;
-		should_deliver = output.result_message != nullptr;
+		should_deliver = result == FriendOperationResult::Stored && output.request;
 		break;
 	case FriendOperationResult::NotFound:
 		rsp["error"] = ErrorCodes::FriendRequestNotFound;
@@ -581,17 +564,26 @@ void LogicSystem::AuthFriendApply(std::shared_ptr<CSession> session,
 		break;
 	}
 	session->Send(rsp.dump(), ID_HANDLE_FRIEND_RSP);
-	if (should_deliver) DeliverUserMessage(output.result_message);
+	if (should_deliver) {
+		UserEvent event;
+		event.event_seq = output.request->event_seq;
+		event.event_type = action == "accept"
+			? static_cast<int>(UserEventType::FRIEND_ACCEPT)
+			: static_cast<int>(UserEventType::FRIEND_REJECT);
+		event.friend_request = output.request;
+		DeliverUserEvent(event, output.request->requester_user_id);
+	}
 }
 
 void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
 	auto root = json::parse(msg_data, nullptr, false);
-	int touid = 0;
-	if (!root.is_object() || !root.contains("touid") || !ParseJsonUid(root["touid"], touid) ||
+	int target_user_id = 0;
+	if (!root.is_object() || !root.contains("target_user_id") ||
+		!ParseJsonUid(root["target_user_id"], target_user_id) ||
 		!root.contains("thread_id") || !root["thread_id"].is_string() ||
-		!root.contains("content") || !root["content"].is_string() ||
-		!root.contains("unique_id") || !root["unique_id"].is_string() ||
-		root["unique_id"].get<std::string>().empty()) {
+		!root.contains("text_content") || !root["text_content"].is_string() ||
+		!root.contains("client_message_id") || !root["client_message_id"].is_string() ||
+		root["client_message_id"].get<std::string>().empty()) {
 		json err;
 		err["error"] = ErrorCodes::Error_Json;
 		session->Send(err.dump(), ID_TEXT_CHAT_MSG_RSP);
@@ -610,17 +602,18 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	int member1 = 0;
 	int member2 = 0;
 	if (!MysqlMgr::GetInstance()->GetPrivateChatMembers(thread_id, member1, member2) ||
-		!((uid == member1 && touid == member2) || (uid == member2 && touid == member1))) {
+		!((uid == member1 && target_user_id == member2) ||
+			(uid == member2 && target_user_id == member1))) {
 		json err;
 		err["error"] = ErrorCodes::CREATE_CHAT_FAILED;
 		session->Send(err.dump(), ID_TEXT_CHAT_MSG_RSP);
 		return;
 	}
 
-	//单条化：content/unique_id 顶层平铺（text_array 批量设计已删除）
-	auto content = root["content"].get<std::string>();
-	auto unique_id = root["unique_id"].get<std::string>();
-	if (unique_id.size() > 64) {
+	//当前文本发送协议只接收单条 client_message_id + text_content。
+	auto text_content = root["text_content"].get<std::string>();
+	auto client_message_id = root["client_message_id"].get<std::string>();
+	if (client_message_id.size() > 64) {
 		json err;
 		err["error"] = ErrorCodes::Error_Json;
 		session->Send(err.dump(), ID_TEXT_CHAT_MSG_RSP);
@@ -629,23 +622,18 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
-	rtvalue["fromuid"] = uid;
-	rtvalue["touid"] = touid;
-	rtvalue["thread_id"] = std::to_string(thread_id);
-
-	//构造 ChatMessage：status 统一 UN_READ，content_size 固定 0（计划5.4/3.2）
+	rtvalue["client_message_id"] = client_message_id;
 	auto chat_msg = std::make_shared<ChatMessage>();
-	chat_msg->chat_time = getCurrentTimestamp();
-	chat_msg->sender_id = uid;
-	chat_msg->recv_id = touid;
-	chat_msg->unique_id = unique_id;
+	chat_msg->created_at = getCurrentTimestamp();
+	chat_msg->sender_user_id = uid;
+	chat_msg->recipient_user_id = target_user_id;
+	chat_msg->client_message_id = client_message_id;
 	chat_msg->thread_id = thread_id;
-	chat_msg->content = content;
-	chat_msg->status = MsgStatus::UN_READ;
-	chat_msg->msg_type = static_cast<int>(ChatMsgType::TEXT);
-	chat_msg->content_size = 0;
+	chat_msg->text_content = text_content;
+	chat_msg->status = MessageStatus::Published;
+	chat_msg->message_type = static_cast<int>(ChatMsgType::TEXT);
 
-	//插入数据库（单条自成事务），commit 后回写 canonical message_id/recv_seq。
+	//消息、接收方 event_seq 和事件引用在同一事务提交。
 	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_msg);
 	if (save_res == SaveMessageResult::Failed) {
 		//持久化失败：不返回成功、不转发，sender 按 transient 重传。
@@ -654,9 +642,9 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 		return;
 	}
 	if (save_res == SaveMessageResult::Conflict) {
-		//永久冲突：原消息不变，sender 停止重传该 unique_id（计划3.5/5.4）
+		//永久冲突：原消息不变，发送端停止重传该 client_message_id。
 		rtvalue["error"] = ErrorCodes::MESSAGE_CONFLICT;
-		rtvalue["unique_id"] = chat_msg->unique_id;
+		rtvalue["client_message_id"] = chat_msg->client_message_id;
 		session->Send(rtvalue.dump(4), ID_TEXT_CHAT_MSG_RSP);
 		return;
 	}
@@ -668,13 +656,17 @@ void LogicSystem::DealChatTextMsg(std::shared_ptr<CSession> session, const short
 	//不得用 Defer 延后：业务响应必须先于接收方实时通知。
 	std::string sender_rsp = rtvalue.dump(4);
 	session->Send(sender_rsp, ID_TEXT_CHAT_MSG_RSP);
-	DeliverUserMessage(chat_msg);
+	if (save_res == SaveMessageResult::Stored) {
+		UserEvent event;
+		event.event_seq = chat_msg->event_seq;
+		event.event_type = chat_msg->message_type;
+		event.message = chat_msg;
+		DeliverUserEvent(event, chat_msg->recipient_user_id);
+	}
 }
 
 void LogicSystem::HeartBeatHandler(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data) {
-	auto root = json::parse(msg_data, nullptr, false);
-	auto uid = root["fromuid"].get<int>();
-	std::cout << "receive heart beat msg, uid is " << uid << std::endl;
+	std::cout << "receive heart beat msg, uid is " << session->GetUserId() << std::endl;
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	session->Send(rtvalue.dump(4), ID_HEARTBEAT_RSP);
@@ -733,24 +725,24 @@ void LogicSystem::GetUserByUid(std::string uid_str, json& rtvalue)
 
 	//将数据库内容写入redis缓存
 	json redis_root;
-	redis_root["uid"] = user_info->uid;
-	redis_root["name"] = user_info->name;
+	redis_root["uid"] = user_info->user_id;
+	redis_root["name"] = user_info->username;
 	redis_root["email"] = user_info->email;
-	redis_root["nick"] = user_info->nick;
-	redis_root["desc"] = user_info->desc;
-	redis_root["sex"] = user_info->sex;
-	redis_root["icon"] = user_info->icon;
+	redis_root["nick"] = user_info->nickname;
+	redis_root["desc"] = user_info->profile_bio;
+	redis_root["sex"] = user_info->gender;
+	redis_root["icon"] = user_info->avatar_key;
 
 	RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 
 	//返回数据
-	rtvalue["uid"] = user_info->uid;
-	rtvalue["name"] = user_info->name;
+	rtvalue["uid"] = user_info->user_id;
+	rtvalue["name"] = user_info->username;
 	rtvalue["email"] = user_info->email;
-	rtvalue["nick"] = user_info->nick;
-	rtvalue["desc"] = user_info->desc;
-	rtvalue["sex"] = user_info->sex;
-	rtvalue["icon"] = user_info->icon;
+	rtvalue["nick"] = user_info->nickname;
+	rtvalue["desc"] = user_info->profile_bio;
+	rtvalue["sex"] = user_info->gender;
+	rtvalue["icon"] = user_info->avatar_key;
 }
 
 void LogicSystem::GetUserByName(std::string name, json& rtvalue)
@@ -795,24 +787,24 @@ void LogicSystem::GetUserByName(std::string name, json& rtvalue)
 
 	//将数据库内容写入redis缓存
 	json redis_root;
-	redis_root["uid"] = user_info->uid;
-	redis_root["name"] = user_info->name;
+	redis_root["uid"] = user_info->user_id;
+	redis_root["name"] = user_info->username;
 	redis_root["email"] = user_info->email;
-	redis_root["nick"] = user_info->nick;
-	redis_root["desc"] = user_info->desc;
-	redis_root["sex"] = user_info->sex;
-	redis_root["icon"] = user_info->icon;
+	redis_root["nick"] = user_info->nickname;
+	redis_root["desc"] = user_info->profile_bio;
+	redis_root["sex"] = user_info->gender;
+	redis_root["icon"] = user_info->avatar_key;
 
 	RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 	
 	//返回数据
-	rtvalue["uid"] = user_info->uid;
-	rtvalue["name"] = user_info->name;
+	rtvalue["uid"] = user_info->user_id;
+	rtvalue["name"] = user_info->username;
 	rtvalue["email"] = user_info->email;
-	rtvalue["nick"] = user_info->nick;
-	rtvalue["desc"] = user_info->desc;
-	rtvalue["sex"] = user_info->sex;
-	rtvalue["icon"] = user_info->icon;
+	rtvalue["nick"] = user_info->nickname;
+	rtvalue["desc"] = user_info->profile_bio;
+	rtvalue["sex"] = user_info->gender;
+	rtvalue["icon"] = user_info->avatar_key;
 }
 
 bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo)
@@ -822,15 +814,15 @@ bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<Use
 	bool b_base = RedisMgr::GetInstance()->Get(base_key, info_str);
 	if (b_base) {
 		auto root = json::parse(info_str, nullptr, false);
-		userinfo->uid = root["uid"].get<int>();
-		userinfo->name = root["name"].get<std::string>();
+		userinfo->user_id = root["uid"].get<int>();
+		userinfo->username = root["name"].get<std::string>();
 		userinfo->email = root["email"].get<std::string>();
-		userinfo->nick = root["nick"].get<std::string>();
-		userinfo->desc = root["desc"].get<std::string>();
-		userinfo->sex = root["sex"].get<int>();
-		userinfo->icon = root["icon"].get<std::string>();
-		std::cout << "user login uid is  " << userinfo->uid << " name  is "
-			<< userinfo->name << " email is " << userinfo->email << endl;
+		userinfo->nickname = root["nick"].get<std::string>();
+		userinfo->profile_bio = root["desc"].get<std::string>();
+		userinfo->gender = root["sex"].get<int>();
+		userinfo->avatar_key = root["icon"].get<std::string>();
+		std::cout << "user login uid is  " << userinfo->user_id << " name  is "
+			<< userinfo->username << " email is " << userinfo->email << endl;
 	}
 	else {
 		//redis中没有则查询mysql
@@ -846,38 +838,38 @@ bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<Use
 		//将数据库内容写入redis缓存
 		json redis_root;
 		redis_root["uid"] = uid;
-		redis_root["name"] = userinfo->name;
+		redis_root["name"] = userinfo->username;
 		redis_root["email"] = userinfo->email;
-		redis_root["nick"] = userinfo->nick;
-		redis_root["desc"] = userinfo->desc;
-		redis_root["sex"] = userinfo->sex;
-		redis_root["icon"] = userinfo->icon;
+		redis_root["nick"] = userinfo->nickname;
+		redis_root["desc"] = userinfo->profile_bio;
+		redis_root["sex"] = userinfo->gender;
+		redis_root["icon"] = userinfo->avatar_key;
 		RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 	}
 
 	return true;
 }
 
-bool LogicSystem::GetFriendApplyInfo(int to_uid, std::vector<std::shared_ptr<ApplyInfo>> &list) {
+bool LogicSystem::GetFriendApplyInfo(int target_user_id,
+	std::vector<std::shared_ptr<ApplyInfo>> &list) {
 	list.clear();
 	constexpr int kPageSize = 100;
-	std::int64_t after_message_id = 0;
+	std::int64_t after_friend_request_id = 0;
 	for (;;) {
 		std::vector<std::shared_ptr<ApplyInfo>> page;
 		if (!MysqlMgr::GetInstance()->GetApplyList(
-			to_uid, page, after_message_id, kPageSize)) {
+			target_user_id, page, after_friend_request_id, kPageSize)) {
 			return false;
 		}
 		if (page.empty()) return true;
-		after_message_id = page.back()->_message_id;
+		after_friend_request_id = page.back()->request->friend_request_id;
 		list.insert(list.end(), page.begin(), page.end());
 		if (static_cast<int>(page.size()) < kPageSize) return true;
 	}
 }
 
-bool LogicSystem::GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo>>& user_list) {
-	//从mysql获取好友列表
-	return MysqlMgr::GetInstance()->GetFriendList(self_id, user_list);
+bool LogicSystem::GetFriendList(int user_id, std::vector<ContactInfo>& contacts) {
+	return MysqlMgr::GetInstance()->GetFriendList(user_id, contacts);
 }
 
 void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session, 
@@ -885,7 +877,7 @@ void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session,
 {
 	//从数据库加chat_threads记录
 	auto root = json::parse(msg_data, nullptr, false);
-	auto uid = root["uid"].get<int>();
+	auto uid = session->GetUserId();
 	std::cout << "get uid  threads  " << uid << std::endl;
 
 	json  rtvalue;
@@ -921,10 +913,9 @@ void LogicSystem::GetUserThreadsHandler(std::shared_ptr<CSession> session,
 	for (auto& thread : threads) {
 		json thread_value;
 		thread_value["thread_id"] = std::to_string(thread->_thread_id);
-		thread_value["type"] = thread->_type;
-		thread_value["user1_id"] = thread->_user1_id;
-		thread_value["user2_id"] = thread->_user2_id;
-		thread_value["last_msg_id"] = std::to_string(thread->_last_msg_id);
+		thread_value["lower_user_id"] = thread->_lower_user_id;
+		thread_value["higher_user_id"] = thread->_higher_user_id;
+		thread_value["last_message_id"] = std::to_string(thread->_last_msg_id);
 		rtvalue["threads"].push_back(thread_value);
 	}
 }
@@ -943,21 +934,29 @@ bool LogicSystem::GetUserThreads(int64_t userId,
 void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
-	auto uid = root["uid"].get<int>();
-	auto other_id = root["other_id"].get<int>();
+	auto uid = session->GetUserId();
 	
 	json  rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
-	rtvalue["uid"] = uid;
-	rtvalue["other_id"] = other_id;
 
 	Defer defer([this, &rtvalue, session]() {
 		std::string return_str = rtvalue.dump(4);
 		session->Send(return_str, ID_CREATE_PRIVATE_CHAT_RSP);
 		});
+	if (root.is_discarded() || !root.is_object() ||
+		!root.contains("target_user_id") || !root["target_user_id"].is_number_integer()) {
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		return;
+	}
+	const int target_user_id = root["target_user_id"].get<int>();
+	if (uid <= 0 || target_user_id <= 0 || uid == target_user_id) {
+		rtvalue["error"] = ErrorCodes::UidInvalid;
+		return;
+	}
+	rtvalue["target_user_id"] = target_user_id;
 
 	std::int64_t thread_id = 0;
-	bool res = MysqlMgr::GetInstance()->CreatePrivateChat(uid, other_id, thread_id);
+	bool res = MysqlMgr::GetInstance()->CreatePrivateChat(uid, target_user_id, thread_id);
 	if (!res) {
 		rtvalue["error"] = ErrorCodes::CREATE_CHAT_FAILED;
 		return;
@@ -995,30 +994,18 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 	rtvalue["thread_id"] = std::to_string(thread_id);
 
 	int page_size = 10;
-	std::shared_ptr<PageResult> res = MysqlMgr::GetInstance()->LoadChatMsg(thread_id, message_id, page_size);
+	std::shared_ptr<PageResult> res = MysqlMgr::GetInstance()->LoadChatMsg(
+		session->GetUserId(), thread_id, message_id, page_size);
 	if (!res) {
 		rtvalue["error"] = ErrorCodes::LOAD_CHAT_FAILED;
 		return;
 	}
 
-	rtvalue["last_message_id"] = std::to_string(res->next_cursor);
+	rtvalue["next_message_id"] = std::to_string(res->next_cursor);
 	rtvalue["load_more"] = res->load_more;
 	for (auto& chat : res->messages) {
-		json  chat_data;
-		chat_data["sender"] = chat.sender_id;
-		chat_data["msg_id"] = std::to_string(chat.message_id);
-		chat_data["thread_id"] = std::to_string(chat.thread_id);
-		chat_data["unique_id"] = 0;
-		chat_data["msg_content"] = chat.content;
-		chat_data["chat_time"] = chat.chat_time;
-		chat_data["status"] = chat.status;
-		chat_data["msg_type"] = chat.msg_type;
-		chat_data["receiver"] = chat.recv_id;
-		//资源消息三件套（与统一 envelope 对齐；文本消息为空/0）
-		chat_data["resource_status"] = static_cast<int>(chat.resource_status);
-		chat_data["content_hash"] = chat.content_hash;
-		chat_data["mime_type"] = chat.mime_type;
-		rtvalue["chat_datas"].push_back(chat_data);
+		rtvalue["messages"].push_back(
+			BuildMessageEnvelope(std::make_shared<ChatMessage>(chat)));
 	}
 
 }
@@ -1026,10 +1013,7 @@ void LogicSystem::LoadChatMsg(std::shared_ptr<CSession> session,
 void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 	const short& msg_type, const string& msg_data) {
 	//1503 创建资源消息（图片/文件统一）：只登记元数据，不含文件体。
-	//请求：{fromuid, touid, thread_id:"<str>", unique_id, msg_type:1|3,
-	//       file_name, content_size:"<str>", content_hash:"<64hex>", mime_type}
-	//响应：{error, message_id:"<str>", unique_id, thread_id, chat_time,
-	//       content_size:"<str>", resource_status:0}
+	// Request contains only current resource metadata. Sender comes from Session.
 	auto root = json::parse(msg_data, nullptr, false);
 
 	json rtvalue;
@@ -1054,59 +1038,57 @@ void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 		return true;
 	};
 
-	int uid = 0, touid = 0, msg_type_value = 0;
+	const int uid = session->GetUserId();
+	int target_user_id = 0, message_type = 0;
 	std::int64_t thread_id = 0;
-	std::string unique_id, file_name, content_hash, mime_type;
-	if (!get_int("fromuid", uid) || !get_int("touid", touid) ||
-		!get_int("msg_type", msg_type_value) ||
+	std::string client_message_id, original_file_name, sha256, mime_type;
+	if (!get_int("target_user_id", target_user_id) ||
+		!get_int("message_type", message_type) ||
 		!root.contains("thread_id") || !ParseJsonId(root["thread_id"], thread_id) ||
-		!get_str("unique_id", unique_id) || !get_str("file_name", file_name) ||
-		!get_str("content_hash", content_hash) || !get_str("mime_type", mime_type)) {
+		!get_str("client_message_id", client_message_id) ||
+		!get_str("original_file_name", original_file_name) ||
+		!get_str("sha256", sha256) || !get_str("mime_type", mime_type)) {
 		reject(ErrorCodes::Error_Json);
 		return;
 	}
-	if (unique_id.empty() || unique_id.size() > 64) {
+	if (client_message_id.empty() || client_message_id.size() > 64) {
 		reject(ErrorCodes::Error_Json);
 		return;
 	}
+	rtvalue["client_message_id"] = client_message_id;
 
-	rtvalue["fromuid"] = uid;
-	rtvalue["touid"] = touid;
-	rtvalue["thread_id"] = std::to_string(thread_id);
-	rtvalue["unique_id"] = unique_id;
-
-	//content_size：破坏性协议只接受十进制字符串。
-	std::uint64_t content_size = 0;
-	if (root.contains("content_size") && root["content_size"].is_string()) {
-		const auto value = root["content_size"].get<std::string>();
+	std::uint64_t file_size_bytes = 0;
+	if (root.contains("file_size_bytes") && root["file_size_bytes"].is_string()) {
+		const auto value = root["file_size_bytes"].get<std::string>();
 		try {
 			if (!value.empty() && std::all_of(value.begin(), value.end(),
 				[](unsigned char c) { return std::isdigit(c) != 0; })) {
-				content_size = std::stoull(value);
+				file_size_bytes = std::stoull(value);
 			}
 		} catch (...) {
-			content_size = 0;
+			file_size_bytes = 0;
 		}
 	}
 
 	//---- 校验链 ----
-	//1. 会话身份：不信任 JSON 里的 fromuid（沿用 ResourceServer“sender 取 session”惯例）
-	if (uid <= 0 || touid <= 0 || uid != session->GetUserId()) {
+	//1. 发送者身份只取已认证 session，不接收客户端 sender_user_id。
+	if (uid <= 0 || target_user_id <= 0) {
 		reject(ErrorCodes::UidInvalid);
 		return;
 	}
 
-	//2. 会话归属：fromuid/touid 必须都是该私聊会话成员（防跨会话发消息）
+	//2. sender_user_id/target_user_id 必须都是该私聊会话成员。
 	int member1 = 0, member2 = 0;
 	if (!MysqlMgr::GetInstance()->GetPrivateChatMembers(thread_id, member1, member2) ||
-		!((uid == member1 && touid == member2) || (uid == member2 && touid == member1))) {
+		!((uid == member1 && target_user_id == member2) ||
+			(uid == member2 && target_user_id == member1))) {
 		reject(ErrorCodes::CREATE_CHAT_FAILED);
 		return;
 	}
 
 	//3. 类型：仅图片(1)/文件(3)
-	const bool is_pic = msg_type_value == static_cast<int>(ChatMsgType::PIC);
-	const bool is_file = msg_type_value == static_cast<int>(ChatMsgType::FILE);
+	const bool is_pic = message_type == static_cast<int>(ChatMsgType::PIC);
+	const bool is_file = message_type == static_cast<int>(ChatMsgType::FILE);
 	if (!is_pic && !is_file) {
 		reject(ErrorCodes::ResourceInvalid);
 		return;
@@ -1116,19 +1098,19 @@ void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 	const std::uint64_t size_limit = is_pic
 		? ReadResourceLimit("MaxImageSize", kDefaultMaxImageSize)
 		: ReadResourceLimit("MaxFileSize", kDefaultMaxFileSize);
-	if (content_size == 0 || content_size > size_limit) {
+	if (file_size_bytes == 0 || file_size_bytes > size_limit) {
 		reject(ErrorCodes::ResourceSizeExceeded);
 		return;
 	}
 
 	//5. 文件名：清洗后作为 content 存储（磁盘文件以 message_id 命名，content 仅展示用）
-	if (!SanitizeFileName(file_name, file_name)) {
+	if (!SanitizeFileName(original_file_name, original_file_name)) {
 		reject(ErrorCodes::ResourceInvalid);
 		return;
 	}
 
 	//6. 整文件哈希：64 位小写 hex（ResourceServer 收齐分片后据此校验）
-	if (!llfc::IsValidSha256Hex(content_hash)) {
+	if (!llfc::IsValidSha256Hex(sha256)) {
 		reject(ErrorCodes::ResourceInvalid);
 		return;
 	}
@@ -1140,21 +1122,20 @@ void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 	}
 
 	//---- 落库（幂等 UPSERT：duplicate 回同一 canonical message_id，不建第二行）----
-	//服务端生成 chat_time，不读取客户端时间；status 纯阅读态、resource_status=Uploading
-	auto timestamp = getCurrentTimestamp();
+	//服务端生成 created_at，不读取客户端时间；资源消息初始状态为 PENDING。
 	auto chat_msg = std::make_shared<ChatMessage>();
-	chat_msg->chat_time = timestamp;
-	chat_msg->sender_id = uid;
-	chat_msg->recv_id = touid;
-	chat_msg->unique_id = unique_id;
+	chat_msg->created_at = getCurrentTimestamp();
+	chat_msg->sender_user_id = uid;
+	chat_msg->recipient_user_id = target_user_id;
+	chat_msg->client_message_id = client_message_id;
 	chat_msg->thread_id = thread_id;
-	chat_msg->content = file_name;
-	chat_msg->status = MsgStatus::UN_READ;
-	chat_msg->msg_type = msg_type_value;
-	chat_msg->resource_status = ResourceStatus::Uploading;
-	chat_msg->content_size = content_size;
-	chat_msg->content_hash = content_hash;
-	chat_msg->mime_type = mime_type;
+	chat_msg->message_type = message_type;
+	chat_msg->status = MessageStatus::Pending;
+	chat_msg->resource = std::make_shared<MessageResource>();
+	chat_msg->resource->original_file_name = original_file_name;
+	chat_msg->resource->file_size_bytes = file_size_bytes;
+	chat_msg->resource->sha256 = sha256;
+	chat_msg->resource->mime_type = mime_type;
 
 	auto save_res = MysqlMgr::GetInstance()->AddChatMsg(chat_msg);
 	if (save_res == SaveMessageResult::Failed) {
@@ -1163,85 +1144,116 @@ void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 		return;
 	}
 	if (save_res == SaveMessageResult::Conflict) {
-		//永久冲突：原消息不变，不创建第二行（unique_id 已在 rtvalue 顶层）
+		//永久冲突：原消息不变，不创建第二行。
 		reject(ErrorCodes::MESSAGE_CONFLICT);
 		return;
 	}
 
-	//canonical：message_id/content_size 十进制字符串；resource_status 十进制
-	rtvalue["message_id"] = std::to_string(chat_msg->message_id);
-	rtvalue["chat_time"] = chat_msg->chat_time;
-	rtvalue["content_size"] = std::to_string(chat_msg->content_size);
-	rtvalue["resource_status"] = static_cast<int>(chat_msg->resource_status);
+	//canonical：message_id/file_size_bytes 使用十进制字符串。
+	rtvalue.update(BuildMessageEnvelope(chat_msg));
 
 	//【关键顺序】事务已提交 → 发 1504 sender response（语义固定为“服务端已持久化”）
 	session->Send(rtvalue.dump(4), ID_CREATE_RESOURCE_MSG_RSP);
 
 	//Uploading 资源不写同步行、不实时通知，待 ResourceServer 上传完成点
-	//ResourceServer 在同一事务中置 Ready 并分配 recv_seq 后才对接收者可见，
+	//ResourceServer 在同一事务中置 PUBLISHED 并分配 event_seq 后才对接收者可见，
 	//避免同步到尚不可下载的资源。
 }
 
 json LogicSystem::BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg) {
 	json env;
+	if (!msg) return env;
+	env["event_type"] = msg->message_type;
+	if (msg->event_seq > 0) env["event_seq"] = std::to_string(msg->event_seq);
 	env["message_id"] = std::to_string(msg->message_id);
-	env["recv_seq"] = std::to_string(msg->recv_seq);
-	env["unique_id"] = msg->unique_id;
-	env["thread_id"] = msg->thread_id > 0 ? json(std::to_string(msg->thread_id)) : json(nullptr);
-	env["fromuid"] = msg->sender_id;
-	env["touid"] = msg->recv_id;
-	env["msg_type"] = msg->msg_type;
-	env["content"] = msg->content;
-	env["content_size"] = std::to_string(msg->content_size);
-	env["chat_time"] = msg->chat_time;
-	env["status"] = msg->status;
-	env["resource_status"] = static_cast<int>(msg->resource_status);
-	env["content_hash"] = msg->content_hash;
-	env["mime_type"] = msg->mime_type;
-	env["business_status"] = static_cast<int>(msg->business_status);
-	env["related_message_id"] = msg->related_message_id > 0
-		? json(std::to_string(msg->related_message_id)) : json(nullptr);
-	env["handled_at"] = msg->handled_at.empty() ? json(nullptr) : json(msg->handled_at);
-	env["requester_remark"] = msg->requester_remark;
-	if (msg->msg_type >= static_cast<int>(ChatMsgType::FRIEND_APPLY)) {
-		auto sender = MysqlMgr::GetInstance()->GetUser(msg->sender_id);
-		if (sender) {
-			env["sender_profile"] = {
-				{ "uid", sender->uid }, { "name", sender->name },
-				{ "nick", sender->nick }, { "icon", sender->icon },
-				{ "sex", sender->sex }, { "desc", sender->desc }
-			};
-		}
+	env["client_message_id"] = msg->client_message_id;
+	env["thread_id"] = std::to_string(msg->thread_id);
+	env["sender_user_id"] = msg->sender_user_id;
+	env["message_type"] = msg->message_type;
+	env["created_at"] = msg->created_at;
+	if (msg->message_type == static_cast<int>(ChatMsgType::TEXT)) {
+		env["text_content"] = msg->text_content;
+	} else if (msg->resource) {
+		env["original_file_name"] = msg->resource->original_file_name;
+		env["file_size_bytes"] = std::to_string(msg->resource->file_size_bytes);
+		env["sha256"] = msg->resource->sha256;
+		env["mime_type"] = msg->resource->mime_type;
 	}
 	return env;
 }
 
-void LogicSystem::DeliverUserMessage(const std::shared_ptr<ChatMessage>& msg) {
-	if (!msg || msg->recv_seq == 0) return;
+json LogicSystem::BuildFriendRequestEnvelope(
+	const std::shared_ptr<FriendRequest>& request, int recipient_user_id) {
+	json env;
+	if (!request) return env;
+	int event_type = static_cast<int>(UserEventType::FRIEND_APPLY);
+	if (request->status == FriendRequestStatus::Accepted) {
+		event_type = static_cast<int>(UserEventType::FRIEND_ACCEPT);
+	} else if (request->status == FriendRequestStatus::Rejected) {
+		event_type = static_cast<int>(UserEventType::FRIEND_REJECT);
+	}
+	env["event_type"] = event_type;
+	if (request->event_seq > 0) env["event_seq"] = std::to_string(request->event_seq);
+	env["friend_request_id"] = std::to_string(request->friend_request_id);
+	env["requester_user_id"] = request->requester_user_id;
+	env["target_user_id"] = request->target_user_id;
+	env["client_request_id"] = request->client_request_id;
+	env["request_message"] = request->request_message;
+	env["status"] = static_cast<int>(request->status);
+	env["thread_id"] = request->thread_id > 0
+		? json(std::to_string(request->thread_id)) : json(nullptr);
+	const int peer_user_id = recipient_user_id == request->requester_user_id
+		? request->target_user_id : request->requester_user_id;
+	auto peer = MysqlMgr::GetInstance()->GetUser(peer_user_id);
+	if (peer) {
+		env["peer_username"] = peer->username;
+		env["peer_nickname"] = peer->nickname;
+		env["peer_avatar_key"] = peer->avatar_key;
+		env["peer_gender"] = peer->gender;
+	}
+	return env;
+}
+
+json LogicSystem::BuildUserEventEnvelope(const UserEvent& event,
+	int recipient_user_id) {
+	json env = event.message ? BuildMessageEnvelope(event.message)
+		: BuildFriendRequestEnvelope(event.friend_request, recipient_user_id);
+	env["event_type"] = event.event_type;
+	env["event_seq"] = std::to_string(event.event_seq);
+	return env;
+}
+
+void LogicSystem::DeliverUserEvent(const UserEvent& event, int recipient_user_id) {
+	if (event.event_seq == 0 || recipient_user_id <= 0) return;
 	std::string server_name;
-	if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(msg->recv_id), server_name)) {
+	if (!RedisMgr::GetInstance()->Get(
+		USERIPPREFIX + std::to_string(recipient_user_id), server_name)) {
 		return;
 	}
 	const auto self_name = ConfigMgr::Inst()["SelfServer"]["Name"];
 	if (server_name == self_name) {
-		auto envelope = BuildMessageEnvelope(msg);
+		auto envelope = BuildUserEventEnvelope(event, recipient_user_id);
 		envelope["error"] = ErrorCodes::Success;
 		const std::string payload = envelope.dump();
-		PostToUser(msg->recv_id, [uid = msg->recv_id, payload]() {
+		PostToUser(recipient_user_id, [uid = recipient_user_id, payload]() {
 			auto target = UserMgr::GetInstance()->GetSession(uid);
 			if (target) target->Send(payload, ID_NOTIFY_USER_MESSAGE);
 		});
 		return;
 	}
-	const int uid = msg->recv_id;
-	const std::int64_t message_id = msg->message_id;
-	PostDelivery(msg->sender_id, [server_name, uid, message_id]() {
-		auto result = ChatGrpcClient::GetInstance()->NotifyUserMessage(
-			server_name, uid, message_id);
+	const std::int64_t message_id = event.message ? event.message->message_id : 0;
+	const std::int64_t friend_request_id = event.friend_request
+		? event.friend_request->friend_request_id : 0;
+	const int sender_user_id = event.message ? event.message->sender_user_id
+		: event.friend_request->requester_user_id;
+	PostDelivery(sender_user_id, [server_name, recipient_user_id, event_type = event.event_type,
+		message_id, friend_request_id]() {
+		auto result = ChatGrpcClient::GetInstance()->NotifyUserEvent(server_name,
+			recipient_user_id, event_type, message_id, friend_request_id);
 		if (result.grpc_code != grpc::StatusCode::OK ||
 			result.app_error != ErrorCodes::Success) {
-			std::cout << "NotifyUserMessage deferred to sync: message_id="
-				<< message_id << " app_error=" << result.app_error << std::endl;
+			std::cout << "NotifyUserEvent deferred to sync: event_type="
+				<< event_type << " app_error=" << result.app_error << std::endl;
 		}
 	});
 }
@@ -1258,21 +1270,21 @@ void LogicSystem::DealSyncMessage(std::shared_ptr<CSession> session,
 		reject(ErrorCodes::Error_Json);
 		return;
 	}
-	std::uint64_t after_recv_seq = 0;
-	if (root.contains("after_recv_seq")) {
-		if (!root["after_recv_seq"].is_string()) {
+	std::uint64_t after_event_seq = 0;
+	if (root.contains("after_event_seq")) {
+		if (!root["after_event_seq"].is_string()) {
 			reject(ErrorCodes::Error_Json);
 			return;
 		}
-		const std::string value = root["after_recv_seq"].get<std::string>();
+		const std::string value = root["after_event_seq"].get<std::string>();
 		try {
 			if (value.empty() || !std::all_of(value.begin(), value.end(),
 				[](unsigned char c) { return std::isdigit(c) != 0; })) {
-				throw std::invalid_argument("recv_seq");
+				throw std::invalid_argument("event_seq");
 			}
 			std::size_t consumed = 0;
-			after_recv_seq = std::stoull(value, &consumed);
-			if (consumed != value.size()) throw std::invalid_argument("recv_seq");
+			after_event_seq = std::stoull(value, &consumed);
+			if (consumed != value.size()) throw std::invalid_argument("event_seq");
 		} catch (...) {
 			reject(ErrorCodes::Error_Json);
 			return;
@@ -1287,17 +1299,17 @@ void LogicSystem::DealSyncMessage(std::shared_ptr<CSession> session,
 	if (limit > 200) limit = 200;
 
 	std::uint64_t head = 0;
-	if (!MysqlMgr::GetInstance()->GetLastRecvSeq(session->GetUserId(), head)) {
+	if (!MysqlMgr::GetInstance()->GetLastEventSeq(session->GetUserId(), head)) {
 		reject(ErrorCodes::MESSAGE_STORE_FAILED);
 		return;
 	}
-	if (after_recv_seq > head) {
+	if (after_event_seq > head) {
 		reject(ErrorCodes::SyncCursorInvalid);
 		return;
 	}
-	std::vector<SyncedMessage> rows;
-	if (!MysqlMgr::GetInstance()->GetMessagesAfterRecvSeq(
-		session->GetUserId(), after_recv_seq, limit, rows)) {
+	std::vector<UserEvent> rows;
+	if (!MysqlMgr::GetInstance()->GetEventsAfterSeq(
+		session->GetUserId(), after_event_seq, limit, rows)) {
 		reject(ErrorCodes::MESSAGE_STORE_FAILED);
 		return;
 	}
@@ -1305,13 +1317,13 @@ void LogicSystem::DealSyncMessage(std::shared_ptr<CSession> session,
 	if (has_more) rows.pop_back();
 	json rsp;
 	rsp["error"] = ErrorCodes::Success;
-	rsp["messages"] = json::array();
-	std::uint64_t next_recv_seq = after_recv_seq;
+	rsp["events"] = json::array();
+	std::uint64_t next_event_seq = after_event_seq;
 	for (const auto& row : rows) {
-		rsp["messages"].push_back(BuildMessageEnvelope(row.msg));
-		next_recv_seq = row.recv_seq;
+		rsp["events"].push_back(BuildUserEventEnvelope(row, session->GetUserId()));
+		next_event_seq = row.event_seq;
 	}
-	rsp["next_recv_seq"] = std::to_string(next_recv_seq);
+	rsp["next_event_seq"] = std::to_string(next_event_seq);
 	rsp["has_more"] = has_more;
 	session->Send(rsp.dump(), ID_SYNC_USER_MESSAGE_RSP);
 }

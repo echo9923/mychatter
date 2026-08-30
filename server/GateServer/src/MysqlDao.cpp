@@ -19,48 +19,7 @@ MysqlDao::~MysqlDao(){
 
 int MysqlDao::RegUser(const std::string& name, const std::string& email, const std::string& pwd)
 {
-	auto con = pool_->getConnection();
-	try {
-		if (con == nullptr) {
-			return false;
-		}
-		// 准备调用存储过程
-		unique_ptr < sql::PreparedStatement > stmt(con->_con->prepareStatement("CALL reg_user(?,?,?,@result)"));
-		// 密码先做 PBKDF2 哈希，DB 只存哈希
-		const std::string hashed = llfc::HashPassword(pwd);
-		if (hashed.empty()) {
-			pool_->returnConnection(std::move(con));
-			return -1;
-		}
-		// 设置输入参数
-		stmt->setString(1, name);
-		stmt->setString(2, email);
-		stmt->setString(3, hashed);
-
-		// 由于PreparedStatement不直接支持注册输出参数，我们需要使用会话变量或其他方法来获取输出参数的值
-
-		  // 执行存储过程
-		stmt->execute();
-		// 如果存储过程设置了会话变量或有其他方式获取输出参数的值，你可以在这里执行SELECT查询来获取它们
-	   // 例如，如果存储过程设置了一个会话变量@result来存储输出结果，可以这样获取：
-	   unique_ptr<sql::Statement> stmtResult(con->_con->createStatement());
-	  unique_ptr<sql::ResultSet> res(stmtResult->executeQuery("SELECT @result AS result"));
-	  if (res->next()) {
-	       int result = res->getInt("result");
-	      cout << "Result: " << result << endl;
-		  pool_->returnConnection(std::move(con));
-		  return result;
-	  }
-	  pool_->returnConnection(std::move(con));
-		return -1;
-	}
-	catch (sql::SQLException& e) {
-		pool_->returnConnection(std::move(con));
-		std::cerr << "SQLException: " << e.what();
-		std::cerr << " (MySQL error code: " << e.getErrorCode();
-		std::cerr << ", SQLState: " << e.getSQLState() << " )" << std::endl;
-		return -1;
-	}
+	return RegUserTransaction(name, email, pwd, std::string());
 }
 
 int MysqlDao::RegUserTransaction(const std::string& name, const std::string& email, const std::string& pwd, 
@@ -81,7 +40,7 @@ int MysqlDao::RegUserTransaction(const std::string& name, const std::string& ema
 		//执行第一个数据库操作，根据email查找用户
 			// 准备查询语句
 
-		std::unique_ptr<sql::PreparedStatement> pstmt_email(con->_con->prepareStatement("SELECT 1 FROM user WHERE email = ?"));
+		std::unique_ptr<sql::PreparedStatement> pstmt_email(con->_con->prepareStatement("SELECT 1 FROM users WHERE email = ?"));
 
 		// 绑定参数
 		pstmt_email->setString(1, email);
@@ -97,7 +56,7 @@ int MysqlDao::RegUserTransaction(const std::string& name, const std::string& ema
 		}
 
 		// 准备查询用户名是否重复
-		std::unique_ptr<sql::PreparedStatement> pstmt_name(con->_con->prepareStatement("SELECT 1 FROM user WHERE name = ?"));
+		std::unique_ptr<sql::PreparedStatement> pstmt_name(con->_con->prepareStatement("SELECT 1 FROM users WHERE username = ?"));
 
 		// 绑定参数
 		pstmt_name->setString(1, name);
@@ -118,8 +77,7 @@ int MysqlDao::RegUserTransaction(const std::string& name, const std::string& ema
 			con->_con->rollback();
 			return -1;
 		}
-		// 插入user信息（uid 列省略，走 DEFAULT 0，随后回填为自增主键 id）
-		std::unique_ptr<sql::PreparedStatement> pstmt_insert(con->_con->prepareStatement("INSERT INTO user (name, email, pwd, nick, icon) "
+		std::unique_ptr<sql::PreparedStatement> pstmt_insert(con->_con->prepareStatement("INSERT INTO users (username, email, password_hash, nickname, avatar_key) "
 			"VALUES (?, ?, ?, ?, ?)"));
 		pstmt_insert->setString(1, name);
 		pstmt_insert->setString(2, email);
@@ -142,15 +100,9 @@ int MysqlDao::RegUserTransaction(const std::string& name, const std::string& ema
 			return -1;
 		}
 
-		// 回填 uid = 自增主键 id（方案A：不再使用独立发号器，uid 直接等于 id）
-		std::unique_ptr<sql::PreparedStatement> pstmt_setuid(con->_con->prepareStatement("UPDATE user SET uid = ? WHERE id = ?"));
-		pstmt_setuid->setInt(1, newId);
-		pstmt_setuid->setInt(2, newId);
-		pstmt_setuid->executeUpdate();
-
 		// 提交事务
 		con->_con->commit();
-		std::cout << "newuser insert into user success, uid = " << newId << std::endl;
+		std::cout << "new user inserted into users, user_id=" << newId << std::endl;
 		return newId;
 	}
 	catch (sql::SQLException& e) {
@@ -173,7 +125,7 @@ bool MysqlDao::CheckEmail(const std::string& name, const std::string& email) {
 		}
 
 		// 准备查询语句
-		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement("SELECT email FROM user WHERE name = ?"));
+		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement("SELECT email FROM users WHERE username = ?"));
 
 		// 绑定参数
 		pstmt->setString(1, name);
@@ -216,7 +168,7 @@ bool MysqlDao::UpdatePwd(const std::string& name, const std::string& newpwd) {
 			return false;
 		}
 		// 准备查询语句
-		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement("UPDATE user SET pwd = ? WHERE name = ?"));
+		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement("UPDATE users SET password_hash = ? WHERE username = ?"));
 
 		// 绑定参数
 		pstmt->setString(2, name);
@@ -252,7 +204,8 @@ bool MysqlDao::CheckPwd(const std::string& email, const std::string& pwd, UserIn
 	
 
 		// 准备SQL语句
-		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement("SELECT * FROM user WHERE email = ?"));
+		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement(
+			"SELECT user_id, username, email, password_hash FROM users WHERE email = ?"));
 		pstmt->setString(1, email); // 将username替换为你要查询的用户名
 
 		// 执行查询
@@ -260,10 +213,10 @@ bool MysqlDao::CheckPwd(const std::string& email, const std::string& pwd, UserIn
 		std::string origin_pwd = "";
 		// 遍历结果集
 		while (res->next()) {
-			origin_pwd = res->getString("pwd");
-			userInfo.name = res->getString("name");
+			origin_pwd = res->getString("password_hash");
+			userInfo.name = res->getString("username");
 			userInfo.email = res->getString("email");
-			userInfo.uid = res->getInt("uid");
+			userInfo.uid = res->getInt("user_id");
 			break;
 		}
 
@@ -291,34 +244,15 @@ bool MysqlDao::TestProcedure(const std::string& email, int& uid, string& name) {
 		Defer defer([this, &con]() {
 			pool_->returnConnection(std::move(con));
 			});
-		// 准备调用存储过程
-		unique_ptr < sql::PreparedStatement > stmt(con->_con->prepareStatement("CALL test_procedure(?,@userId,@userName)"));
-		// 设置输入参数
+		unique_ptr<sql::PreparedStatement> stmt(con->_con->prepareStatement(
+			"SELECT user_id, username FROM users WHERE email = ?"));
 		stmt->setString(1, email);
-		
-		// 由于PreparedStatement不直接支持注册输出参数，我们需要使用会话变量或其他方法来获取输出参数的值
-
-		  // 执行存储过程
-		stmt->execute();
-		// 如果存储过程设置了会话变量或有其他方式获取输出参数的值，你可以在这里执行SELECT查询来获取它们
-	   // 例如，如果存储过程设置了一个会话变量@result来存储输出结果，可以这样获取：
-		unique_ptr<sql::Statement> stmtResult(con->_con->createStatement());
-		unique_ptr<sql::ResultSet> res(stmtResult->executeQuery("SELECT @userId AS uid"));
+		unique_ptr<sql::ResultSet> res(stmt->executeQuery());
 		if (!(res->next())) {
 			return false;
 		}
-		
-		uid = res->getInt("uid");
-		cout << "uid: " << uid << endl;
-		
-		stmtResult.reset(con->_con->createStatement());
-		res.reset(stmtResult->executeQuery("SELECT @userName AS name"));
-		if (!(res->next())) {
-			return false;
-		}
-		
-		name = res->getString("name");
-		cout << "name: " << name << endl;
+		uid = res->getInt("user_id");
+		name = res->getString("username");
 		return true;
 
 	}

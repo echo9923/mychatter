@@ -76,8 +76,9 @@ std::shared_ptr<grpc::Channel> ChatGrpcClient::ResolveChannel(
 	return channel;
 }
 
-NotifyResult ChatGrpcClient::NotifyUserMessage(const std::string& server_name,
-	int to_uid, std::int64_t message_id) {
+NotifyResult ChatGrpcClient::NotifyUserEvent(const std::string& server_name,
+	int to_uid, int event_type, std::int64_t message_id,
+	std::int64_t friend_request_id) {
 	NotifyResult result{ grpc::StatusCode::OK, ErrorCodes::Success };
 	const int deadline_ms = ReadDeliveryInt("RpcDeadlineMs", 3000);
 	const int max_attempts = ReadDeliveryInt("RpcMaxAttempts", 3);
@@ -95,6 +96,8 @@ NotifyResult ChatGrpcClient::NotifyUserMessage(const std::string& server_name,
 		message::NotifyUserMessageReq request;
 		request.set_to_uid(to_uid);
 		request.set_message_id(message_id);
+		request.set_event_type(event_type);
+		request.set_friend_request_id(friend_request_id);
 		message::NotifyUserMessageRsp response;
 		const grpc::Status status = stub->NotifyUserMessage(&context, request, &response);
 		if (status.ok()) {

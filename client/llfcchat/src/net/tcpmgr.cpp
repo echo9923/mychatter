@@ -1,6 +1,7 @@
 #include "tcpmgr.h"
 #include <QAbstractSocket>
 #include <QCoreApplication>
+#include <QDateTime>
 #include "usermgr.h"
 #include <QFile>
 #include <QFileInfo>
@@ -10,12 +11,23 @@
 #include <QStandardPaths>
 #include "outboxdispatcher.h"
 #include "chatsyncmanager.h"
-#include <QSet>
+#include "localchatdb.h"
 
-//协议中的 64 位 ID 和 recv_seq 只接受十进制字符串。
+//协议中的 64 位 ID 和 event_seq 只接受十进制字符串。
 static qint64 jsonInt64(const QJsonValue& v)
 {
     return v.isString() ? v.toString().toLongLong() : 0;
+}
+
+static qint64 serverTimeToEpoch(const QJsonValue& value)
+{
+    if (!value.isString()) return 0;
+    QDateTime time = QDateTime::fromString(
+        value.toString(), QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
+    if (!time.isValid()) time = QDateTime::fromString(value.toString(), Qt::ISODate);
+    if (!time.isValid()) return QDateTime::currentMSecsSinceEpoch();
+    time.setTimeSpec(Qt::UTC);
+    return time.toMSecsSinceEpoch();
 }
 
 TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_message_len(0),_bytes_sent(0),_pending(false),
@@ -275,60 +287,8 @@ void TcpMgr::handleChatLoginRsp(ReqId id, int len, QByteArray data)
             report_login_failure(ErrorCodes::ERR_JSON);
             return;
         }
-		const QJsonArray apply_snapshot = jsonObj["apply_list"].toArray();
-		const QJsonArray contact_snapshot = jsonObj["friend_list"].toArray();
-		QSet<qint64> pending_incoming_ids;
-		QSet<int> contact_peer_ids;
-		for (const QJsonValue& value : apply_snapshot) {
-			const QJsonObject apply = value.toObject();
-			if (apply["to_uid"].toInt() == uid && apply["status"].toInt() ==
-				static_cast<int>(FriendRequestStatus::PENDING)) {
-				pending_incoming_ids.insert(jsonInt64(apply["message_id"]));
-			}
-		}
-		for (const QJsonValue& value : contact_snapshot) {
-			const int peer_uid = value.toObject()["uid"].toInt();
-			if (peer_uid > 0) contact_peer_ids.insert(peer_uid);
-		}
-		// Snapshot membership is authoritative for requests handled while offline.
-		for (const auto& apply : UserMgr::GetInstance()->GetApplyList()) {
-			if (!apply || apply->_status != static_cast<int>(FriendRequestStatus::PENDING)) {
-				continue;
-			}
-			const bool is_contact = contact_peer_ids.contains(apply->_uid);
-			if (!is_contact && pending_incoming_ids.contains(apply->_message_id)) {
-				continue;
-			}
-			const auto status = is_contact ? FriendRequestStatus::ACCEPTED
-				: FriendRequestStatus::REJECTED;
-			UserMgr::GetInstance()->UpdateApplyStatus(apply->_message_id, status);
-			emit sig_friend_request_handled(apply->_message_id, static_cast<int>(status));
-		}
-		for (const QJsonValue& value : apply_snapshot) {
-			const QJsonObject apply = value.toObject();
-			if (apply["to_uid"].toInt() != uid || apply["status"].toInt() !=
-				static_cast<int>(FriendRequestStatus::PENDING)) {
-				continue;
-			}
-			auto incoming = std::make_shared<AddFriendApply>(
-				apply["from_uid"].toInt(), apply["name"].toString(),
-				apply["desc"].toString(), apply["icon"].toString(),
-				apply["nick"].toString(), apply["sex"].toInt(),
-				jsonInt64(apply["message_id"]));
-			UserMgr::GetInstance()->AddApplyList(std::make_shared<ApplyInfo>(incoming));
-			emit sig_friend_apply(incoming);
-		}
-		for (const QJsonValue& value : contact_snapshot) {
-			const QJsonObject contact = value.toObject();
-			const int peer_uid = contact["uid"].toInt();
-			if (peer_uid <= 0) continue;
-			if (UserMgr::GetInstance()->CheckFriendById(peer_uid)) continue;
-			auto auth = std::make_shared<AuthInfo>(peer_uid,
-				contact["name"].toString(), contact["nick"].toString(),
-				contact["icon"].toString(), contact["sex"].toInt());
-			auth->_thread_id = jsonInt64(contact["thread_id"]);
-			emit sig_add_auth_friend(auth);
-		}
+		UserMgr::GetInstance()->AppendApplyList(jsonObj["apply_list"].toArray());
+		UserMgr::GetInstance()->AppendFriendList(jsonObj["friend_list"].toArray());
 
         _reconnecting = false;
         _manual_close = false;
@@ -425,7 +385,6 @@ void TcpMgr::handleAddFriendRsp(ReqId id, int len, QByteArray data)
     }
 
 	int err = jsonObj["error"].toInt();
-	emit sig_user_message_business_rsp(jsonObj);
 	if (err != ErrorCodes::SUCCESS) {
 		qDebug() << "Add Friend Failed, err is " << err;
         return;
@@ -456,22 +415,21 @@ void TcpMgr::handleAuthFriendRsp(ReqId id, int len, QByteArray data)
     }
 
     int err = jsonObj["error"].toInt();
-	emit sig_user_message_business_rsp(jsonObj);
     if (err != ErrorCodes::SUCCESS) {
         qDebug() << "Auth Friend Failed, err is " << err;
 		return;
 	}
-	const qint64 handled_message_id = jsonInt64(jsonObj["related_message_id"]);
+	const qint64 friend_request_id = jsonInt64(jsonObj["friend_request_id"]);
 	const auto handled_status = static_cast<FriendRequestStatus>(
-		jsonObj["business_status"].toInt());
-	UserMgr::GetInstance()->UpdateApplyStatus(handled_message_id, handled_status);
+		jsonObj["status"].toInt());
+	UserMgr::GetInstance()->UpdateApplyStatus(friend_request_id, handled_status);
 	emit sig_friend_request_handled(
-		handled_message_id, static_cast<int>(handled_status));
-	if (jsonObj["msg_type"].toInt() == static_cast<int>(ChatMsgType::FRIEND_ACCEPT)) {
-		const QJsonObject peer = jsonObj["peer_profile"].toObject();
+		friend_request_id, static_cast<int>(handled_status));
+	if (handled_status == FriendRequestStatus::ACCEPTED) {
 		auto rsp = std::make_shared<AuthRsp>(
-			jsonObj["touid"].toInt(), peer["name"].toString(), peer["nick"].toString(),
-			peer["icon"].toString(), peer["sex"].toInt());
+			jsonObj["requester_user_id"].toInt(), jsonObj["peer_username"].toString(),
+			jsonObj["peer_nickname"].toString(), jsonObj["peer_avatar_key"].toString(),
+			jsonObj["peer_gender"].toInt());
 		rsp->_thread_id = jsonInt64(jsonObj["thread_id"]);
 		emit sig_auth_rsp(rsp);
 	}
@@ -500,16 +458,17 @@ void TcpMgr::handleTextChatMsgRsp(ReqId id, int len, QByteArray data)
     if (err != ErrorCodes::SUCCESS) {
         //MESSAGE_CONFLICT/transient（2014/2016）原样转发，Dispatcher 判定
         qDebug() << "Chat Msg Rsp error, forward to dispatcher: " << err;
-        emit sig_text_msg_rsp_forward(err, jsonObj.value("unique_id").toString(), 0, QString());
+        emit sig_text_msg_rsp_forward(err,
+            jsonObj.value("client_message_id").toString(), 0, QString());
         return;
     }
 
     qDebug() << "Receive Text Chat Rsp Success " ;
     //message_id 十进制字符串解析转 qint64
     qint64 msg_id = jsonInt64(jsonObj["message_id"]);
-    QString unique_id = jsonObj["unique_id"].toString();
-    QString chat_time = jsonObj["chat_time"].toString();
-    emit sig_text_msg_rsp_forward(err, unique_id, msg_id, chat_time);
+    QString clientMessageId = jsonObj["client_message_id"].toString();
+    QString createdAt = jsonObj["created_at"].toString();
+    emit sig_text_msg_rsp_forward(err, clientMessageId, msg_id, createdAt);
 }
 
 void TcpMgr::handleNotifyOfflineReq(ReqId id, int len, QByteArray data)
@@ -611,10 +570,9 @@ void TcpMgr::handleLoadChatThreadRsp(ReqId id, int len, QByteArray data)
         auto cti = std::make_shared<ChatThreadInfo>();
         //thread_id/last_msg_id 十进制字符串解析转 qint64
         cti->_thread_id = jsonInt64(value["thread_id"]);
-        cti->_type = value["type"].toString();
-        cti->_user1_id = value["user1_id"].toInt();
-        cti->_user2_id = value["user2_id"].toInt();
-        cti->_last_msg_id = jsonInt64(value["last_msg_id"]);
+        cti->_lower_user_id = value["lower_user_id"].toInt();
+        cti->_higher_user_id = value["higher_user_id"].toInt();
+        cti->_last_msg_id = jsonInt64(value["last_message_id"]);
         chat_threads.push_back(cti);
     }
 
@@ -653,13 +611,16 @@ void TcpMgr::handleCreatePrivateChatRsp(ReqId id, int len, QByteArray data)
 
     qDebug() << "Receive create private chat rsp Success";
 
-    int uid = jsonObj["uid"].toInt();
-    int other_id = jsonObj["other_id"].toInt();
+    const int target_user_id = jsonObj["target_user_id"].toInt();
     //thread_id 十进制字符串解析转 qint64
     qint64 thread_id = jsonInt64(jsonObj["thread_id"]);
 
     //发送信号通知界面
-    emit sig_create_private_chat(uid, other_id, thread_id);
+    if (target_user_id <= 0 || thread_id <= 0) {
+        qDebug() << "invalid create private chat response";
+        return;
+    }
+    emit sig_create_private_chat(target_user_id, thread_id);
 }
 
 void TcpMgr::handleLoadChatMsgRsp(ReqId id, int len, QByteArray data)
@@ -691,84 +652,49 @@ void TcpMgr::handleLoadChatMsgRsp(ReqId id, int len, QByteArray data)
 
     qDebug() << "Receive load chat msg rsp Success";
 
-    //thread_id/last_message_id/msg_id 十进制字符串解析转 qint64
+    //历史直接解析为本地消息与资源扩展 DTO，不再中转旧消息模型。
     qint64 thread_id = jsonInt64(jsonObj["thread_id"]);
-    qint64 last_msg_id = jsonInt64(jsonObj["last_message_id"]);
+    qint64 next_message_id = jsonInt64(jsonObj["next_message_id"]);
     bool load_more = jsonObj["load_more"].toBool();
-
-    std::vector<std::shared_ptr<ChatDataBase>> chat_datas;
-    for (const QJsonValue& data : jsonObj["chat_datas"].toArray()) {
-        auto send_uid = data["sender"].toInt();
-        auto msg_id = jsonInt64(data["msg_id"]);
-        auto msg_thread_id = jsonInt64(data["thread_id"]);
-        auto msg_content = data["msg_content"].toString();
-        QString chat_time = data["chat_time"].toString();
-        int status = data["status"].toInt();
-        int msg_type = data["msg_type"].toInt();
-        int recv_id = data["receiver"].toInt();
-        QString msg_content_hash = data["content_hash"].toString();
-		if (msg_type == int(ChatMsgType::TEXT) ||
-			msg_type == int(ChatMsgType::FRIEND_ACCEPT)) {
-            auto chat_data = std::make_shared<TextChatData>(msg_id, msg_thread_id, ChatFormType::PRIVATE,
-				static_cast<ChatMsgType>(msg_type), msg_content, send_uid, status, chat_time);
-                chat_datas.push_back(chat_data);
-                continue;
+    QList<LocalMessageDTO> messages;
+    QList<LocalMessageResourceDTO> resources;
+    const int selfUserId = UserMgr::GetInstance()->GetUid();
+    for (const QJsonValue& value : jsonObj["messages"].toArray()) {
+        if (!value.isObject()) continue;
+        const QJsonObject envelope = value.toObject();
+        LocalMessageDTO message;
+        LocalMessageResourceDTO resource;
+        message.message_id = jsonInt64(envelope["message_id"]);
+        message.thread_id = jsonInt64(envelope["thread_id"]);
+        message.sender_user_id = envelope["sender_user_id"].toInt();
+        message.message_type = envelope["message_type"].toInt(-1);
+        message.text_content = envelope["text_content"].toString();
+        message.send_status = LOCAL_SEND_SENT;
+        message.created_at = serverTimeToEpoch(envelope["created_at"]);
+        if (message.sender_user_id == selfUserId) {
+            message.client_message_id = envelope["client_message_id"].toString();
         }
-
-        if (msg_type == int(ChatMsgType::PIC) || msg_type == int(ChatMsgType::FILE)) {
-            //资源消息：下载缓存按 message_id 隔离；发送方另有本地归档目录
-            auto uid = UserMgr::GetInstance()->GetUid();
-            QString storageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-            QString cache_dir = storageDir + "/user/" + QString::number(uid)
-                + "/cache/" + QString::number(msg_id);
-            QString cache_path = cache_dir + "/" + msg_content;
-            QString own_path = storageDir + "/user/" + QString::number(uid)
-                + "/resources/" + QString::number(send_uid) + "/" + QString::number(msg_id);
-            const bool is_pic = (msg_type == int(ChatMsgType::PIC));
-            QString local_path;
-            if (QFile::exists(cache_path)) {
-                local_path = cache_path;
-            } else if (QFile::exists(own_path)) {
-                local_path = own_path; //发送方自己的归档
-            }
-
-            if (local_path.isEmpty()) {
-                //本地无缓存：占位上屏；图片自动下载，文件等用户点击
-                CreatePlaceholderResourceMsgL(cache_dir, msg_content, msg_id, msg_thread_id,
-                    send_uid, recv_id, status, chat_time,
-                    is_pic ? ChatMsgType::PIC : ChatMsgType::FILE, chat_datas);
-                continue;
-            }
-
-            QFileInfo fileInfo(local_path);
-            qint64 file_size = fileInfo.size();
-            QPixmap pixmap = is_pic ? QPixmap(local_path) : QPixmap();
-            if (is_pic && pixmap.isNull()) {
-                CreatePlaceholderResourceMsgL(cache_dir, msg_content, msg_id, msg_thread_id,
-                    send_uid, recv_id, status, chat_time, ChatMsgType::PIC, chat_datas);
-                continue;
-            }
-
-            auto file_info = std::make_shared<MsgInfo>(
-                is_pic ? MsgType::IMG_MSG : MsgType::FILE_MSG,
-                local_path, pixmap, msg_content, file_size, msg_content_hash);
-            file_info->_msg_id = msg_id;
-            file_info->_sender = send_uid;
-            file_info->_receiver = recv_id;
-            file_info->_thread_id = msg_thread_id;
-            file_info->_transfer_type = TransferType::Download;
-            file_info->_transfer_state = TransferState::Completed;
-            file_info->_local_download_path = local_path;
-            auto chat_data = std::make_shared<ImgChatData>(file_info, "", msg_thread_id,
-                ChatFormType::PRIVATE, is_pic ? ChatMsgType::PIC : ChatMsgType::FILE,
-                send_uid, status, chat_time);
-            chat_datas.push_back(chat_data);
+        if (message.message_id <= 0 || message.thread_id != thread_id
+            || message.sender_user_id <= 0
+            || (message.message_type != 0 && message.message_type != 1
+                && message.message_type != 3)) {
             continue;
         }
+        if (message.message_type != 0) {
+            resource.original_file_name = envelope["original_file_name"].toString();
+            resource.file_size_bytes = jsonInt64(envelope["file_size_bytes"]);
+            resource.sha256 = envelope["sha256"].toString();
+            resource.mime_type = envelope["mime_type"].toString();
+            if (resource.original_file_name.isEmpty() || resource.file_size_bytes <= 0
+                || resource.sha256.isEmpty() || resource.mime_type.isEmpty()) {
+                continue;
+            }
+        }
+        messages.append(message);
+        resources.append(resource);
     }
 
-    //发送信号通知界面
-    emit sig_load_chat_msg(thread_id, last_msg_id, load_more, chat_datas);
+    emit sig_load_chat_msg(thread_id, next_message_id, load_more, messages, resources);
 }
 
 void TcpMgr::handleCreateResourceMsgRsp(ReqId id, int len, QByteArray data)
@@ -793,22 +719,16 @@ void TcpMgr::handleCreateResourceMsgRsp(ReqId id, int len, QByteArray data)
     if (err != ErrorCodes::SUCCESS) {
         //MESSAGE_CONFLICT/RESOURCE_*/transient（2014/2016）原样转发，Dispatcher 判定
         qDebug() << "create resource msg rsp error, forward to dispatcher: " << err;
-        emit sig_resource_msg_meta_rsp_forward(err, jsonObj["unique_id"].toString(),
-            QString(), 0, 0, 0, 0);
+        emit sig_resource_msg_meta_rsp_forward(err,
+            jsonObj["client_message_id"].toString(), 0);
         return;
     }
 
     qDebug() << "Receive create resource msg rsp Success";
 
-    //message_id/thread_id 十进制字符串解析转 qint64
-    QString unique_id = jsonObj["unique_id"].toString();
-    QString file_name = jsonObj["file_name"].toString();
+    QString clientMessageId = jsonObj["client_message_id"].toString();
     qint64 msg_id = jsonInt64(jsonObj["message_id"]);
-    qint64 thread_id = jsonInt64(jsonObj["thread_id"]);
-    int sender = jsonObj["fromuid"].toInt();
-    int receiver = jsonObj["touid"].toInt();
-    emit sig_resource_msg_meta_rsp_forward(err, unique_id, file_name,
-        msg_id, thread_id, sender, receiver);
+    emit sig_resource_msg_meta_rsp_forward(err, clientMessageId, msg_id);
 }
 
 void TcpMgr::handleUserMessageNotify(ReqId id, int len, QByteArray data)
@@ -830,32 +750,6 @@ void TcpMgr::handleSyncMessageRsp(ReqId id, int len, QByteArray data)
         return;
     }
     emit sig_sync_message_rsp(jsonDoc.object());
-}
-
-void TcpMgr::CreatePlaceholderResourceMsgL(QString cache_dir, QString msg_content,
-    qint64 msg_id, qint64 thread_id, int send_uid, int recv_id, int status, QString chat_time,
-    ChatMsgType msg_type, std::vector<std::shared_ptr<ChatDataBase>> &chat_datas) {
-    //本地无缓存：占位上屏（图片自动下载，文件等用户点击），传输上下文按 message_id 建立
-    const bool is_pic = (msg_type == ChatMsgType::PIC);
-    auto file_info = std::make_shared<MsgInfo>(
-        is_pic ? MsgType::IMG_MSG : MsgType::FILE_MSG,
-        cache_dir, CreateLoadingPlaceholder(200, 200), msg_content, 0, "");
-    file_info->_msg_id = msg_id;
-    file_info->_sender = send_uid;
-    file_info->_receiver = recv_id;
-    file_info->_thread_id = thread_id;
-    file_info->_transfer_type = TransferType::Download;
-    file_info->_transfer_state = is_pic ? TransferState::Downloading : TransferState::None;
-    file_info->_rsp_size = file_info->_current_size;
-    //放入chat_datas列表
-    auto chat_data = std::make_shared<ImgChatData>(file_info, "", thread_id, ChatFormType::PRIVATE,
-        msg_type, send_uid, status, chat_time);
-    chat_datas.push_back(chat_data);
-    //加入下载列表；图片自动下载（1509 元数据先行，FileTcpMgr 内部投递）
-    UserMgr::GetInstance()->AddTransFile(msg_content, file_info);
-    if (is_pic) {
-        FileTcpMgr::GetInstance()->StartResourceDownload(file_info);
-    }
 }
 
 void TcpMgr::handleMsg(ReqId id, int len, QByteArray data)

@@ -112,10 +112,10 @@ void LogicWorker::RegisterCallBacks()
 	//固定路由 message_id % FILE_WORKER_COUNT：同一 .part 只被一个线程写
 	_fun_callbacks[ID_RESOURCE_CHUNK_UPLOAD_REQ] = &LogicWorker::handleResourceChunkUpload;
 	//1507 查询上传进度：{message_id:"<str>"} -> {error, message_id, server_offset, total_size,
-	//resource_status, content_hash}。与 1505 同 worker 串行化，server_offset 为磁盘 .part 真值
+	//status, sha256}。与 1505 同 worker 串行化，server_offset 为磁盘 .part 真值
 	_fun_callbacks[ID_RESOURCE_UPLOAD_PROGRESS_REQ] = &LogicWorker::handleResourceUploadProgress;
 	//1509 查询资源下载信息：{message_id:"<str>"} -> {error, message_id, file_name, total_size,
-	//content_hash, mime_type, msg_type, resource_status}。权限：请求者必须是 sender 或 recv
+	//sha256, mime_type, message_type, status}。权限：请求者必须是私聊成员
 	_fun_callbacks[ID_RESOURCE_DOWN_INFO_REQ] = &LogicWorker::handleResourceDownInfo;
 	//1511 按偏移量下载资源分片：{message_id:"<str>", offset:"<str>"} ->
 	//{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
@@ -321,24 +321,24 @@ void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, con
 			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
-		if (uid == 0 || uid != chat_msg->sender_id) {
+		if (uid == 0 || uid != chat_msg->sender_user_id) {
 			rtvalue["error"] = ErrorCodes::ResourceForbidden;
 			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
-		if (chat_msg->msg_type != 1 && chat_msg->msg_type != 3) {
+		if (chat_msg->message_type != 1 && chat_msg->message_type != 3) {
 			rtvalue["error"] = ErrorCodes::ResourceStateInvalid;
 			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
 
 		unsigned long long server_offset = 0;
-		if (chat_msg->resource_status == static_cast<int>(ResourceStatus::Ready)) {
-			server_offset = chat_msg->content_size;
+		if (chat_msg->status == MessageStatus::Published) {
+			server_offset = chat_msg->resource->file_size_bytes;
 		}
 		else {
 			//磁盘真值：.part 实际长度（无文件即 0），error_code 重载防异常穿出线程
-			const auto part_path = ResourceFilePath(chat_msg->sender_id,
+			const auto part_path = ResourceFilePath(chat_msg->sender_user_id,
 				static_cast<long long>(message_id)).string() + ".part";
 			boost::system::error_code fs_ec;
 			if (boost::filesystem::exists(part_path, fs_ec)) {
@@ -351,11 +351,11 @@ void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, con
 
 		rtvalue["error"] = ErrorCodes::Success;
 		rtvalue["server_offset"] = std::to_string(server_offset);
-		rtvalue["total_size"] = std::to_string(chat_msg->content_size);
-		rtvalue["resource_status"] = chat_msg->resource_status;
-		rtvalue["content_hash"] = chat_msg->content_hash;
-		if (chat_msg->recv_seq > 0) {
-			rtvalue["recv_seq"] = std::to_string(chat_msg->recv_seq);
+		rtvalue["file_size_bytes"] = std::to_string(chat_msg->resource->file_size_bytes);
+		rtvalue["status"] = static_cast<int>(chat_msg->status);
+		rtvalue["sha256"] = chat_msg->resource->sha256;
+		if (chat_msg->event_seq > 0) {
+			rtvalue["event_seq"] = std::to_string(chat_msg->event_seq);
 		}
 		session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 	};
@@ -394,24 +394,24 @@ void LogicWorker::handleResourceDownInfo(shared_ptr<CSession> session, const sho
 	}
 
 	//权限校验：非收发双方一律拒绝（不泄露资源存在性以外的信息）
-	if (uid != chat_msg->sender_id && uid != chat_msg->recv_id) {
+	if (uid != chat_msg->sender_user_id && uid != chat_msg->recipient_user_id) {
 		respond_error(ErrorCodes::ResourceForbidden);
 		return;
 	}
 
 	//就绪校验：未完成/已过期的资源不可下载
-	if (chat_msg->resource_status != static_cast<int>(ResourceStatus::Ready)) {
+	if (chat_msg->status != MessageStatus::Published) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::ResourceNotReady;
 		rtvalue["message_id"] = std::to_string(message_id);
-		rtvalue["resource_status"] = chat_msg->resource_status;
+		rtvalue["status"] = static_cast<int>(chat_msg->status);
 		session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
 		return;
 	}
 
 	//最终文件必须存在（清理任务可能已回收）
 	boost::system::error_code fs_ec;
-	const auto file_path = ResourceFilePath(chat_msg->sender_id, static_cast<long long>(message_id));
+	const auto file_path = ResourceFilePath(chat_msg->sender_user_id, static_cast<long long>(message_id));
 	boost::uintmax_t file_size = boost::filesystem::file_size(file_path, fs_ec);
 	if (fs_ec) {
 		std::cerr << "resource down info: file missing " << file_path.string()
@@ -423,12 +423,12 @@ void LogicWorker::handleResourceDownInfo(shared_ptr<CSession> session, const sho
 	json rtvalue;
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["message_id"] = std::to_string(message_id);
-	rtvalue["file_name"] = chat_msg->content;   //原始文件名（仅展示用）
-	rtvalue["total_size"] = std::to_string(file_size);
-	rtvalue["content_hash"] = chat_msg->content_hash;
-	rtvalue["mime_type"] = chat_msg->mime_type;
-	rtvalue["msg_type"] = chat_msg->msg_type;
-	rtvalue["resource_status"] = chat_msg->resource_status;
+	rtvalue["original_file_name"] = chat_msg->resource->original_file_name;
+	rtvalue["file_size_bytes"] = std::to_string(file_size);
+	rtvalue["sha256"] = chat_msg->resource->sha256;
+	rtvalue["mime_type"] = chat_msg->resource->mime_type;
+	rtvalue["message_type"] = chat_msg->message_type;
+	rtvalue["status"] = static_cast<int>(chat_msg->status);
 	session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
 }
 
@@ -461,17 +461,17 @@ void LogicWorker::handleResourceChunkDown(shared_ptr<CSession> session, const sh
 		respond_error(ErrorCodes::MsgIdErr);
 		return;
 	}
-	if (uid != chat_msg->sender_id && uid != chat_msg->recv_id) {
+	if (uid != chat_msg->sender_user_id && uid != chat_msg->recipient_user_id) {
 		respond_error(ErrorCodes::ResourceForbidden);
 		return;
 	}
-	if (chat_msg->resource_status != static_cast<int>(ResourceStatus::Ready)) {
+	if (chat_msg->status != MessageStatus::Published) {
 		respond_error(ErrorCodes::ResourceNotReady);
 		return;
 	}
 
 	boost::system::error_code fs_ec;
-	const auto file_path = ResourceFilePath(chat_msg->sender_id, static_cast<long long>(message_id));
+	const auto file_path = ResourceFilePath(chat_msg->sender_user_id, static_cast<long long>(message_id));
 	if (!boost::filesystem::exists(file_path, fs_ec) || fs_ec) {
 		respond_error(ErrorCodes::FileNotExists);
 		return;
@@ -486,7 +486,8 @@ void LogicWorker::handleResourceChunkDown(shared_ptr<CSession> session, const sh
 	int index = ResourceWorkerIndex(static_cast<long long>(message_id), DOWN_LOAD_WORKER_COUNT);
 	FileSystem::GetInstance()->PostChunkDownToQue(
 		std::make_shared<ResourceChunkDownTask>(session, static_cast<long long>(message_id),
-			static_cast<long long>(offset), file_path.string(), chat_msg->content_size, callback),
+			static_cast<long long>(offset), file_path.string(),
+			chat_msg->resource->file_size_bytes, callback),
 		index
 	);
 }

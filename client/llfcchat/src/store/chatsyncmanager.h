@@ -1,10 +1,9 @@
 #ifndef CHATSYNCMANAGER_H
 #define CHATSYNCMANAGER_H
 
-#include <QObject>
-#include <QJsonArray>
 #include <QJsonObject>
 #include <QMap>
+#include <QObject>
 #include <QTimer>
 
 #include "localmessageDTO.h"
@@ -12,8 +11,7 @@
 #include "userdata.h"
 
 class ChatSyncManager : public QObject, public Singleton<ChatSyncManager>,
-	public std::enable_shared_from_this<ChatSyncManager>
-{
+	public std::enable_shared_from_this<ChatSyncManager> {
 	Q_OBJECT
 public:
 	friend class Singleton<ChatSyncManager>;
@@ -22,19 +20,21 @@ public:
 public slots:
 	void slot_login_snapshot(QJsonObject snapshot, bool initialLogin);
 	void slot_user_message_notify(QJsonObject envelope);
-	void slot_business_response(QJsonObject envelope);
-	void slot_sync_message_rsp(QJsonObject rsp);
+	void slot_sync_message_rsp(QJsonObject response);
 	void slot_load_chat_thread(bool loadMore, qint64 nextLastId,
 		std::vector<std::shared_ptr<ChatThreadInfo> > chatThreads);
 
 private slots:
 	void slot_start();
-	void slot_sync_state_loaded(bool ok, qint64 lastRecvSeq, bool bootstrapComplete);
+	void slot_sync_state_loaded(bool ok, qint64 lastEventSeq, bool bootstrapComplete);
 	void slot_conversations_upserted(bool ok);
 	void slot_snapshot_applied(bool ok);
 	void slot_bootstrap_marked(bool ok, qint64 checkpoint);
-	void slot_sync_page_applied(bool ok, qint64 newRecvSeq,
-		QList<LocalMessageDTO> msgs, QList<qint64> insertedIds);
+	void slot_sync_page_applied(bool ok, qint64 newEventSeq,
+		QList<UserEventDTO> events, QList<LocalMessageDTO> messages,
+		QList<LocalMessageResourceDTO> resources,
+		QList<LocalFriendRequestDTO> friendRequests,
+		QList<LocalContactDTO> contacts, QList<qint64> insertedMessageIds);
 	void slot_periodic_sync();
 	void slot_connection_closed();
 
@@ -49,23 +49,29 @@ private:
 		SYNC_WAIT_MARK,
 		SYNC_WAIT_PAGE
 	};
+
 	void sendSyncRequest();
 	void sendThreadListRequest(qint64 lastThreadId);
 	void applyNextLiveIfPossible();
+	void applyEnvelopePage(const QList<QJsonObject>& envelopes, qint64 nextEventSeq);
 	void schedulePeriodicSync();
-	static LocalMessageDTO envelopeToDto(const QJsonObject& envelope);
+	static bool parseEnvelope(const QJsonObject& envelope, UserEventDTO* event,
+		LocalMessageDTO* message, LocalMessageResourceDTO* resource,
+		LocalFriendRequestDTO* friendRequest, LocalContactDTO* contact);
+	static QList<LocalFriendRequestDTO> parseSnapshotRequests(const QJsonArray& array);
+	static QList<LocalContactDTO> parseSnapshotContacts(const QJsonArray& array);
 
 	SyncState _state;
-	qint64 _last_recv_seq;
+	qint64 _last_event_seq;
 	qint64 _checkpoint;
 	bool _has_more_pending;
 	bool _pull_pending;
 	bool _applying_live;
 	bool _mark_after_snapshot;
-	QJsonArray _snapshot_requests;
-	QJsonArray _snapshot_contacts;
+	QList<LocalFriendRequestDTO> _snapshot_requests;
+	QList<LocalContactDTO> _snapshot_contacts;
 	QMap<qint64, QJsonObject> _pending_live;
-	QList<LocalConversationDTO> _bootstrap_convs;
+	QList<LocalConversationDTO> _bootstrap_conversations;
 	QTimer* _periodic_timer;
 };
 

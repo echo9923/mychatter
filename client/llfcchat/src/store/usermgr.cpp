@@ -66,53 +66,46 @@ std::shared_ptr<UserInfo> UserMgr::GetUserInfo()
 
 void UserMgr::AppendApplyList(QJsonArray array)
 {
-    // 遍历 QJsonArray 并输出每个元素
+    std::vector<std::shared_ptr<ApplyInfo>> snapshot;
+    const int selfUid = GetUid();
     for (const QJsonValue &value : array) {
-		if (value["to_uid"].toInt() != GetUid()) {
+		if (value["target_user_id"].toInt() != selfUid) {
 			continue;
 		}
-        auto name = value["name"].toString();
-        auto desc = value["desc"].toString();
-        auto icon = value["icon"].toString();
-        auto nick = value["nick"].toString();
-        auto sex = value["sex"].toInt();
-        auto uid = value["uid"].toInt();
+        auto name = value["peer_username"].toString();
+        auto icon = value["peer_avatar_key"].toString();
+        auto nick = value["peer_nickname"].toString();
+        auto sex = value["peer_gender"].toInt();
+        auto uid = value["requester_user_id"].toInt();
         auto status = value["status"].toInt();
-		auto message_id = value["message_id"].toString().toLongLong();
+		auto friend_request_id = value["friend_request_id"].toString().toLongLong();
 		auto info = std::make_shared<ApplyInfo>(uid, name,
-						   desc, icon, nick, sex, status, message_id);
-        std::lock_guard<std::mutex> lock(_mtx);
-        _apply_list.push_back(info);
+						   QString(), icon, nick, sex, status, friend_request_id);
+        snapshot.push_back(info);
     }
+    std::lock_guard<std::mutex> lock(_mtx);
+    _apply_list.swap(snapshot);
 }
 
 void UserMgr::AppendFriendList(QJsonArray array) {
-    // 遍历 QJsonArray 并输出每个元素
+    std::vector<std::shared_ptr<UserInfo>> friends;
+    QMap<int, std::shared_ptr<UserInfo>> friendMap;
     for (const QJsonValue& value : array) {
-        auto name = value["name"].toString();
-        auto desc = value["desc"].toString();
-        auto icon = value["icon"].toString();
-        auto nick = value["nick"].toString();
-        auto sex = value["sex"].toInt();
-        auto uid = value["uid"].toInt();
-        auto back = value["back"].toString();
+        auto name = value["username"].toString();
+        auto icon = value["avatar_key"].toString();
+        auto nick = value["nickname"].toString();
+        auto sex = value["gender"].toInt();
+        auto uid = value["user_id"].toInt();
 
         auto info = std::make_shared<UserInfo>(uid, name,
-            nick, icon, sex, desc, back);
-        std::lock_guard<std::mutex> lock(_mtx);
-		auto existing = _friend_map.find(uid);
-		if (existing == _friend_map.end()) {
-			_friend_list.push_back(info);
-		} else {
-			for (auto& item : _friend_list) {
-				if (item && item->_uid == uid) {
-					item = info;
-					break;
-				}
-			}
-		}
-        _friend_map.insert(uid, info);
+            nick, icon, sex, QString());
+        friends.push_back(info);
+        friendMap.insert(uid, info);
     }
+    std::lock_guard<std::mutex> lock(_mtx);
+    _friend_list.swap(friends);
+    _friend_map.swap(friendMap);
+    _contact_loaded = 0;
 }
 
 std::vector<std::shared_ptr<ApplyInfo> > UserMgr::GetApplyList()
@@ -126,8 +119,8 @@ void UserMgr::AddApplyList(std::shared_ptr<ApplyInfo> app)
 	if (!app) return;
     std::lock_guard<std::mutex> lock(_mtx);
 	for (auto& existing : _apply_list) {
-		if (existing && app->_message_id > 0 &&
-			existing->_message_id == app->_message_id) {
+		if (existing && app->_friend_request_id > 0 &&
+			existing->_friend_request_id == app->_friend_request_id) {
 			existing = app;
 			return;
 		}
@@ -148,11 +141,11 @@ bool UserMgr::AlreadyApply(int uid)
     return false;
 }
 
-void UserMgr::UpdateApplyStatus(qint64 messageId, FriendRequestStatus status)
+void UserMgr::UpdateApplyStatus(qint64 friendRequestId, FriendRequestStatus status)
 {
 	std::lock_guard<std::mutex> lock(_mtx);
 	for (const auto& apply : _apply_list) {
-		if (apply && apply->_message_id == messageId) {
+		if (apply && apply->_friend_request_id == friendRequestId) {
 			apply->_status = static_cast<int>(status);
 			return;
 		}
@@ -170,7 +163,7 @@ QList<qint64> UserMgr::UpdatePendingApplyStatusByPeer(
 			continue;
 		}
 		apply->_status = static_cast<int>(status);
-		if (apply->_message_id > 0) updated.append(apply->_message_id);
+		if (apply->_friend_request_id > 0) updated.append(apply->_friend_request_id);
 	}
 	return updated;
 }

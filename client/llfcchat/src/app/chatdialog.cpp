@@ -12,7 +12,6 @@
 #include "PictureBubble.h"
 #include "MessageTextEdit.h"
 #include "chatuserlist.h"
-#include "grouptipitem.h"
 #include "invaliditem.h"
 #include "conuseritem.h"
 #include "lineitem.h"
@@ -21,6 +20,9 @@
 #include <QTimer>
 #include <QStandardPaths>
 #include "FileTcpMgr.h"
+
+namespace {
+}
 
 ChatDialog::ChatDialog(QWidget* parent) :
 	QDialog(parent),
@@ -144,24 +146,10 @@ ChatDialog::ChatDialog(QWidget* parent) :
 	//连接聊天列表点击信号
 	connect(ui->chat_user_list, &QListWidget::itemClicked, this, &ChatDialog::slot_item_clicked);
 
-	//连接对端消息通知
-	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat_msg,
-		this, &ChatDialog::slot_text_chat_msg);
-
-	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_img_chat_msg,
-		this, &ChatDialog::slot_img_chat_msg);
-	//文件消息（复用 ImgChatData 载荷，落库按 _msg_type 区分）
-	connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_file_chat_msg,
-		this, &ChatDialog::slot_img_chat_msg);
-
 	_timer = new QTimer(this);
 	connect(_timer, &QTimer::timeout, this, [this]() {
-		auto user_info = UserMgr::GetInstance()->GetUserInfo();
-		QJsonObject textObj;
-		textObj["fromuid"] = user_info->_uid;
-		QJsonDocument doc(textObj);
-		QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-		emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_HEART_BEAT_REQ, jsonData);
+		emit TcpMgr::GetInstance()->sig_send_data(
+			ReqId::ID_HEART_BEAT_REQ, QByteArrayLiteral("{}"));
 		});
 
 	_timer->start(10000);
@@ -258,57 +246,6 @@ void ChatDialog::slot_item_clicked(QListWidgetItem* item)
 	}
 }
 
-//收端文本消息：先 insertIncoming 落库，实际插入的消息由 sig_incoming_inserted 上屏；
-//落库失败不推进游标，也不上屏，等待下一次补拉重试。
-void ChatDialog::slot_text_chat_msg(std::shared_ptr<TextChatData> msg)
-{
-	LocalMessageDTO dto;
-	dto.server_message_id = msg->GetMsgId();
-	dto.client_message_id = msg->GetUniqueId();
-	if (dto.client_message_id.isEmpty()) {
-		//服务端不带 unique_id 时以 message_id 合成幂等键
-		dto.client_message_id = "srv_" + QString::number(dto.server_message_id);
-	}
-	dto.thread_id = msg->GetThreadId();
-	dto.sender_id = msg->GetSendUid();
-	dto.receiver_id = UserMgr::GetInstance()->GetUid();
-	dto.message_type = static_cast<int>(ChatMsgType::TEXT);
-	dto.content = msg->GetContent();
-	dto.content_size = "0";
-	dto.send_state = SEND_STATE_SENT;
-	dto.created_at = msg->GetChatTime();
-	QList<LocalMessageDTO> msgs;
-	msgs.append(dto);
-	LocalChatStore::GetInstance()->insertIncoming(msgs);
-}
-
-//收端资源消息（图片/文件）：同文本，先落库后上屏
-void ChatDialog::slot_img_chat_msg(std::shared_ptr<ImgChatData> imgchat) {
-	LocalMessageDTO dto;
-	dto.server_message_id = imgchat->GetMsgId();
-	dto.client_message_id = imgchat->GetUniqueId();
-	if (dto.client_message_id.isEmpty()) {
-		dto.client_message_id = "srv_" + QString::number(dto.server_message_id);
-	}
-	dto.thread_id = imgchat->GetThreadId();
-	dto.sender_id = imgchat->GetSendUid();
-	dto.receiver_id = UserMgr::GetInstance()->GetUid();
-	//按 MsgInfo 的实际类型落库（图片 1 / 文件 3）
-	dto.message_type = (imgchat->_msg_info
-		&& imgchat->_msg_info->_msg_type == MsgType::FILE_MSG)
-		? static_cast<int>(ChatMsgType::FILE) : static_cast<int>(ChatMsgType::PIC);
-	//资源 content 为原始文件名（仅展示；缓存按 message_id 隔离）
-	dto.content = imgchat->_msg_info->_unique_name;
-	dto.content_size = QString::number(imgchat->_msg_info->_total_size);
-	dto.resource_status = RESOURCE_READY; //仅在 Ready 完成点才会通知/同步
-	dto.content_hash = imgchat->_msg_info->_content_hash;
-	dto.send_state = SEND_STATE_SENT;
-	dto.created_at = imgchat->GetChatTime();
-	QList<LocalMessageDTO> msgs;
-	msgs.append(dto);
-	LocalChatStore::GetInstance()->insertIncoming(msgs);
-}
-
 bool ChatDialog::eventFilter(QObject* watched, QEvent* event)
 {
 	if (event->type() == QEvent::MouseButtonPress) {
@@ -336,9 +273,9 @@ void ChatDialog::handleGlobalMousePress(QMouseEvent* event)
 	}
 }
 
-void ChatDialog::slot_create_private_chat(int uid, int other_id, qint64 thread_id)
+void ChatDialog::slot_create_private_chat(int target_user_id, qint64 thread_id)
 {
-	createPrivateChatItem(other_id, thread_id);
+	createPrivateChatItem(target_user_id, thread_id);
 
 	ui->side_chat_lb->SetSelected(true);
 	SetSelectChatItem(thread_id);
@@ -349,11 +286,11 @@ void ChatDialog::slot_create_private_chat(int uid, int other_id, qint64 thread_i
 }
 
 //抽取自 slot_create_private_chat：创建 ChatThreadData + 列表项（供新会话首条消息到达时复用）
-QListWidgetItem* ChatDialog::createPrivateChatItem(int other_id, qint64 thread_id)
+QListWidgetItem* ChatDialog::createPrivateChatItem(int peer_user_id, qint64 thread_id)
 {
 	auto* chat_user_wid = new ChatUserWid();
-	auto chat_thread_data = std::make_shared<ChatThreadData>(other_id, thread_id, 0);
-	UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, other_id);
+	auto chat_thread_data = std::make_shared<ChatThreadData>(peer_user_id, thread_id, 0);
+	UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, peer_user_id);
 
 	chat_user_wid->SetChatData(chat_thread_data);
 	QListWidgetItem* item = new QListWidgetItem;
@@ -366,56 +303,13 @@ QListWidgetItem* ChatDialog::createPrivateChatItem(int other_id, qint64 thread_i
 
 //1404 历史消息页到达：转换为本地 DTO 交给本地库事务写入，
 //完成后由 sig_history_page_inserted 触发重载会话窗口（自动衔接形成翻页链）
-void ChatDialog::slot_load_chat_msg(qint64 thread_id, qint64 msg_id, bool load_more,
-	std::vector<std::shared_ptr<ChatDataBase>> msglists)
+void ChatDialog::slot_load_chat_msg(qint64 threadId, qint64 nextMessageId, bool loadMore,
+    QList<LocalMessageDTO> messages, QList<LocalMessageResourceDTO> resources)
 {
-	Q_UNUSED(msg_id);
-	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(thread_id);
-	auto self_info = UserMgr::GetInstance()->GetUserInfo();
-	if (self_info == nullptr) {
-		return;
-	}
-
-	QList<LocalMessageDTO> dtos;
-	for (auto& chat_msg : msglists) {
-		LocalMessageDTO dto;
-		dto.thread_id = thread_id;
-		dto.server_message_id = chat_msg->GetMsgId();
-		//服务端对历史消息下发的 unique_id 为 0，统一合成确定值避免唯一索引冲突
-		dto.client_message_id = QString("srv_%1").arg(chat_msg->GetMsgId());
-		dto.sender_id = chat_msg->GetSendUid();
-		//历史消息需要推断对端：自己发的则接收者为会话对方
-		if (thread_data != nullptr && chat_msg->GetSendUid() == self_info->_uid) {
-			dto.receiver_id = thread_data->GetOtherId();
-		}
-		else {
-			dto.receiver_id = self_info->_uid;
-		}
-		dto.message_type = static_cast<int>(chat_msg->GetMsgType());
-		if (chat_msg->GetMsgType() == ChatMsgType::PIC ||
-			chat_msg->GetMsgType() == ChatMsgType::FILE) {
-			//图片 content 为文件唯一名（下载已由 1404 解析处占位并触发）
-			auto img_data = std::dynamic_pointer_cast<ImgChatData>(chat_msg);
-			if (img_data != nullptr && img_data->_msg_info) {
-				dto.content = img_data->_msg_info->_unique_name;
-				dto.content_size = QString::number(img_data->_msg_info->_total_size);
-			}
-			else {
-				dto.content = chat_msg->GetMsgContent();
-				dto.content_size = "0";
-			}
-		}
-		else {
-			dto.content = chat_msg->GetMsgContent();
-			dto.content_size = "0";
-		}
-		dto.send_state = SEND_STATE_SENT;
-		dto.created_at = chat_msg->GetChatTime();
-		dtos.append(dto);
-	}
-
-	//load_more=true 表示服务器还有更早消息，本地历史尚未完整
-	LocalChatStore::GetInstance()->insertHistoryPage(thread_id, dtos, !load_more);
+    Q_UNUSED(nextMessageId);
+    //loadMore=true 表示服务器还有更早消息，本地历史尚未完整
+    LocalChatStore::GetInstance()->insertHistoryPage(
+        threadId, messages, resources, !loadMore);
 }
 
 
@@ -434,9 +328,9 @@ void ChatDialog::slot_conversations_loaded(bool ok, QList<LocalConversationDTO> 
 			continue;
 		}
 
-		auto peer_uid = static_cast<int>(conv.peer_uid);
-		auto chat_thread_data = std::make_shared<ChatThreadData>(peer_uid,
-			conv.thread_id, conv.last_server_message_id);
+        auto peer_uid = static_cast<int>(conv.peer_user_id);
+        auto chat_thread_data = std::make_shared<ChatThreadData>(peer_uid,
+            conv.thread_id, conv.last_message_id);
 		UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, peer_uid);
 
 		auto* chat_user_wid = new ChatUserWid();
@@ -457,7 +351,8 @@ void ChatDialog::slot_conversations_loaded(bool ok, QList<LocalConversationDTO> 
 
 //最近消息到达：重建窗口消息模型并渲染；本地不足一屏且历史未完整时自动衔接 1403
 void ChatDialog::slot_recent_messages_loaded(bool ok, qint64 threadId,
-	QList<LocalMessageDTO> msgs, bool historyComplete, qint64 oldestLoadedMessageId)
+    QList<LocalMessageDTO> msgs, QList<LocalMessageResourceDTO> resources,
+    bool historyComplete, qint64 oldestLoadedMessageId)
 {
 	if (!ok) {
 		return;
@@ -469,12 +364,16 @@ void ChatDialog::slot_recent_messages_loaded(bool ok, qint64 threadId,
 	}
 
 	thread_data->ClearMsgs();
-	for (const auto& dto : msgs) {
-		auto chat_data = buildChatData(dto);
+    if (resources.size() != msgs.size()) {
+        return;
+    }
+    for (int i = 0; i < msgs.size(); ++i) {
+        const auto& dto = msgs.at(i);
+        auto chat_data = buildChatData(dto, resources.at(i));
 		if (chat_data == nullptr) {
 			continue;
 		}
-		if (dto.server_message_id == 0) {
+        if (dto.message_id == 0) {
 			//未确认的发送中消息进未回复队列（与 ChatPage 发送上屏一致）
 			thread_data->AppendUnRspMsg(dto.client_message_id, chat_data);
 		}
@@ -508,23 +407,29 @@ void ChatDialog::slot_history_page_inserted(bool ok, qint64 threadId)
 
 //实时推送落库成功：只对实际插入的消息上屏
 void ChatDialog::slot_incoming_inserted(bool ok, QList<LocalMessageDTO> msgs,
-	QList<qint64> insertedIds)
+    QList<LocalMessageResourceDTO> resources, QList<qint64> insertedIds)
 {
 	if (!ok) {
 		return;
 	}
-	displayInsertedMessages(msgs, insertedIds);
+    displayInsertedMessages(msgs, resources, insertedIds);
 }
 
 //增量同步页落库成功：同上，去重后上屏
-void ChatDialog::slot_sync_page_applied(bool ok, qint64 newSyncSeq,
-	QList<LocalMessageDTO> msgs, QList<qint64> insertedIds)
+void ChatDialog::slot_sync_page_applied(bool ok, qint64 newEventSeq,
+    QList<UserEventDTO> events, QList<LocalMessageDTO> msgs,
+    QList<LocalMessageResourceDTO> resources,
+    QList<LocalFriendRequestDTO> friendRequests,
+    QList<LocalContactDTO> contacts, QList<qint64> insertedIds)
 {
 	if (!ok) {
 		return;
 	}
-	Q_UNUSED(newSyncSeq);
-	displayInsertedMessages(msgs, insertedIds);
+    Q_UNUSED(newEventSeq);
+    Q_UNUSED(events);
+    Q_UNUSED(friendRequests);
+    Q_UNUSED(contacts);
+    displayInsertedMessages(msgs, resources, insertedIds);
 }
 
 //1302 文本确认：未回复消息转为已送达（unrsp → base）
@@ -537,9 +442,9 @@ void ChatDialog::slot_send_confirmed(bool ok, LocalMessageDTO dto)
 	if (thread_data == nullptr) {
 		return;
 	}
-	auto msg = std::make_shared<TextChatData>(dto.server_message_id, dto.client_message_id,
-		dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content,
-		static_cast<int>(dto.sender_id), MsgStatus::UN_READ, dto.created_at);
+    auto msg = std::make_shared<TextChatData>(dto.message_id, dto.client_message_id,
+        dto.thread_id, ChatMsgType::TEXT, dto.text_content,
+        static_cast<int>(dto.sender_user_id), MsgStatus::UN_READ);
 	thread_data->MoveMsg(msg);
 
 	if (_cur_chat_thread_id != dto.thread_id) {
@@ -561,15 +466,17 @@ void ChatDialog::slot_send_failed_marked(bool ok, LocalMessageDTO dto)
 
 	if (dto.message_type == static_cast<int>(ChatMsgType::PIC)
 		|| dto.message_type == static_cast<int>(ChatMsgType::FILE)) {
-		auto file_info = UserMgr::GetInstance()->GetTransFileByName(dto.content);
-		if (file_info == nullptr) {
-			return;
-		}
+        auto pending = thread_data->GetMsgUnRspRef().value(dto.client_message_id);
+        auto pending_resource = std::dynamic_pointer_cast<ImgChatData>(pending);
+        if (pending_resource == nullptr || pending_resource->_msg_info == nullptr) {
+            return;
+        }
+        auto file_info = pending_resource->_msg_info;
 		const auto chat_type = (dto.message_type == static_cast<int>(ChatMsgType::FILE))
 			? ChatMsgType::FILE : ChatMsgType::PIC;
 		auto img_msg = std::make_shared<ImgChatData>(file_info, dto.client_message_id,
-			dto.thread_id, ChatFormType::PRIVATE, chat_type,
-			static_cast<int>(dto.sender_id), MsgStatus::SEND_FAILED, dto.created_at);
+			dto.thread_id, chat_type,
+            static_cast<int>(dto.sender_user_id), MsgStatus::SEND_FAILED);
 		thread_data->MoveMsg(img_msg);
 
 		if (_cur_chat_thread_id != dto.thread_id) {
@@ -579,9 +486,9 @@ void ChatDialog::slot_send_failed_marked(bool ok, LocalMessageDTO dto)
 		return;
 	}
 
-	auto msg = std::make_shared<TextChatData>(dto.server_message_id, dto.client_message_id,
-		dto.thread_id, ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content,
-		static_cast<int>(dto.sender_id), MsgStatus::SEND_FAILED, dto.created_at);
+    auto msg = std::make_shared<TextChatData>(dto.message_id, dto.client_message_id,
+        dto.thread_id, ChatMsgType::TEXT, dto.text_content,
+        static_cast<int>(dto.sender_user_id), MsgStatus::SEND_FAILED);
 	thread_data->MoveMsg(msg);
 
 	if (_cur_chat_thread_id != dto.thread_id) {
@@ -590,7 +497,7 @@ void ChatDialog::slot_send_failed_marked(bool ok, LocalMessageDTO dto)
 	ui->chat_page->UpdateChatStatus(msg);
 }
 
-//1504 资源元数据确认：回填 server_message_id，气泡转为已送达（上传继续由 Dispatcher 驱动）
+//1504 资源元数据确认：回填 message_id，上传继续由 Dispatcher 驱动。
 void ChatDialog::slot_resource_stage_updated(bool ok, LocalMessageDTO dto)
 {
 	if (!ok) {
@@ -600,17 +507,19 @@ void ChatDialog::slot_resource_stage_updated(bool ok, LocalMessageDTO dto)
 	if (thread_data == nullptr) {
 		return;
 	}
-	auto file_info = UserMgr::GetInstance()->GetTransFileByName(dto.content);
-	if (file_info == nullptr) {
-		return;
-	}
-	file_info->_msg_id = dto.server_message_id;
+    auto pending = thread_data->GetMsgUnRspRef().value(dto.client_message_id);
+    auto pending_resource = std::dynamic_pointer_cast<ImgChatData>(pending);
+    if (pending_resource == nullptr || pending_resource->_msg_info == nullptr) {
+        return;
+    }
+    auto file_info = pending_resource->_msg_info;
+    file_info->_msg_id = dto.message_id;
 	//按本地行的真实类型构造（图片 1 / 文件 3），避免把文件消息错建成 PIC
 	const auto chat_type = (dto.message_type == static_cast<int>(ChatMsgType::FILE))
 		? ChatMsgType::FILE : ChatMsgType::PIC;
 	auto img_msg = std::make_shared<ImgChatData>(file_info, dto.client_message_id,
-		dto.thread_id, ChatFormType::PRIVATE, chat_type,
-		static_cast<int>(dto.sender_id), MsgStatus::UN_READ, dto.created_at);
+		dto.thread_id, chat_type,
+        static_cast<int>(dto.sender_user_id), MsgStatus::UN_READ);
 	thread_data->MoveMsg(img_msg);
 
 	if (_cur_chat_thread_id != dto.thread_id) {
@@ -621,18 +530,19 @@ void ChatDialog::slot_resource_stage_updated(bool ok, LocalMessageDTO dto)
 
 //本地 DTO → 窗口消息对象。文本直接构造；资源消息（图片/文件）复用/新建 MsgInfo，
 //接收端缺本地缓存时用占位图，图片自动下载、文件等用户点击（1509 元数据先行）
-std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(const LocalMessageDTO& dto)
+std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(
+    const LocalMessageDTO& dto, const LocalMessageResourceDTO& resource)
 {
-	auto self_info = UserMgr::GetInstance()->GetUserInfo();
-	if (self_info == nullptr) {
-		return nullptr;
-	}
-	const bool is_self = (dto.sender_id == self_info->_uid);
-	//状态映射：失败→SEND_FAILED；自己发的→UN_READ；收到的→READED
-	int status = MsgStatus::READED;
-	if (dto.send_state == SEND_STATE_FAILED) {
-		status = MsgStatus::SEND_FAILED;
-	}
+    auto self_info = UserMgr::GetInstance()->GetUserInfo();
+    if (self_info == nullptr) {
+        return nullptr;
+    }
+    const bool is_self = (dto.sender_user_id == self_info->_uid);
+    //状态映射：失败→SEND_FAILED；自己发的→UN_READ；收到的→READED
+    int status = MsgStatus::READED;
+    if (dto.send_status == LOCAL_SEND_FAILED) {
+        status = MsgStatus::SEND_FAILED;
+    }
 	else if (is_self) {
 		status = MsgStatus::UN_READ;
 	}
@@ -641,106 +551,110 @@ std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(const LocalMessageDTO& d
 		|| dto.message_type == static_cast<int>(ChatMsgType::FILE)) {
 		const bool is_pic = (dto.message_type == static_cast<int>(ChatMsgType::PIC));
 		const MsgType msg_type = is_pic ? MsgType::IMG_MSG : MsgType::FILE_MSG;
-		//资源缓存按 message_id 隔离：cache/<message_id>/<文件名>；
-		//发送方另有本地归档 resources/<sender_uid>/<message_id>
-		QString storageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-		QString cache_dir = storageDir + "/user/" + QString::number(self_info->_uid)
-			+ "/cache/" + QString::number(dto.server_message_id);
-		QString cache_path = cache_dir + "/" + dto.content;
-		QString own_path = storageDir + "/user/" + QString::number(self_info->_uid)
-			+ "/resources/" + QString::number(dto.sender_id) + "/"
-			+ QString::number(dto.server_message_id);
+        //资源缓存按 message_id 隔离：cache/<message_id>/<文件名>；
+        //发送方另有本地归档 resources/<sender_uid>/<message_id>
+        QString storageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        QString cache_dir = storageDir + "/user/" + QString::number(self_info->_uid)
+            + "/cache/" + QString::number(dto.message_id);
+        QString cache_path = cache_dir + "/" + resource.original_file_name;
+        QString own_path = storageDir + "/user/" + QString::number(self_info->_uid)
+            + "/resources/" + QString::number(dto.sender_user_id) + "/"
+            + QString::number(dto.message_id);
 
-		//优先复用传输管理中的 MsgInfo（上传/下载进度共享同一对象）
-		auto file_info = UserMgr::GetInstance()->GetTransFileByName(dto.content);
-		if (file_info == nullptr) {
-			qint64 total_size = dto.content_size.toLongLong();
-			if (QFile::exists(cache_path)) {
-				//接收端已缓存：直接完成态
-				file_info = std::make_shared<MsgInfo>(msg_type, cache_path,
-					is_pic ? QPixmap(cache_path) : QPixmap(), dto.content, total_size,
-					dto.content_hash);
-				file_info->_local_download_path = cache_path;
-				file_info->_transfer_type = TransferType::Download;
-				file_info->_transfer_state = TransferState::Completed;
-			}
-			else if (is_self && QFile::exists(own_path)) {
-				file_info = std::make_shared<MsgInfo>(msg_type, own_path,
-					is_pic ? QPixmap(own_path) : QPixmap(), dto.content, total_size,
-					dto.content_hash);
-				file_info->_local_download_path = own_path;
-				file_info->_transfer_type = TransferType::Upload;
-				file_info->_transfer_state = TransferState::Completed;
-			}
-			else if (is_self) {
-				//发送端：本地源文件作预览（发送状态看 dto.send_state）
-				file_info = std::make_shared<MsgInfo>(msg_type, dto.local_path,
-					is_pic ? QPixmap(dto.local_path) : QPixmap(), dto.content, total_size,
-					dto.content_hash);
-				file_info->_transfer_type = TransferType::Upload;
-				file_info->_transfer_state = (dto.send_state == SEND_STATE_SENT)
-					? TransferState::Completed : TransferState::Uploading;
-			}
-			else {
-				//接收端无缓存：占位上屏；图片自动下载，文件等用户点击
-				file_info = std::make_shared<MsgInfo>(msg_type, cache_dir,
-					CreateLoadingPlaceholder(200, 200), dto.content, total_size, dto.content_hash);
-				file_info->_transfer_type = TransferType::Download;
-				file_info->_transfer_state = is_pic ? TransferState::Downloading
-					: TransferState::None;
-			}
-			file_info->_msg_id = dto.server_message_id;
-			file_info->_sender = static_cast<int>(dto.sender_id);
-			file_info->_receiver = static_cast<int>(dto.receiver_id);
-			file_info->_thread_id = dto.thread_id;
-			UserMgr::GetInstance()->AddTransFile(dto.content, file_info);
+        //优先复用传输管理中的 MsgInfo（上传/下载进度共享同一对象）
+        auto file_info = dto.message_id > 0
+            ? UserMgr::GetInstance()->GetTransFileByMsgId(dto.message_id) : nullptr;
+        if (file_info == nullptr && !dto.client_message_id.isEmpty()) {
+            file_info = UserMgr::GetInstance()->GetTransFileByName(resource.original_file_name);
+        }
+        if (file_info == nullptr) {
+            qint64 total_size = resource.file_size_bytes;
+            if (QFile::exists(cache_path)) {
+                //接收端已缓存：直接完成态
+                file_info = std::make_shared<MsgInfo>(msg_type, cache_path,
+                    is_pic ? QPixmap(cache_path) : QPixmap(), resource.original_file_name,
+                    total_size, resource.sha256);
+                file_info->_local_download_path = cache_path;
+                file_info->_transfer_type = TransferType::Download;
+                file_info->_transfer_state = TransferState::Completed;
+            }
+            else if (is_self && QFile::exists(own_path)) {
+                file_info = std::make_shared<MsgInfo>(msg_type, own_path,
+                    is_pic ? QPixmap(own_path) : QPixmap(), resource.original_file_name,
+                    total_size, resource.sha256);
+                file_info->_local_download_path = own_path;
+                file_info->_transfer_type = TransferType::Upload;
+                file_info->_transfer_state = TransferState::Completed;
+            }
+            else if (is_self) {
+                //发送端：本地源文件作预览（发送状态看 dto.send_status）
+                file_info = std::make_shared<MsgInfo>(msg_type, resource.local_file_path,
+                    is_pic ? QPixmap(resource.local_file_path) : QPixmap(),
+                    resource.original_file_name, total_size, resource.sha256);
+                file_info->_transfer_type = TransferType::Upload;
+                file_info->_transfer_state = (dto.send_status == LOCAL_SEND_SENT)
+                    ? TransferState::Completed : TransferState::Uploading;
+            }
+            else {
+                //接收端无缓存：占位上屏；图片自动下载，文件等用户点击
+                file_info = std::make_shared<MsgInfo>(msg_type, cache_dir,
+                    CreateLoadingPlaceholder(200, 200), resource.original_file_name,
+                    total_size, resource.sha256);
+                file_info->_transfer_type = TransferType::Download;
+                file_info->_transfer_state = is_pic ? TransferState::Downloading
+                    : TransferState::None;
+            }
+            file_info->_msg_id = dto.message_id;
+            file_info->_sender = static_cast<int>(dto.sender_user_id);
+            auto thread = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
+            file_info->_receiver = is_self && thread ? thread->GetPeerUserId() : self_info->_uid;
+            file_info->_thread_id = dto.thread_id;
+            UserMgr::GetInstance()->AddTransFile(resource.original_file_name, file_info);
 
-			if (!is_self && is_pic && dto.server_message_id > 0) {
-				//图片自动下载（1509 元数据先行，内部经信号投递到 File 线程）
-				FileTcpMgr::GetInstance()->StartResourceDownload(file_info);
+            if (!is_self && is_pic && dto.message_id > 0) {
+                //图片自动下载（1509 元数据先行，内部经信号投递到 File 线程）
+                FileTcpMgr::GetInstance()->StartResourceDownload(file_info);
 			}
 		}
 
-		return std::make_shared<ImgChatData>(file_info, dto.client_message_id,
-			dto.thread_id, ChatFormType::PRIVATE, is_pic ? ChatMsgType::PIC : ChatMsgType::FILE,
-			static_cast<int>(dto.sender_id), status, dto.created_at);
-	}
+        return std::make_shared<ImgChatData>(file_info, dto.client_message_id,
+            dto.thread_id, is_pic ? ChatMsgType::PIC : ChatMsgType::FILE,
+            static_cast<int>(dto.sender_user_id), status);
+    }
 
-	//普通文本与好友通过系统文本共用文本气泡，但保留原始消息类型。
-	const auto text_type = dto.message_type == static_cast<int>(ChatMsgType::FRIEND_ACCEPT)
-		? ChatMsgType::FRIEND_ACCEPT : ChatMsgType::TEXT;
-	return std::make_shared<TextChatData>(dto.server_message_id, dto.client_message_id,
-		dto.thread_id, ChatFormType::PRIVATE, text_type, dto.content,
-		static_cast<int>(dto.sender_id), status, dto.created_at);
+    return std::make_shared<TextChatData>(dto.message_id, dto.client_message_id,
+        dto.thread_id, ChatMsgType::TEXT, dto.text_content,
+        static_cast<int>(dto.sender_user_id), status);
 }
 
 //只对实际插入的消息上屏（insertedIds 去重保证推送与同步只展示一次）
 void ChatDialog::displayInsertedMessages(const QList<LocalMessageDTO>& msgs,
-	const QList<qint64>& insertedIds)
+    const QList<LocalMessageResourceDTO>& resources, const QList<qint64>& insertedIds)
 {
-	for (const auto& dto : msgs) {
-		if (!insertedIds.contains(dto.server_message_id)) {
-			continue;
-		}
-		if (dto.thread_id <= 0 ||
-			dto.message_type == static_cast<int>(ChatMsgType::FRIEND_APPLY) ||
-			dto.message_type == static_cast<int>(ChatMsgType::FRIEND_REJECT)) {
-			continue;
-		}
+    if (resources.size() != msgs.size()) return;
+    for (int i = 0; i < msgs.size(); ++i) {
+        const auto& dto = msgs.at(i);
+        if (!insertedIds.contains(dto.message_id)) {
+            continue;
+        }
+        if (dto.thread_id <= 0) {
+            continue;
+        }
 
 		auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
 		if (thread_data == nullptr) {
-			//会话还不存在（新会话首条消息）：创建内存模型 + 列表项
-			auto self_uid = UserMgr::GetInstance()->GetUid();
-			auto peer_uid = (dto.sender_id == self_uid) ? dto.receiver_id : dto.sender_id;
-			createPrivateChatItem(static_cast<int>(peer_uid), dto.thread_id);
+            //会话还不存在（新会话首条消息）：创建内存模型 + 列表项
+            auto self_uid = UserMgr::GetInstance()->GetUid();
+            if (dto.sender_user_id == self_uid) continue;
+            auto peer_uid = dto.sender_user_id;
+            createPrivateChatItem(static_cast<int>(peer_uid), dto.thread_id);
 			thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
 			if (thread_data == nullptr) {
 				continue;
 			}
 		}
 
-		auto chat_data = buildChatData(dto);
+        auto chat_data = buildChatData(dto, resources.at(i));
 		if (chat_data == nullptr) {
 			continue;
 		}
@@ -1082,10 +996,6 @@ void ChatDialog::slot_add_auth_friend(std::shared_ptr<AuthInfo> auth_info) {
 
 	auto chat_thread_data = std::make_shared<ChatThreadData>(auth_info->_uid, auth_info->_thread_id, 0);
 	UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, auth_info->_uid);
-	for (auto& chat_msg : auth_info->_chat_datas) {
-		chat_thread_data->AppendMsg(chat_msg->GetMsgId(), chat_msg);
-	}
-
 	auto iter = _chat_thread_items.find(auth_info->_thread_id);
 	if (iter != _chat_thread_items.end()) {
 		return;
@@ -1116,9 +1026,6 @@ void ChatDialog::slot_auth_rsp(std::shared_ptr<AuthRsp> auth_rsp)
 	auto* chat_user_wid = new ChatUserWid();
 	auto chat_thread_data = std::make_shared<ChatThreadData>(auth_rsp->_uid, auth_rsp->_thread_id, 0);
 	UserMgr::GetInstance()->AddChatThreadData(chat_thread_data, auth_rsp->_uid);
-	for (auto& chat_msg : auth_rsp->_chat_datas) {
-		chat_thread_data->AppendMsg(chat_msg->GetMsgId(), chat_msg);
-	}
 	chat_user_wid->SetChatData(chat_thread_data);
 	QListWidgetItem* item = new QListWidgetItem;
 	//qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
@@ -1163,10 +1070,8 @@ void ChatDialog::slot_jump_chat_item(std::shared_ptr<SearchInfo> si)
 	}
 
 	//如果没找到，则发送创建请求
-	auto uid = UserMgr::GetInstance()->GetUid();
 	QJsonObject jsonObj;
-	jsonObj["uid"] = uid;
-	jsonObj["other_id"] = si->_uid;
+	jsonObj["target_user_id"] = si->_uid;
 
 	QJsonDocument doc(jsonObj);
 	QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
@@ -1210,10 +1115,8 @@ void ChatDialog::slot_jump_chat_item_from_infopage(std::shared_ptr<UserInfo> use
 	}
 
 	//如果没找到，则发送创建请求
-	auto uid = UserMgr::GetInstance()->GetUid();
 	QJsonObject jsonObj;
-	jsonObj["uid"] = uid;
-	jsonObj["other_id"] = user_info->_uid;
+	jsonObj["target_user_id"] = user_info->_uid;
 	
 	QJsonDocument doc(jsonObj);
 	QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
@@ -1262,6 +1165,7 @@ void ChatDialog::slot_update_download_progress(std::shared_ptr<MsgInfo> msg_info
 	ui->chat_page->UpdateFileProgress(msg_info);
 }
 void ChatDialog::slot_download_finish(std::shared_ptr<MsgInfo> msg_info, QString file_path) {
+	LocalChatStore::GetInstance()->updateResourceLocalPath(msg_info->_msg_id, file_path);
 	auto chat_data = UserMgr::GetInstance()->GetChatThreadByThreadId(msg_info->_thread_id);
 	if (chat_data == nullptr) {
 		return;

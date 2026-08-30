@@ -160,12 +160,12 @@ void FileWorker::RegisterHandlers()
 			//将数据库内容写入redis缓存
 			json redis_root;
 			redis_root["uid"] = task->_uid;
-			redis_root["name"] = user_info->name;
+			redis_root["name"] = user_info->username;
 			redis_root["email"] = user_info->email;
-			redis_root["nick"] = user_info->nick;
-			redis_root["desc"] = user_info->desc;
-			redis_root["sex"] = user_info->sex;
-			redis_root["icon"] = user_info->icon;
+			redis_root["nick"] = user_info->nickname;
+			redis_root["desc"] = user_info->profile_bio;
+			redis_root["sex"] = user_info->gender;
+			redis_root["icon"] = user_info->avatar_key;
 			std::string base_key = USER_BASE_INFO + std::to_string(task->_uid);
 			RedisMgr::GetInstance()->Set(base_key, redis_root.dump(4));
 		}
@@ -234,20 +234,21 @@ std::shared_ptr<UploadSession> FileWorker::LoadUploadSession(long long message_i
 	const std::shared_ptr<ChatMessage>& msg) {
 	auto session = std::make_shared<UploadSession>();
 	session->message_id = message_id;
-	session->total_size = static_cast<long long>(msg->content_size);
-	session->content_hash = msg->content_hash;
-	session->sender_id = msg->sender_id;
-	session->recv_id = msg->recv_id;
+	if (!msg->resource) return nullptr;
+	session->file_size_bytes = static_cast<long long>(msg->resource->file_size_bytes);
+	session->sha256 = msg->resource->sha256;
+	session->sender_user_id = msg->sender_user_id;
+	session->recipient_user_id = msg->recipient_user_id;
 	//磁盘真值：.part 实际长度（ResourceServer 重启后据此续传）
-	const auto part_path = ResourceFilePath(msg->sender_id, message_id).string() + ".part";
+	const auto part_path = ResourceFilePath(msg->sender_user_id, message_id).string() + ".part";
 	session->received = PartFileLength(part_path);
 	if (session->received == ~0ULL) {
 		return nullptr;
 	}
-	if (session->received > static_cast<unsigned long long>(session->total_size)) {
+	if (session->received > static_cast<unsigned long long>(session->file_size_bytes)) {
 		//.part 超过 total（异常残留）：截断为 0，从重头收
 		std::cerr << "ResourceServer: part larger than total for msg " << message_id
-			<< ", reset (" << session->received << " > " << session->total_size << ")" << std::endl;
+			<< ", reset (" << session->received << " > " << session->file_size_bytes << ")" << std::endl;
 		boost::system::error_code ec;
 		boost::filesystem::remove(part_path, ec);
 		session->received = 0;
@@ -272,15 +273,15 @@ void FileWorker::EvictIdleUploadSessions() {
 void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 	EvictIdleUploadSessions();
 
-	//统一响应格式；资源 Ready 时附带接收者序号。
+	//统一响应格式；资源发布后附带接收者事件序号。
 	auto respond = [task](int error, unsigned long long server_offset,
-		int resource_status, unsigned long long recv_seq = 0) {
+		int status, unsigned long long event_seq = 0) {
 		json result;
 		result["error"] = error;
 		result["message_id"] = std::to_string(task->_message_id);
 		result["server_offset"] = std::to_string(server_offset);
-		result["resource_status"] = resource_status;
-		if (recv_seq > 0) result["recv_seq"] = std::to_string(recv_seq);
+		result["status"] = status;
+		if (event_seq > 0) result["event_seq"] = std::to_string(event_seq);
 		if (task->_callback) {
 			task->_callback(result);
 		}
@@ -297,23 +298,23 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 			respond(ErrorCodes::MsgIdErr, 0, -1);
 			return;
 		}
-		if (uid == 0 || uid != msg->sender_id) {
+		if (uid == 0 || uid != msg->sender_user_id) {
 			respond(ErrorCodes::ResourceForbidden, 0, -1);
 			return;
 		}
-		if (msg->msg_type != 1 && msg->msg_type != 3) {
+		if (msg->message_type != 1 && msg->message_type != 3) {
 			respond(ErrorCodes::ResourceStateInvalid, 0, -1);
 			return;
 		}
-		if (msg->resource_status == static_cast<int>(ResourceStatus::Ready)) {
+		if (msg->status == MessageStatus::Published) {
 			//已完成（重发末片/响应丢失重试）：幂等成功
-			respond(ErrorCodes::Success, msg->content_size,
-				static_cast<int>(ResourceStatus::Ready), msg->recv_seq);
+			respond(ErrorCodes::Success, msg->resource->file_size_bytes,
+				static_cast<int>(MessageStatus::Published), msg->event_seq);
 			return;
 		}
-		if (msg->resource_status == static_cast<int>(ResourceStatus::Expired)) {
+		if (msg->status == MessageStatus::Failed) {
 			respond(ErrorCodes::ResourceStateInvalid, 0,
-				static_cast<int>(ResourceStatus::Expired));
+				static_cast<int>(MessageStatus::Failed));
 			return;
 		}
 		session = LoadUploadSession(task->_message_id, msg);
@@ -324,7 +325,7 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 	}
 
 	//权限：上传者必须是消息 sender（sender 取已认证会话，不信任客户端 JSON）
-	if (uid == 0 || uid != session->sender_id) {
+	if (uid == 0 || uid != session->sender_user_id) {
 		respond(ErrorCodes::ResourceForbidden, 0, -1);
 		return;
 	}
@@ -337,13 +338,13 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 	}
 	const unsigned long long offset = static_cast<unsigned long long>(task->_offset);
 	const unsigned long long len = decoded.size();
-	if (offset + len > static_cast<unsigned long long>(session->total_size)) {
+	if (offset + len > static_cast<unsigned long long>(session->file_size_bytes)) {
 		//越界：分片超出 total_size，永远无法收齐
 		respond(ErrorCodes::FileOffsetInvalid, session->received, -1);
 		return;
 	}
 
-	const auto base_path = ResourceFilePath(session->sender_id, task->_message_id);
+	const auto base_path = ResourceFilePath(session->sender_user_id, task->_message_id);
 	const auto part_path = base_path.string() + ".part";
 
 	if (offset == session->received) {
@@ -422,26 +423,26 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 	}
 
 	//完成判定（服务端按 total_size 判定，不信任客户端 last 字段）
-	if (session->received == static_cast<unsigned long long>(session->total_size)) {
+	if (session->received == static_cast<unsigned long long>(session->file_size_bytes)) {
 		CompleteResourceUpload(task, session);
 		return;
 	}
 
-	respond(ErrorCodes::Success, session->received, static_cast<int>(ResourceStatus::Uploading));
+	respond(ErrorCodes::Success, session->received, static_cast<int>(MessageStatus::Pending));
 }
 
 void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 	std::shared_ptr<UploadSession> session) {
-	const auto base_path = ResourceFilePath(session->sender_id, task->_message_id);
+	const auto base_path = ResourceFilePath(session->sender_user_id, task->_message_id);
 	const auto part_path = base_path.string() + ".part";
 
-	//完成点统一失败响应（resource_status 仍为 Uploading，客户端重发末片可再触发）
+	//完成点失败时消息仍为 PENDING，客户端重发末片可再触发。
 	auto respond_error = [task, &session](int error, unsigned long long server_offset) {
 		json result;
 		result["error"] = error;
 		result["message_id"] = std::to_string(task->_message_id);
 		result["server_offset"] = std::to_string(server_offset);
-		result["resource_status"] = static_cast<int>(ResourceStatus::Uploading);
+		result["status"] = static_cast<int>(MessageStatus::Pending);
 		if (task->_callback) {
 			task->_callback(result);
 		}
@@ -453,10 +454,10 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 		respond_error(ErrorCodes::FileReadFailed, session->received);
 		return;
 	}
-	if (full_hash != session->content_hash) {
+	if (full_hash != session->sha256) {
 		//整文件校验失败：删 .part 从 0 重传（分片校验都通过仍不匹配 = 会话元数据分叉）
 		std::cerr << "ResourceServer: whole-file hash mismatch msg=" << task->_message_id
-			<< " expected=" << session->content_hash << " actual=" << full_hash << std::endl;
+			<< " expected=" << session->sha256 << " actual=" << full_hash << std::endl;
 		boost::system::error_code rm_ec;
 		boost::filesystem::remove(part_path, rm_ec);
 		session->received = 0;
@@ -493,23 +494,23 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 		return 0;
 	};
 
-	//MySQL 是真值：按 message_id 读 canonical ChatMessage 取 sender/recv，
+	//MySQL 是真值：按 message_id 读 canonical ChatMessage 取发送者和接收者，
 	//不信任会话字段（可能与 canonical 分叉，污染错误用户的同步流）
 	auto canonical_msg = MysqlMgr::GetInstance()->GetChatMsgById(task->_message_id);
 	if (canonical_msg == nullptr) {
 		std::cerr << "CompleteResourceUpload: canonical ChatMessage not found for message_id="
-			<< task->_message_id << ", recv_seq not assigned, peer not notified" << std::endl;
+			<< task->_message_id << ", event_seq not assigned, peer not notified" << std::endl;
 		respond_error(ErrorCodes::RPCFailed, restore_part_after_publish_failure());
 		return;
 	}
 
-	//只有 DB 状态迁移和 recv_seq 分配（单事务）成功才尝试 live RPC。
-	unsigned long long recv_seq = 0;
+	//只有 DB 发布和 event_seq 分配（单事务）成功才尝试 live RPC。
+	unsigned long long event_seq = 0;
 	if (!MysqlMgr::GetInstance()->CompleteResourceUpload(task->_message_id,
-		canonical_msg->sender_id, canonical_msg->recv_id, recv_seq)) {
+		canonical_msg->sender_user_id, event_seq)) {
 		//DB 失败：回送失败响应；绝不 RPC；尽量恢复为 .part 供末片重试。
 		std::cerr << "CompleteResourceUpload: DB transaction failed for message_id="
-			<< task->_message_id << ", recv_seq not assigned, peer not notified" << std::endl;
+			<< task->_message_id << ", event_seq not assigned, peer not notified" << std::endl;
 		respond_error(ErrorCodes::RPCFailed, restore_part_after_publish_failure());
 		return;
 	}
@@ -517,33 +518,34 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 	//上传完成，移除会话缓存
 	_upload_sessions.erase(task->_message_id);
 
-	//先回送上传成功响应（文件、READY 状态和 recv_seq 均已提交）。
+	//先回送上传成功响应（文件、PUBLISHED 状态和 event_seq 均已提交）。
 	json result;
 	result["error"] = ErrorCodes::Success;
 	result["message_id"] = std::to_string(task->_message_id);
 	result["server_offset"] = std::to_string(session->received);
-	result["resource_status"] = static_cast<int>(ResourceStatus::Ready);
-	result["recv_seq"] = std::to_string(recv_seq);
+	result["status"] = static_cast<int>(MessageStatus::Published);
+	result["event_seq"] = std::to_string(event_seq);
 	if (task->_callback) {
 		task->_callback(result);
 	}
 
 	//仅当接收者在线才尝试 live RPC；失败只日志，由 receiver 增量同步兜底
-	auto receiver_str = std::to_string(canonical_msg->recv_id);
+	auto receiver_str = std::to_string(canonical_msg->recipient_user_id);
 	std::string uid_ip_value;
 	auto uid_ip_key = USERIPPREFIX + receiver_str;
 	bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
 	if (!b_ip) {
-		//接收者未登录：消息已带 recv_seq，由增量同步兜底。
+		//接收者未登录：user_events 已提交，由增量同步兜底。
 		return;
 	}
 
 	auto notify = ChatServerGrpcClient::GetInstance()->NotifyUserMessage(
-		task->_message_id, canonical_msg->recv_id, uid_ip_value);
+		task->_message_id, canonical_msg->message_type,
+		canonical_msg->recipient_user_id, uid_ip_value);
 	if (notify.app_error == kAppRecipientOffline) {
 		//RECIPIENT_OFFLINE：只记录，不重复重试（增量同步兜底）
 		std::cout << "CompleteResourceUpload: recipient offline msg_id="
-			<< task->_message_id << ", recv_seq committed for incremental sync" << std::endl;
+			<< task->_message_id << ", event_seq committed for incremental sync" << std::endl;
 	}
 	else if (notify.app_error != ErrorCodes::Success) {
 		std::cerr << "CompleteResourceUpload: NotifyUserMessage failed msg_id="

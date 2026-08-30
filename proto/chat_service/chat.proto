@@ -12,11 +12,14 @@ service ChatService {
 message NotifyUserMessageReq {
   int64 to_uid = 1;
   int64 message_id = 2;
+  int32 event_type = 3;
+  int64 friend_request_id = 4;
 }
 
 message NotifyUserMessageRsp {
   int32 error = 1;
   int64 message_id = 2;
+  int64 friend_request_id = 3;
 }
 
 message KickUserReq {

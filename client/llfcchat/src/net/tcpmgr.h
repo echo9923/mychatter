@@ -6,6 +6,7 @@
 #include <functional>
 #include <QObject>
 #include "userdata.h"
+#include "localmessageDTO.h"
 #include <QJsonArray>
 #include <memory>
 #include <QThread>
@@ -63,9 +64,6 @@ private:
     void handleSyncMessageRsp(ReqId id, int len, QByteArray data);
     void handleMsg(ReqId id, int len, QByteArray data);
     void finishReconnectFailure();
-    void CreatePlaceholderResourceMsgL(QString cache_dir, QString msg_content,
-        qint64 msg_id, qint64 thread_id, int send_uid, int recv_id, int status, QString chat_time,
-        ChatMsgType msg_type, std::vector<std::shared_ptr<ChatDataBase>>& chat_datas);
     QTcpSocket _socket;
     QString _host;
     uint16_t _port;
@@ -108,29 +106,24 @@ signals:
     void sig_login_failed(int);
     void sig_user_search(std::shared_ptr<SearchInfo>);
     void sig_friend_apply(std::shared_ptr<AddFriendApply>);
-	void sig_friend_request_handled(qint64 messageId, int businessStatus);
+	void sig_friend_request_handled(qint64 friendRequestId, int status);
     void sig_add_auth_friend(std::shared_ptr<AuthInfo>);
     void sig_auth_rsp(std::shared_ptr<AuthRsp>);
-    void sig_text_chat_msg(std::shared_ptr<TextChatData> msg);
     void sig_notify_offline();
     void sig_connection_closed();
     void sig_load_chat_thread(bool load_more, qint64 last_thread_id,
         std::vector<std::shared_ptr<ChatThreadInfo>> chat_list);
-    void sig_create_private_chat(int uid, int other_id, qint64 thread_id);
-    void sig_load_chat_msg(qint64 thread_id, qint64 message_id, bool load_more,
-        std::vector<std::shared_ptr<ChatDataBase>> msg_list);
-    void sig_img_chat_msg(std::shared_ptr<ImgChatData> msg_list);
-    //文件消息（复用 ImgChatData 载荷；不自动下载，等用户点击）
-    void sig_file_chat_msg(std::shared_ptr<ImgChatData> msg_list);
+    void sig_create_private_chat(int target_user_id, qint64 thread_id);
+    void sig_load_chat_msg(qint64 threadId, qint64 nextMessageId, bool loadMore,
+        QList<LocalMessageDTO> messages, QList<LocalMessageResourceDTO> resources);
     //—— 领域转发信号：1302/1504 → OutboxDispatcher，1701/1406 → ChatSyncManager ——
     //1302 文本回包（含 MESSAGE_CONFLICT/transient，由 Dispatcher 判定）
-    void sig_text_msg_rsp_forward(int error, QString unique_id, qint64 message_id,
-        QString chat_time);
+    void sig_text_msg_rsp_forward(int error, QString clientMessageId, qint64 messageId,
+        QString createdAt);
     //1504 资源消息创建回包（含 MESSAGE_CONFLICT/RESOURCE_*/transient，由 Dispatcher 判定）
-    void sig_resource_msg_meta_rsp_forward(int error, QString unique_id, QString file_name,
-        qint64 message_id, qint64 thread_id, qint64 fromuid, qint64 touid);
+    void sig_resource_msg_meta_rsp_forward(int error, QString clientMessageId,
+        qint64 messageId);
 	void sig_user_message_notify(QJsonObject envelope);
-	void sig_user_message_business_rsp(QJsonObject envelope);
     //1406 增量同步回包（原始 JSON 对象交 ChatSyncManager）
     void sig_sync_message_rsp(QJsonObject rsp);
 };

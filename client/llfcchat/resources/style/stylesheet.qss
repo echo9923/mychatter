@@ -524,12 +524,6 @@ LoadingDlg{
     background: #d3eaf8;
 }
 
-#apply_wid #FriendLabel {
-    background: #daf6e7;
-    color: #48bf56;
-    border-radius: 10px;
-}
-
 #apply_wid #tip_lb {
     padding-left: 2px;
     color:rgb(153,153,153);

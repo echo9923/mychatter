@@ -9,6 +9,7 @@
 #include "applyfrienditem.h"
 #include "usermgr.h"
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include "tcpmgr.h"
 #include <QUuid>
@@ -44,16 +45,8 @@ ChatPage::~ChatPage()
 
 void ChatPage::SetChatData(std::shared_ptr<ChatThreadData> chat_data) {
     _chat_data = chat_data;
-    auto other_id = _chat_data->GetOtherId();
-    if(other_id == 0) {
-        //说明是群聊
-        ui->title_lb->setText(_chat_data->GetGroupName());
-        //todo...加载群聊信息和成员信息
-        return;
-    }
-
-    //私聊
-    auto friend_info = UserMgr::GetInstance()->GetFriendById(other_id);
+    auto peer_user_id = _chat_data->GetPeerUserId();
+    auto friend_info = UserMgr::GetInstance()->GetFriendById(peer_user_id);
     if (friend_info == nullptr) {
         return;
     }
@@ -81,8 +74,7 @@ void ChatPage::AppendChatMsg(std::shared_ptr<ChatDataBase> msg, bool rsp)
         pChatItem->setUserName(self_info->_name);
         SetSelfIcon(pChatItem, self_info->_icon);
         QWidget* pBubble = nullptr;
-		if (msg->GetMsgType() == ChatMsgType::TEXT ||
-			msg->GetMsgType() == ChatMsgType::FRIEND_ACCEPT) {
+		if (msg->GetMsgType() == ChatMsgType::TEXT) {
             pBubble = new TextBubble(role, msg->GetMsgContent());
         }else if (msg->GetMsgType() == ChatMsgType::PIC || msg->GetMsgType() == ChatMsgType::FILE) {
             pBubble = makeResourceBubble(msg->GetMsgType(),
@@ -97,7 +89,7 @@ void ChatPage::AppendChatMsg(std::shared_ptr<ChatDataBase> msg, bool rsp)
             _base_item_map[msg->GetMsgId()] = pChatItem;
         }
         else {
-            _unrsp_item_map[msg->GetUniqueId()] = pChatItem;
+            _unrsp_item_map[msg->GetClientMessageId()] = pChatItem;
         }
        
     }
@@ -146,8 +138,7 @@ void ChatPage::AppendChatMsg(std::shared_ptr<ChatDataBase> msg, bool rsp)
         }
 
         QWidget* pBubble = nullptr;
-		if (msg->GetMsgType() == ChatMsgType::TEXT ||
-			msg->GetMsgType() == ChatMsgType::FRIEND_ACCEPT) {
+		if (msg->GetMsgType() == ChatMsgType::TEXT) {
             pBubble = new TextBubble(role, msg->GetMsgContent());
         }
         else if (msg->GetMsgType() == ChatMsgType::PIC || msg->GetMsgType() == ChatMsgType::FILE) {
@@ -162,7 +153,7 @@ void ChatPage::AppendChatMsg(std::shared_ptr<ChatDataBase> msg, bool rsp)
             _base_item_map[msg->GetMsgId()] = pChatItem;
         }
         else {
-            _unrsp_item_map[msg->GetUniqueId()] = pChatItem;
+            _unrsp_item_map[msg->GetClientMessageId()] = pChatItem;
         }
     }
 
@@ -178,8 +169,7 @@ void ChatPage::AppendOtherMsg(std::shared_ptr<ChatDataBase> msg) {
         pChatItem->setUserName(self_info->_name);
         SetSelfIcon(pChatItem, self_info->_icon);
         QWidget* pBubble = nullptr;
-		if (msg->GetMsgType() == ChatMsgType::TEXT ||
-			msg->GetMsgType() == ChatMsgType::FRIEND_ACCEPT) {
+		if (msg->GetMsgType() == ChatMsgType::TEXT) {
             pBubble = new TextBubble(role, msg->GetMsgContent());
         }
         else if (msg->GetMsgType() == ChatMsgType::PIC || msg->GetMsgType() == ChatMsgType::FILE) {
@@ -238,8 +228,7 @@ void ChatPage::AppendOtherMsg(std::shared_ptr<ChatDataBase> msg) {
         }
 
         QWidget* pBubble = nullptr;
-		if (msg->GetMsgType() == ChatMsgType::TEXT ||
-			msg->GetMsgType() == ChatMsgType::FRIEND_ACCEPT) {
+		if (msg->GetMsgType() == ChatMsgType::TEXT) {
             pBubble = new TextBubble(role, msg->GetMsgContent());
         }
         else if (msg->GetMsgType() == ChatMsgType::PIC || msg->GetMsgType() == ChatMsgType::FILE) {
@@ -285,7 +274,7 @@ void ChatPage::LoadHeadIcon(QString avatarPath, QLabel* icon_label, QString file
 
 void ChatPage::UpdateChatStatus(std::shared_ptr<ChatDataBase> msg)
 {
-    auto iter = _unrsp_item_map.find(msg->GetUniqueId());
+    auto iter = _unrsp_item_map.find(msg->GetClientMessageId());
     //没找到则直接返回
     if (iter == _unrsp_item_map.end()) {
         return;
@@ -297,7 +286,7 @@ void ChatPage::UpdateChatStatus(std::shared_ptr<ChatDataBase> msg)
 }
 
 void ChatPage::UpdateImgChatStatus(std::shared_ptr<ImgChatData> msg) {
-    auto iter = _unrsp_item_map.find(msg->GetUniqueId());
+    auto iter = _unrsp_item_map.find(msg->GetClientMessageId());
     //没找到则直接返回
     if (iter == _unrsp_item_map.end()) {
         return;
@@ -492,8 +481,9 @@ void ChatPage::on_send_btn_clicked() {
     auto thread_id = _chat_data->GetThreadId();
     for (int i = 0; i < msgList.size(); ++i)
     {
-        //消息内容长度不合规就跳过
-        if (msgList[i]->_text_or_url.length() > 1024) {
+        //文本内容长度不合规就跳过；资源大小由服务端按类型校验。
+        if (msgList[i]->_msg_type == MsgType::TEXT_MSG
+            && msgList[i]->_text_or_url.length() > 1024) {
             continue;
         }
 
@@ -504,28 +494,28 @@ void ChatPage::on_send_btn_clicked() {
         QString uuidString = uuid.toString();
 
         //文本与资源（图片/文件）都先 enqueueSend 入库，提交成功信号回来才上屏并通知 Dispatcher
-        LocalMessageDTO dto;
-        dto.client_message_id = uuidString;
-        dto.thread_id = thread_id;
-        dto.sender_id = user_info->_uid;
-        dto.receiver_id = _chat_data->GetOtherId();
+        LocalMessageDTO message;
+        LocalMessageResourceDTO resource;
+        OutboxEntryDTO outbox;
+        QJsonObject request;
+        message.client_message_id = uuidString;
+        message.thread_id = thread_id;
+        message.sender_user_id = user_info->_uid;
+        message.created_at = QDateTime::currentMSecsSinceEpoch();
+        request["client_message_id"] = uuidString;
+        request["thread_id"] = QString::number(thread_id);
+        request["target_user_id"] = _chat_data->GetPeerUserId();
         if (type == MsgType::TEXT_MSG)
         {
             QByteArray utf8Message = msgList[i]->_text_or_url.toUtf8();
-            dto.message_type = static_cast<int>(ChatMsgType::TEXT);
-            dto.content = QString::fromUtf8(utf8Message);
-            dto.content_size = "0";
+            message.message_type = static_cast<int>(ChatMsgType::TEXT);
+            message.text_content = QString::fromUtf8(utf8Message);
+            request["text_content"] = message.text_content;
         }
         else if (type == MsgType::IMG_MSG || type == MsgType::FILE_MSG)
         {
-            dto.message_type = static_cast<int>(type == MsgType::IMG_MSG
+            message.message_type = static_cast<int>(type == MsgType::IMG_MSG
                 ? ChatMsgType::PIC : ChatMsgType::FILE);
-            //content 为原始文件名（仅展示；服务端磁盘以 message_id 命名），
-            //local_path 为本地源文件路径（重传/续传依据）
-            dto.content = msgList[i]->_unique_name;
-            dto.local_path = msgList[i]->_text_or_url;
-            dto.content_size = QString::number(msgList[i]->_total_size);
-            dto.resource_status = RESOURCE_UPLOADING;
             //哈希在 MessageTextEdit 采集时已算好（整文件 + 分片），未算则此处补算
             if (msgList[i]->_content_hash.isEmpty()) {
                 QString whole;
@@ -537,18 +527,33 @@ void ChatPage::on_send_btn_clicked() {
                 msgList[i]->_content_hash = whole;
                 msgList[i]->_chunk_hashes = chunks;
             }
-            dto.content_hash = msgList[i]->_content_hash;
-            dto.mime_type = guessMimeType(msgList[i]->_unique_name);
+            resource.original_file_name = msgList[i]->_unique_name;
+            resource.local_file_path = msgList[i]->_text_or_url;
+            resource.file_size_bytes = msgList[i]->_total_size;
+            resource.sha256 = msgList[i]->_content_hash;
+            resource.mime_type = guessMimeType(msgList[i]->_unique_name);
+            request["message_type"] = message.message_type;
+            request["original_file_name"] = resource.original_file_name;
+            request["file_size_bytes"] = QString::number(resource.file_size_bytes);
+            request["sha256"] = resource.sha256;
+            request["mime_type"] = resource.mime_type;
             _pending_img_infos[uuidString] = msgList[i];
         }
-        _pending_sends[uuidString] = dto;
-        LocalChatStore::GetInstance()->enqueueSend(dto);
+        else {
+            continue;
+        }
+        outbox.client_message_id = uuidString;
+        outbox.payload_json = QString::fromUtf8(
+            QJsonDocument(request).toJson(QJsonDocument::Compact));
+        _pending_sends[uuidString] = message;
+        LocalChatStore::GetInstance()->enqueueSend(message, resource, outbox);
     }
 }
 
 //入库提交成功：上屏（sending 气泡）。可靠派发由 Dispatcher 订阅同一信号
 //自行登记，不再经由 ChatPage 中转——聊天页关闭不影响已落库消息的发送
-void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO entry)
+void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto,
+    LocalMessageResourceDTO resource, OutboxEntryDTO entry)
 {
     Q_UNUSED(entry);
     auto iter = _pending_sends.find(dto.client_message_id);
@@ -571,10 +576,9 @@ void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO e
 
     auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
     if (dto.message_type == static_cast<int>(ChatMsgType::TEXT)) {
-        pBubble = new TextBubble(role, dto.content);
-        //注意，此处先按私聊处理
+        pBubble = new TextBubble(role, dto.text_content);
         auto txt_msg = std::make_shared<TextChatData>(dto.client_message_id, dto.thread_id,
-            ChatFormType::PRIVATE, ChatMsgType::TEXT, dto.content, user_info->_uid, 0);
+            ChatMsgType::TEXT, dto.text_content, user_info->_uid, 0);
         //将未回复的消息加入到未回复列表中，以便后续处理
         if (thread_data) {
             thread_data->AppendUnRspMsg(dto.client_message_id, txt_msg);
@@ -588,7 +592,8 @@ void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO e
             return;
         }
         if (dto.message_type == static_cast<int>(ChatMsgType::PIC)) {
-            auto pic_bubble = new PictureBubble(QPixmap(dto.local_path), role, file_info->_total_size);
+            auto pic_bubble = new PictureBubble(QPixmap(resource.local_file_path), role,
+                file_info->_total_size);
             pic_bubble->setMsgInfo(file_info);
             pBubble = pic_bubble;
             //链接暂停/恢复信号
@@ -600,7 +605,8 @@ void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO e
             //发送方向：标记为上传，FileBubble 据此显示暂停/继续而非下载
             file_info->_transfer_type = TransferType::Upload;
             file_info->_transfer_state = TransferState::Uploading;
-            auto file_bubble = new FileBubble(dto.content, file_info->_total_size, role);
+            auto file_bubble = new FileBubble(resource.original_file_name,
+                file_info->_total_size, role);
             file_bubble->setMsgInfo(file_info);
             pBubble = file_bubble;
             //发送方向的文件：暂停/恢复上传
@@ -610,14 +616,13 @@ void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO e
                 this, &ChatPage::on_clicked_resume);
         }
         auto img_msg = std::make_shared<ImgChatData>(file_info, dto.client_message_id,
-            dto.thread_id, ChatFormType::PRIVATE,
-            static_cast<ChatMsgType>(dto.message_type), user_info->_uid, 0);
+            dto.thread_id, static_cast<ChatMsgType>(dto.message_type), user_info->_uid, 0);
         //将未回复的消息加入到未回复列表中，以便后续处理
         if (thread_data) {
             thread_data->AppendUnRspMsg(dto.client_message_id, img_msg);
         }
         //文件信息加入管理（1504 后 Dispatcher 复用同一 MsgInfo 启动上传）
-        UserMgr::GetInstance()->AddTransFile(dto.content, file_info);
+        UserMgr::GetInstance()->AddTransFile(resource.original_file_name, file_info);
     }
 
     //发送消息上屏（仅当前打开的会话）
@@ -639,7 +644,7 @@ void ChatPage::on_receive_btn_clicked()
 {
     auto pTextEdit = ui->chatEdit;
     ChatRole role = ChatRole::Other;
-    auto friend_info = UserMgr::GetInstance()->GetFriendById(_chat_data->GetOtherId());
+    auto friend_info = UserMgr::GetInstance()->GetFriendById(_chat_data->GetPeerUserId());
     QString userName = friend_info->_name;
     QString userIcon = friend_info->_icon;
 

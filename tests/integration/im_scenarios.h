@@ -20,8 +20,8 @@ bool ScenarioDedup();
 bool ScenarioFriendWorkflow(); // friend-workflow: 申请/拒绝/重申/同意/幂等/越权
 
 // --- Verification.6 second half (plan §2-3 后半) ---
-bool ScenarioOffline();     // offline: 离线消息重连后按 recv_seq 补齐
-bool ScenarioPullBytes();  // pull-bytes: 多页同步，无遗漏无重复、recv_seq 严格递增
+bool ScenarioOffline();     // offline: 离线消息重连后按 event_seq 补齐
+bool ScenarioPullBytes();  // pull-bytes: 多页同步，无遗漏无重复、event_seq 严格递增
 bool ScenarioCrossServer();// cross-server: gRPC proxy break, retry bounded, restart sync
 bool ScenarioResourceOffline(); // resource-offline: 上传完成前同步流不含该资源，1506 Ready 后出现
 

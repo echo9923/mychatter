@@ -81,7 +81,7 @@ inline constexpr short ID_RESOURCE_DOWN_INFO_REQ    = llfc_proto::MSG_RESOURCE_D
 inline constexpr short ID_RESOURCE_DOWN_INFO_RSP    = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP;  // 1510
 inline constexpr short ID_RESOURCE_CHUNK_DOWN_REQ   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ; // 1511
 inline constexpr short ID_RESOURCE_CHUNK_DOWN_RSP   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP; // 1512
-// 1405/1406 增量同步（按 recv_seq 游标）。
+// 1405/1406 增量同步（按 event_seq 游标）。
 inline constexpr short ID_SYNC_USER_MESSAGE_REQ   = llfc_proto::MSG_SYNC_USER_MESSAGE_REQ; // 1405
 inline constexpr short ID_SYNC_USER_MESSAGE_RSP   = llfc_proto::MSG_SYNC_USER_MESSAGE_RSP; // 1406
 // Resource auth: client presents the login token once per connection;
@@ -89,21 +89,19 @@ inline constexpr short ID_SYNC_USER_MESSAGE_RSP   = llfc_proto::MSG_SYNC_USER_ME
 inline constexpr short ID_RESOURCE_LOGIN_REQ       = llfc_proto::MSG_RESOURCE_LOGIN_REQ;   // 1501
 inline constexpr short ID_RESOURCE_LOGIN_RSP       = llfc_proto::MSG_RESOURCE_LOGIN_RSP;  // 1502
 
-// ---- MsgStatus / ChatMsgType / ResourceStatus (mirror const.h / data.h) ----
-inline constexpr int MSG_STATUS_UN_READ   = 0;
-// 原 3=UN_UPLOAD 已废弃：资源生命周期读 resource_status 列
+// ---- Current message, friend-request and event values ----------------------
 inline constexpr int MSG_TYPE_TEXT        = 0;
 inline constexpr int MSG_TYPE_PIC         = 1;
 inline constexpr int MSG_TYPE_FILE        = 3;
 inline constexpr int MSG_TYPE_FRIEND_APPLY  = 10;
 inline constexpr int MSG_TYPE_FRIEND_ACCEPT = 11;
 inline constexpr int MSG_TYPE_FRIEND_REJECT = 12;
-inline constexpr int BUSINESS_PENDING  = 1;
-inline constexpr int BUSINESS_ACCEPTED = 2;
-inline constexpr int BUSINESS_REJECTED = 3;
-inline constexpr int RESOURCE_UPLOADING   = 0;   // 待上传
-inline constexpr int RESOURCE_READY       = 1;   // 就绪可下载
-inline constexpr int RESOURCE_EXPIRED     = 2;   // 失败/过期终态
+inline constexpr int FRIEND_REQUEST_PENDING  = 0;
+inline constexpr int FRIEND_REQUEST_ACCEPTED = 1;
+inline constexpr int FRIEND_REQUEST_REJECTED = 2;
+inline constexpr int MESSAGE_PENDING   = 0;
+inline constexpr int MESSAGE_PUBLISHED = 1;
+inline constexpr int MESSAGE_FAILED    = 2;
 
 // ---- Cross-server test proxy port -----------------------------------------
 // The harness places a TCP proxy on this port between chatserver1 and
@@ -133,7 +131,7 @@ inline constexpr int ERR_RS_OFFSET_INVALID   = llfc_proto::RS_FILE_OFFSET_INVALI
 inline constexpr int ERR_RS_MSG_ID_ERR       = llfc_proto::RS_MSG_ID_ERR;             // 2111
 inline constexpr int ERR_RS_HASH_MISMATCH    = llfc_proto::RS_FILE_HASH_MISMATCH;     // 2112 分片/整文件 SHA-256 不符
 inline constexpr int ERR_RS_SIZE_EXCEEDED    = llfc_proto::RS_FILE_SIZE_EXCEEDED;     // 2113
-inline constexpr int ERR_RS_NOT_READY        = llfc_proto::RS_RESOURCE_NOT_READY;     // 2114 resource_status != Ready
+inline constexpr int ERR_RS_NOT_READY        = llfc_proto::RS_RESOURCE_NOT_READY;     // 2114 status != Ready
 inline constexpr int ERR_RS_FORBIDDEN        = llfc_proto::RS_RESOURCE_FORBIDDEN;     // 2115 非收发双方
 inline constexpr int ERR_RS_STATE_INVALID    = llfc_proto::RS_RESOURCE_STATE_INVALID; // 2116 已过期/终态
 
@@ -177,7 +175,7 @@ inline std::string UserTokenKey(int uid) {
 inline int Failures() { return g_failures.load(); }
 
 // ---- 协议字符串化辅助 -------------------------------------------------------
-// TCP JSON 中 message_id/thread_id/recv_seq 一律十进制字符串（64 位无损）。
+// TCP JSON 中 message_id/thread_id/event_seq 一律十进制字符串（64 位无损）。
 inline std::string ToIdStr(std::int64_t v) { return std::to_string(v); }
 // 解析十进制字符串 id；空串/非法输入返回 dfl。
 inline std::int64_t ParseIdStr(const std::string& s, std::int64_t dfl = 0) {

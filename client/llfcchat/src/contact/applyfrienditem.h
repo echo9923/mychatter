@@ -25,7 +25,7 @@ public:
         return QSize(250, 80); // 返回自定义的尺寸
     }
     int GetUid();
-	qint64 GetMessageId() const;
+	qint64 GetFriendRequestId() const;
 private:
     Ui::ApplyFriendItem *ui;
     std::shared_ptr<ApplyInfo> _apply_info;

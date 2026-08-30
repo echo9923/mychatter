@@ -36,7 +36,7 @@ struct FileTask {
 	int _last ;
 	std::string _file_data;
 	std::function<void(const json&)>  _callback;  //添加回调函数
-	long long _chat_msg_id;   // 64 位：关联 chat_message.message_id
+	long long _chat_msg_id;   // 64 位：关联 chat_messages.message_id
 	int _sender;
 	int _receiver;
 	long long _thread_id;     // 64 位
@@ -93,15 +93,15 @@ struct ResourceChunkDownTask {
 };
 
 /// FileWorker 内存中的上传会话：仅固定 worker 线程访问，无锁。
-/// received 的权威真值是 .part 文件长度 + chat_message 行；本结构只是缓存，
+/// received 的权威真值是 .part 文件长度 + chat_messages/message_resources 行；本结构只是缓存，
 /// 重启/逐出后按 .part 长度与 MySQL 重建。
 struct UploadSession {
 	long long message_id = 0;
-	long long total_size = 0;
-	std::string content_hash;  ///< 整文件 SHA-256（来自 chat_message.content_hash）
+	long long file_size_bytes = 0;
+	std::string sha256;  ///< 整文件 SHA-256（来自 message_resources.sha256）
 	unsigned long long received = 0;  ///< 已确认字节数（== .part 文件长度）
-	int sender_id = 0;          ///< 会话持有者（权限校验：上传者必须是消息 sender）
-	int recv_id = 0;
+	int sender_user_id = 0;          ///< 会话持有者（权限校验：上传者必须是消息 sender）
+	int recipient_user_id = 0;
 	std::chrono::steady_clock::time_point last_active;
 };
 
@@ -128,7 +128,7 @@ private:
 	void task_callback(std::shared_ptr<FileTask>);
 	//资源上传分片状态机（1505）：校验-写入-完成判定
 	void HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task);
-	//完成点：整文件 SHA-256 校验 -> .part 原子改名 -> 事务置 Ready+recv_seq -> gRPC 通知
+	//完成点：整文件 SHA-256 校验 -> .part 原子改名 -> 发布消息并创建 event -> gRPC 通知
 	void CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 		std::shared_ptr<UploadSession> session);
 	//空闲会话逐出（30 分钟无活动）
