@@ -55,7 +55,7 @@ bool LocalChatDb::open(const QString& dbPath, qint64 selfUid)
 		return false;
 	}
 	const int schema_version = pragma.value(0).toInt();
-	if (schema_version != 2) {
+	if (schema_version != 3) {
 		if (!_db.transaction()) return false;
 		for (const char* table : { "messages", "conversations", "outbox",
 			"sync_state", "friend_requests", "contacts" }) {
@@ -67,7 +67,7 @@ bool LocalChatDb::open(const QString& dbPath, qint64 selfUid)
 		if (!_db.commit()) return false;
 	}
 	if (!initSchema()) return false;
-	return pragma.exec("PRAGMA user_version=2");
+	return pragma.exec("PRAGMA user_version=3");
 }
 
 void LocalChatDb::close()
@@ -133,9 +133,7 @@ bool LocalChatDb::initSchema()
         " dedup_key TEXT NOT NULL UNIQUE,"
         " request_id TEXT,"
         " payload TEXT,"
-        " stage TEXT,"
-        " retry_count INTEGER NOT NULL DEFAULT 0,"
-        " next_retry_at INTEGER NOT NULL DEFAULT 0)")) {
+        " stage TEXT)")) {
         qWarning() << "[LocalChatDb] create outbox failed:" << query.lastError().text();
         return false;
     }
@@ -288,7 +286,7 @@ bool LocalChatDb::upsertConversationOnMessage(const LocalMessageDTO& dto, bool i
     return true;
 }
 
-bool LocalChatDb::enqueueSend(LocalMessageDTO& dto)
+bool LocalChatDb::enqueueSend(LocalMessageDTO& dto, OutboxEntryDTO* outEntry)
 {
     if (!isOpen()) {
         return false;
@@ -362,16 +360,27 @@ bool LocalChatDb::enqueueSend(LocalMessageDTO& dto)
     ob.bindValue(":req", dto.client_message_id);
     ob.bindValue(":payload", payload_str);
     //资源初始阶段 metadata（等待 1504），文本不需要阶段
-    ob.bindValue(":stage", is_resource ? RESOURCE_STAGE_METADATA : QString());
+    const QString outbox_stage = is_resource ? RESOURCE_STAGE_METADATA : QString();
+    ob.bindValue(":stage", outbox_stage);
     if (!ob.exec()) {
         qWarning() << "[LocalChatDb] enqueue outbox failed:" << ob.lastError().text();
         _db.rollback();
         return false;
     }
+    const qint64 outbox_operation_id = ob.lastInsertId().toLongLong();
 
     if (!_db.commit()) {
         _db.rollback();
         return false;
+    }
+    //commit 成功后才产出"已提交事实"：磁盘保存的内容与网络发送的内容同源
+    if (outEntry) {
+        outEntry->operation_id = outbox_operation_id;
+        outEntry->operation_type = is_resource ? OUTBOX_OP_SEND_RESOURCE : OUTBOX_OP_SEND_TEXT;
+        outEntry->dedup_key = dto.client_message_id;
+        outEntry->request_id = dto.client_message_id;
+        outEntry->payload = payload_str;
+        outEntry->stage = outbox_stage;
     }
     return true;
 }
@@ -428,7 +437,7 @@ bool LocalChatDb::updateResourceStage(const QString& clientMessageId, qint64 ser
         _db.rollback();
         return false;
     }
-    //只推进 outbox 阶段，不删 outbox（1508 完成才删）
+    //只推进 outbox 阶段，不删 outbox（1506 完成才删）
     QSqlQuery ob(_db);
     ob.prepare("UPDATE outbox SET stage = :stage WHERE dedup_key = :dedup");
     ob.bindValue(":stage", stage);
@@ -907,8 +916,8 @@ bool LocalChatDb::loadOutbox(QList<OutboxEntryDTO>* entries)
     entries->clear();
     QSqlQuery query(_db);
     if (!query.exec(
-        "SELECT operation_id, operation_type, dedup_key, request_id, payload, stage,"
-        " retry_count, next_retry_at FROM outbox ORDER BY operation_id ASC")) {
+        "SELECT operation_id, operation_type, dedup_key, request_id, payload, stage"
+        " FROM outbox ORDER BY operation_id ASC")) {
         return false;
     }
     while (query.next()) {
@@ -919,36 +928,9 @@ bool LocalChatDb::loadOutbox(QList<OutboxEntryDTO>* entries)
         entry.request_id = query.value(3).toString();
         entry.payload = query.value(4).toString();
         entry.stage = query.value(5).toString();
-        entry.retry_count = query.value(6).toInt();
-        entry.next_retry_at = query.value(7).toLongLong();
         entries->append(entry);
     }
     return true;
-}
-
-bool LocalChatDb::deleteOutboxEntry(const QString& dedupKey)
-{
-    if (!isOpen()) {
-        return false;
-    }
-    QSqlQuery query(_db);
-    query.prepare("DELETE FROM outbox WHERE dedup_key = :dedup");
-    query.bindValue(":dedup", dedupKey);
-    return query.exec();
-}
-
-bool LocalChatDb::updateOutboxRetry(const QString& dedupKey, int retryCount, qint64 nextRetryAt)
-{
-    if (!isOpen()) {
-        return false;
-    }
-    QSqlQuery query(_db);
-    query.prepare("UPDATE outbox SET retry_count = :rc, next_retry_at = :next"
-        " WHERE dedup_key = :dedup");
-    query.bindValue(":rc", retryCount);
-    query.bindValue(":next", QVariant::fromValue<qint64>(nextRetryAt));
-    query.bindValue(":dedup", dedupKey);
-    return query.exec();
 }
 
 bool LocalChatDb::loadConversations(QList<LocalConversationDTO>* convs)

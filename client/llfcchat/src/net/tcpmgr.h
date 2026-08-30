@@ -41,7 +41,7 @@ private:
     void handleSearchUserRsp(ReqId id, int len, QByteArray data);
     // 1204 添加好友回包
     void handleAddFriendRsp(ReqId id, int len, QByteArray data);
-    // 1208 认证好友回包
+    // 1206 认证好友回包
     void handleAuthFriendRsp(ReqId id, int len, QByteArray data);
 	// 1701 唯一用户消息实时通知
 	void handleUserMessageNotify(ReqId id, int len, QByteArray data);
@@ -53,7 +53,7 @@ private:
     void handleHeartbeatRsp(ReqId id, int len, QByteArray data);
     // 1402 会话列表回包
     void handleLoadChatThreadRsp(ReqId id, int len, QByteArray data);
-    // 1306 创建私聊回包
+    // 1304 创建私聊回包
     void handleCreatePrivateChatRsp(ReqId id, int len, QByteArray data);
     // 1404 历史消息回包
     void handleLoadChatMsgRsp(ReqId id, int len, QByteArray data);

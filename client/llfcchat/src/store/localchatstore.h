@@ -31,15 +31,14 @@ public slots:
     void slot_get_sync_state();
     void slot_mark_bootstrap_complete(qint64 checkpoint);
     void slot_load_outbox();
-    void slot_delete_outbox_entry(QString dedupKey);
-    void slot_update_outbox_retry(QString dedupKey, int retryCount, qint64 nextRetryAt);
     void slot_load_conversations();
     void slot_load_recent_messages(qint64 threadId, int limit);
     void slot_load_older_messages(qint64 threadId, qint64 beforeMessageId, int limit);
 signals:
     void sig_db_opened(bool ok, int uid);
     void sig_db_closed();
-    void sig_send_enqueued(bool ok, LocalMessageDTO dto);
+    //ok=true 时 entry 为本次事务实际插入的 outbox 行（CommittedSend 的事实载荷）
+    void sig_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO entry);
     void sig_send_confirmed(bool ok, LocalMessageDTO dto);
     void sig_resource_stage_updated(bool ok, LocalMessageDTO dto);
     void sig_resource_confirmed(bool ok, LocalMessageDTO dto);
@@ -96,8 +95,6 @@ public:
     void getSyncState();
     void markBootstrapComplete(qint64 checkpoint);
     void loadOutbox();
-    void deleteOutboxEntry(const QString& dedupKey);
-    void updateOutboxRetry(const QString& dedupKey, int retryCount, qint64 nextRetryAt);
     void loadConversations();
     void loadRecentMessages(qint64 threadId, int limit);
     void loadOlderMessages(qint64 threadId, qint64 beforeMessageId, int limit);
@@ -119,15 +116,15 @@ signals:
     void sig_get_sync_state();
     void sig_mark_bootstrap_complete(qint64 checkpoint);
     void sig_load_outbox();
-    void sig_delete_outbox_entry(QString dedupKey);
-    void sig_update_outbox_retry(QString dedupKey, int retryCount, qint64 nextRetryAt);
     void sig_load_conversations();
     void sig_load_recent_messages(qint64 threadId, int limit);
     void sig_load_older_messages(qint64 threadId, qint64 beforeMessageId, int limit);
     //—— 结果信号（worker → 各订阅方，在订阅方所在线程执行）——
     void sig_db_opened(bool ok, int uid);
     void sig_db_closed();
-    void sig_send_enqueued(bool ok, LocalMessageDTO dto);
+    //CommittedSend 广播：ok=true 时 entry 为本次事务实际插入的 outbox 行，
+    //GUI（上屏）与 OutboxDispatcher（增量登记）各自订阅，互不依赖
+    void sig_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO entry);
     void sig_send_confirmed(bool ok, LocalMessageDTO dto);
     void sig_resource_stage_updated(bool ok, LocalMessageDTO dto);
     void sig_resource_confirmed(bool ok, LocalMessageDTO dto);

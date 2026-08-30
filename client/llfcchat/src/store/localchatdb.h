@@ -36,15 +36,17 @@ public:
 
     //—— 发送链路（单事务）——
     //INSERT messages(sending) + INSERT outbox，回填 dto.local_id；
+    //outEntry 非空时回填刚插入的 outbox 行（operation_id/payload/stage 等），
+    //即"已提交事实"，供 Dispatcher 增量登记，磁盘与网络上发送的天然同源
     //资源消息（type 1/3）要求 content_hash/mime_type 已由后台哈希填好
-    bool enqueueSend(LocalMessageDTO& dto);
+    bool enqueueSend(LocalMessageDTO& dto, OutboxEntryDTO* outEntry = nullptr);
     //1302 到达：UPDATE messages(server_message_id/sent/chat_time) + 删 outbox
     bool confirmTextSent(const QString& clientMessageId, qint64 serverMessageId,
         const QString& chatTime, LocalMessageDTO* out);
     //1504 到达：回写 server_message_id + outbox.stage=uploading（不删 outbox）
     bool updateResourceStage(const QString& clientMessageId, qint64 serverMessageId,
         const QString& stage, LocalMessageDTO* out);
-    //1508 上传完成（resource_status=Ready）：send_state=sent + 删 outbox
+    //1506 上传完成（resource_status=Ready）：send_state=sent + 删 outbox
     bool confirmResourceSent(const QString& clientMessageId, LocalMessageDTO* out);
     //冲突/源文件丢失/资源终态：send_state=failed + 删 outbox
     bool markSendFailed(const QString& clientMessageId, LocalMessageDTO* out);
@@ -70,9 +72,8 @@ public:
     bool markBootstrapComplete(qint64 checkpoint);
 
     //—— outbox ——
+    //按 operation_id 升序全量读出，仅用于冷启动/换用户恢复，不做常规路径
     bool loadOutbox(QList<OutboxEntryDTO>* entries);
-    bool deleteOutboxEntry(const QString& dedupKey);
-    bool updateOutboxRetry(const QString& dedupKey, int retryCount, qint64 nextRetryAt);
 
     //—— 查询 ——
     bool loadConversations(QList<LocalConversationDTO>* convs);

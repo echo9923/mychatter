@@ -1153,7 +1153,7 @@ static std::string BuildResourceCreateReq(int fromuid, int touid, std::int64_t t
 	return j.dump();
 }
 
-// Build a 1507 resource-chunk-upload body: {message_id, offset, chunk_sha256, data}
+// Build a 1505 resource-chunk-upload body: {message_id, offset, chunk_sha256, data}
 // （message_id/offset 十进制字符串；data 为 <=32KiB 分片的 Base64）
 static std::string BuildChunkUploadReq(std::int64_t message_id, long long offset,
 	                               const std::string& chunk_sha256,
@@ -1166,21 +1166,21 @@ static std::string BuildChunkUploadReq(std::int64_t message_id, long long offset
 	return j.dump();
 }
 
-// Build a 1509 upload-progress query body: {message_id}
+// Build a 1507 upload-progress query body: {message_id}
 static std::string BuildUploadProgressReq(std::int64_t message_id) {
 	json j;
 	j["message_id"] = ToIdStr(message_id);
 	return j.dump();
 }
 
-// Build a 1511 download-info query body: {message_id}
+// Build a 1509 download-info query body: {message_id}
 static std::string BuildDownInfoReq(std::int64_t message_id) {
 	json j;
 	j["message_id"] = ToIdStr(message_id);
 	return j.dump();
 }
 
-// Build a 1513 chunk-download body: {message_id, offset}
+// Build a 1511 chunk-download body: {message_id, offset}
 static std::string BuildChunkDownReq(std::int64_t message_id, long long offset) {
 	json j;
 	j["message_id"] = ToIdStr(message_id);
@@ -1835,7 +1835,7 @@ bool ScenarioCrossServer() {
 // resource-offline（原 image-offline，统一资源协议改造）
 //
 // 走 ResourceServer 分片上传：创建（1503）后 resource_status=Uploading 的行绝不
-// 出现在增量同步流；分片收齐且整文件 SHA-256 校验通过后（1508 resource_status=1），
+// 出现在增量同步流；分片收齐且整文件 SHA-256 校验通过后（1506 resource_status=1），
 // recv_seq 分配后，同步流出现 msg_type=PIC/content_hash 正确的消息。
 // ---------------------------------------------------------------------------
 bool ScenarioResourceOffline() {
@@ -1953,7 +1953,7 @@ bool ScenarioResourceOffline() {
 	}
 
 	// Step 3: connect to ResourceServer, authenticate (1501), then upload all chunks
-	// via 1507（offset/chunk_sha256/data）。最后一片收齐后服务端做整文件 SHA-256
+	// via 1505（offset/chunk_sha256/data）。最后一片收齐后服务端做整文件 SHA-256
 	// 校验并在同一事务中置 Ready、分配 recv_seq。
 	ResClient res;
 	if (!res.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
@@ -2543,7 +2543,7 @@ bool ScenarioChatFailover() {
 //   a. a forged Chat token is rejected (1102 error TokenInvalid);
 //   b. a valid token from a real Gate /user_login authenticates on Chat;
 //   c. the 1102 response JSON carries no secret fields (pwd/token/session_token);
-//   d. an unauthenticated Resource business frame (1509) is rejected / closed;
+//   d. an unauthenticated Resource business frame (1507) is rejected / closed;
 //   e. a forged Resource token yields 1502 TokenInvalid;
 //   f. a valid token yields 1502 error==0 and the uid echoed;
 //   g. a second password login for the same uid overwrites utoken_<uid>: the
@@ -2642,7 +2642,7 @@ bool ScenarioSimpleAuth() {
 		}
 	}
 
-	// (d) Unauthenticated Resource business frame (1509) → rejected / closed.
+	// (d) Unauthenticated Resource business frame (1507) → rejected / closed.
 	{
 		ResClient r0;
 		if (!r0.Connect("127.0.0.1", RESOURCE_HTTP_PORT, 10000)) {
@@ -3128,7 +3128,7 @@ std::int64_t CreateResource(TcpClient& chat, int fromuid, int touid,
 	return JsonIdStr(j, "message_id", -1);
 }
 
-//上传 [from_offset, total) 区间全部分片；返回最后一片 1508 的 error（ready_out
+//上传 [from_offset, total) 区间全部分片；返回最后一片 1506 的 error（ready_out
 //带回 resource_status）。遇到非 0 error 即停。
 int UploadChunks(ResClient& res, std::int64_t msg_id, const std::string& blob,
 	long long from_offset, int* ready_out, std::uint64_t* recv_seq_out = nullptr) {
@@ -3181,7 +3181,7 @@ int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
 	return j.is_object() ? j.value("error", -6) : -6;
 }
 
-//1509 查询服务端偏移；失败返回 -1
+//1507 查询服务端偏移；失败返回 -1
 long long QueryServerOffset(ResClient& res, std::int64_t msg_id, int* status_out) {
 	res.Send(ID_RESOURCE_UPLOAD_PROGRESS_REQ, BuildUploadProgressReq(msg_id));
 	Frame f;
@@ -3317,7 +3317,7 @@ bool ScenarioResourceCreate() {
 }
 
 // ---------------------------------------------------------------------------
-// resource-upload：多分片上传 → 1509 查询进度 → 1511 下载信息 → 逐片下载
+// resource-upload：多分片上传 → 1507 查询进度 → 1509 下载信息 → 逐片下载
 // 逐字节一致（覆盖整文件 SHA-256 校验通过路径）
 // ---------------------------------------------------------------------------
 bool ScenarioResourceUpload() {
@@ -3351,17 +3351,17 @@ bool ScenarioResourceUpload() {
 		("err=" + std::to_string(up_err) + " rs=" + std::to_string(rs)).c_str());
 	if (rs != RESOURCE_READY) all_ok = false;
 
-	//1509：就绪后 server_offset == total
+	//1507：就绪后 server_offset == total
 	{
 		int st = -1;
 		const long long off = QueryServerOffset(*res, mid, &st);
 		Check(off == (long long)blob.size() && st == RESOURCE_READY,
-			"resource-upload: 1509 reports total_size & Ready",
+			"resource-upload: 1507 reports total_size & Ready",
 			("off=" + std::to_string(off) + " st=" + std::to_string(st)).c_str());
 		if (off != (long long)blob.size()) all_ok = false;
 	}
 
-	//1511（下载信息）：发送者与接收者都可查（接收方需先取得自己的 token，
+	//1509（下载信息）：发送者与接收者都可查（接收方需先取得自己的 token，
 	//ResourceLogin 校验 utoken_<uid>）
 	TcpClient cR;
 	auto lr = LoginUser(cR, RECEIVER_UID);
@@ -3378,12 +3378,12 @@ bool ScenarioResourceUpload() {
 		bool good = ok && j.is_object() && j.value("error", -1) == ERR_SUCCESS
 			&& j.value("content_hash", "") == hash
 			&& j.value("file_name", "") == "upload_" + tag + ".bin";
-		Check(good, "resource-upload: 1511 down info (name/hash match)",
+		Check(good, "resource-upload: 1509 down info (name/hash match)",
 			ok ? j.dump() : "no rsp");
 		if (!good) all_ok = false;
 	}
 
-	//1513：逐片下载并与源逐字节比对
+	//1511：逐片下载并与源逐字节比对
 	if (res_recv) {
 		const std::string got = DownloadWhole(*res_recv, mid, (long long)blob.size());
 		Check(got == blob, "resource-upload: downloaded bytes identical",
@@ -3401,7 +3401,7 @@ bool ScenarioResourceUpload() {
 
 // ---------------------------------------------------------------------------
 // resource-resume：上传中途 kill ResourceServer 重启 → .part 保留 →
-// 1509 返回非零偏移 → 从该偏移续传成功，已确认内容不重传
+// 1507 返回非零偏移 → 从该偏移续传成功，已确认内容不重传
 // ---------------------------------------------------------------------------
 bool ScenarioResourceResume() {
 	std::printf("\n=== scenario: resource-resume ===\n");
@@ -3444,11 +3444,11 @@ bool ScenarioResourceResume() {
 		cS.Close(); stack.StopAll(); return false;
 	}
 
-	//1509：重启后服务端按 .part 实际长度回 65536
+	//1507：重启后服务端按 .part 实际长度回 65536
 	auto res2 = ResLogin(li.token, SENDER_UID, "resource-resume");
 	if (!res2) { cS.Close(); stack.StopAll(); return false; }
 	const long long offset = QueryServerOffset(*res2, mid, nullptr);
-	Check(offset == 65536, "resource-resume: 1509 after restart reports 65536",
+	Check(offset == 65536, "resource-resume: 1507 after restart reports 65536",
 		("offset=" + std::to_string(offset)).c_str());
 	if (offset != 65536) all_ok = false;
 
@@ -3460,7 +3460,7 @@ bool ScenarioResourceResume() {
 		("err=" + std::to_string(err) + " rs=" + std::to_string(rs)).c_str());
 	if (rs != RESOURCE_READY) all_ok = false;
 
-	//整文件内容一致性（1513 全量下载比对）
+	//整文件内容一致性（1511 全量下载比对）
 	const std::string got = DownloadWhole(*res2, mid, (long long)blob.size());
 	Check(got == blob, "resource-resume: resumed upload is byte-identical",
 		("got=" + std::to_string(got.size())).c_str());
@@ -3473,7 +3473,7 @@ bool ScenarioResourceResume() {
 }
 
 // ---------------------------------------------------------------------------
-// resource-idempotent：模拟 1508 响应丢失后客户端重发已确认分片，
+// resource-idempotent：模拟 1506 响应丢失后客户端重发已确认分片，
 // 服务端幂等确认且不追加第二次（.part 长度不翻倍）
 // ---------------------------------------------------------------------------
 bool ScenarioResourceIdempotent() {
@@ -3516,9 +3516,9 @@ bool ScenarioResourceIdempotent() {
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
 	if (so != 32768) all_ok = false;
 
-	//1509 交叉验证磁盘真值
+	//1507 交叉验证磁盘真值
 	const long long disk_off = QueryServerOffset(*res, mid, nullptr);
-	Check(disk_off == 32768, "resource-idempotent: 1509 agrees (no double write)",
+	Check(disk_off == 32768, "resource-idempotent: 1507 agrees (no double write)",
 		("offset=" + std::to_string(disk_off)).c_str());
 
 	//第二片完成后整文件就绪
@@ -3606,7 +3606,7 @@ bool ScenarioResourceCorrupt() {
 
 // ---------------------------------------------------------------------------
 // resource-perm：非 sender 会话上传被拒（2115）；越界偏移下载被拒（2107）。
-// 1511/1513 的会话成员校验由 ResourceServer 统一执行（sender/recv 之外的
+// 1509/1511 的会话成员校验由 ResourceServer 统一执行（sender/recv 之外的
 // session uid 一律 ResourceForbidden）。注：fixture 只有 2 个用户，发送方/
 // 接收方之外的“纯第三方”下载拒绝由同一校验逻辑覆盖（上传侧 2115 已验证）。
 // ---------------------------------------------------------------------------
@@ -3640,7 +3640,7 @@ bool ScenarioResourcePerm() {
 		("rs=" + std::to_string(rs)).c_str());
 	res->Close();
 
-	//权限校验覆盖：接收者 1511 允许（正向）；越界偏移 1513 → 2107；
+	//权限校验覆盖：接收者 1509 允许（正向）；越界偏移 1511 → 2107；
 	//非 sender 会话向他人消息上传分片 → 2115（ResourceForbidden）。
 	TcpClient cR;
 	auto lr = LoginUser(cR, RECEIVER_UID);
@@ -3649,15 +3649,15 @@ bool ScenarioResourcePerm() {
 	}
 	auto res_r = ResLogin(lr.token, RECEIVER_UID, "resource-perm");
 	if (res_r) {
-		//合法接收者 1511 成功
+		//合法接收者 1509 成功
 		res_r->Send(ID_RESOURCE_DOWN_INFO_REQ, BuildDownInfoReq(mid));
 		Frame f;
 		bool ok = res_r->Wait(ID_RESOURCE_DOWN_INFO_RSP, 10000, &f);
 		const int err = ok ? ParseJson(f.body).value("error", -3) : -2;
-		Check(ok && err == ERR_SUCCESS, "resource-perm: receiver 1511 allowed",
+		Check(ok && err == ERR_SUCCESS, "resource-perm: receiver 1509 allowed",
 			("err=" + std::to_string(err)).c_str());
 
-		//越界偏移 1513（total 只有 32768，offset=65536）→ 2107
+		//越界偏移 1511（total 只有 32768，offset=65536）→ 2107
 		res_r->Send(ID_RESOURCE_CHUNK_DOWN_REQ, BuildChunkDownReq(mid, 65536));
 		ok = res_r->Wait(ID_RESOURCE_CHUNK_DOWN_RSP, 10000, &f);
 		const int err2 = ok ? ParseJson(f.body).value("error", -3) : -2;

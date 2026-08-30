@@ -89,22 +89,22 @@ enum MSG_TYPES {
 	ID_DOWN_LOAD_FILE_REQ = llfc_proto::MSG_DOWN_LOAD_FILE_REQ,      //1603 下载文件请求（旧头像链路）
 	ID_DOWN_LOAD_FILE_RSP = llfc_proto::MSG_DOWN_LOAD_FILE_RSP,      //1604 下载文件回复
 
-	ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ,   //1507 上传资源分片（message_id/offset/chunk_sha256）
-	ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP,   //1508 上传资源分片回复
+	ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ,   //1505 上传资源分片（message_id/offset/chunk_sha256）
+	ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP,   //1506 上传资源分片回复
 	//资源就绪后通过 1701 统一用户消息通知，ResourceServer 不直接下发客户端通知
-	ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ, //1509 查询上传进度（返回服务端 .part 实际字节数）
-	ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP, //1510 查询上传进度回复
-	//旧 1043/1044 续传分支已废弃删除：首传/续传统一 1507+1509
-	ID_RESOURCE_DOWN_INFO_REQ = llfc_proto::MSG_RESOURCE_DOWN_INFO_REQ,     //1511 查询资源下载信息（含权限校验）
-	ID_RESOURCE_DOWN_INFO_RSP = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP,     //1512 查询资源下载信息回复
-	ID_RESOURCE_CHUNK_DOWN_REQ = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ,   //1513 按偏移量下载资源分片
-	ID_RESOURCE_CHUNK_DOWN_RSP = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP,   //1514 按偏移量下载资源分片回复
+	ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ, //1507 查询上传进度（返回服务端 .part 实际字节数）
+	ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP, //1508 查询上传进度回复
+	//旧 1043/1044 续传分支已废弃删除：首传/续传统一 1505+1507
+	ID_RESOURCE_DOWN_INFO_REQ = llfc_proto::MSG_RESOURCE_DOWN_INFO_REQ,     //1509 查询资源下载信息（含权限校验）
+	ID_RESOURCE_DOWN_INFO_RSP = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP,     //1510 查询资源下载信息回复
+	ID_RESOURCE_CHUNK_DOWN_REQ = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ,   //1511 按偏移量下载资源分片
+	ID_RESOURCE_CHUNK_DOWN_RSP = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP,   //1512 按偏移量下载资源分片回复
 	ID_RESOURCE_LOGIN_REQ = llfc_proto::MSG_RESOURCE_LOGIN_REQ,    //1501 资源服务登录鉴权请求
 	ID_RESOURCE_LOGIN_RSP = llfc_proto::MSG_RESOURCE_LOGIN_RSP     //1502 资源服务登录鉴权回复
 };
 
 /// 上传/下载链的固定 worker 路由：同一 message_id 恒定落同一 worker，
-/// 保证同一 .part 只被一个线程写、1509 进度查询与 1507 写入互不竞争
+/// 保证同一 .part 只被一个线程写、1507 进度查询与 1505 写入互不竞争
 inline int ResourceWorkerIndex(long long message_id, int worker_count) {
 	return static_cast<int>(static_cast<unsigned long long>(message_id)
 		% static_cast<unsigned long long>(worker_count));

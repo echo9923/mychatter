@@ -182,10 +182,19 @@ void Group2_TextSendChain()
 
     LocalMessageDTO dto = MakeOutgoingText(kThread);
     const QString cid = dto.client_message_id;
-    Check(db.enqueueSend(dto), "enqueueSend returns true");
+    OutboxEntryDTO committed;
+    Check(db.enqueueSend(dto, &committed), "enqueueSend returns true");
     Check(dto.local_id > 0, "enqueueSend back-fills local_id");
     Check(dto.send_state == SEND_STATE_SENDING, "dto send_state forced to sending");
     Check(!dto.created_at.isEmpty(), "created_at auto-filled");
+
+    //CommittedSend：出参条目就是本事务刚插入的 outbox 行（Dispatcher 增量登记的事实载荷）
+    Check(committed.operation_id > 0, "committed entry carries operation_id");
+    Check(committed.operation_type == OUTBOX_OP_SEND_TEXT, "committed op is SEND_TEXT");
+    Check(committed.dedup_key == cid && committed.request_id == cid,
+          "committed dedup_key/request_id = client_message_id");
+    Check(committed.payload.contains(cid), "committed payload carries unique_id");
+    Check(committed.stage.isEmpty(), "committed text entry has no stage");
 
     LocalMessageDTO stored;
     Check(db.getMessageByClientId(cid, &stored), "getMessageByClientId after enqueue");
@@ -199,6 +208,8 @@ void Group2_TextSendChain()
         Check(e.operation_type == OUTBOX_OP_SEND_TEXT, "outbox op is SEND_TEXT");
         Check(e.dedup_key == cid && e.request_id == cid,
               "outbox dedup_key/request_id = client_message_id");
+        Check(e.payload == committed.payload,
+              "outbox row payload equals committed entry payload");
         Check(e.payload.contains(QLatin1String("\"content\"")),
               "outbox payload carries text content");
         Check(e.payload.contains(cid), "outbox payload carries unique_id");
@@ -269,11 +280,11 @@ void Group3_CrashRecovery()
 
 // ---------------------------------------------------------------------------
 // Group 4 — 资源链路：updateResourceStage(1504) 只推进 outbox.stage 不删条目，
-//           confirmResourceSent(1508 resource_status=Ready) 才置 sent 并删 outbox。
+//           confirmResourceSent(1506 resource_status=Ready) 才置 sent 并删 outbox。
 // ---------------------------------------------------------------------------
 void Group4_ImageChain()
 {
-    std::printf("\n== Group 4: resource send chain (1504/1508) ==\n");
+    std::printf("\n== Group 4: resource send chain (1504/1506) ==\n");
     QTemporaryDir dir;
     Check(dir.isValid(), "temporary dir created");
     const QString dbPath = dir.path() + "/chat.db";
@@ -304,7 +315,13 @@ void Group4_ImageChain()
     dto.mime_type = QStringLiteral("image/png");
     const QString cid = dto.client_message_id;
 
-    Check(db.enqueueSend(dto), "enqueue resource returns true");
+    OutboxEntryDTO committed_res;
+    Check(db.enqueueSend(dto, &committed_res), "enqueue resource returns true");
+    Check(committed_res.operation_id > 0
+          && committed_res.operation_type == OUTBOX_OP_SEND_RESOURCE
+          && committed_res.stage == RESOURCE_STAGE_METADATA
+          && committed_res.dedup_key == cid,
+          "committed resource entry matches the persisted row");
     QList<OutboxEntryDTO> outbox;
     Check(db.loadOutbox(&outbox) && outbox.size() == 1, "resource outbox entry created");
     if (outbox.size() == 1) {
@@ -333,8 +350,8 @@ void Group4_ImageChain()
 
     LocalMessageDTO done;
     Check(db.confirmResourceSent(cid, &done), "confirmResourceSent returns true");
-    Check(done.send_state == SEND_STATE_SENT, "send_state=sent after 1508");
-    Check(done.server_message_id == kSid, "server_message_id kept after 1508");
+    Check(done.send_state == SEND_STATE_SENT, "send_state=sent after 1506");
+    Check(done.server_message_id == kSid, "server_message_id kept after 1506");
     Check(db.loadOutbox(&outbox) && outbox.isEmpty(),
           "confirmResourceSent deletes the outbox entry");
 }
@@ -874,7 +891,7 @@ void Group14_SchemaVersionRebuild()
         Check(SqlScalar(dbPath, "SELECT COUNT(*) FROM messages", &value)
               && value == QLatin1String("0"), "old local messages discarded");
         Check(SqlScalar(dbPath, "PRAGMA user_version", &value)
-              && value == QLatin1String("2"), "schema version advanced to 2");
+              && value == QLatin1String("3"), "schema version advanced to 3");
         QList<OutboxEntryDTO> outbox;
         Check(rebuilt.loadOutbox(&outbox) && outbox.isEmpty(),
               "obsolete outbox discarded with schema");

@@ -23,9 +23,9 @@ bool ScenarioFriendWorkflow(); // friend-workflow: 申请/拒绝/重申/同意/�
 bool ScenarioOffline();     // offline: 离线消息重连后按 recv_seq 补齐
 bool ScenarioPullBytes();  // pull-bytes: 多页同步，无遗漏无重复、recv_seq 严格递增
 bool ScenarioCrossServer();// cross-server: gRPC proxy break, retry bounded, restart sync
-bool ScenarioResourceOffline(); // resource-offline: 上传完成前同步流不含该资源，1508 Ready 后出现
+bool ScenarioResourceOffline(); // resource-offline: 上传完成前同步流不含该资源，1506 Ready 后出现
 
-// --- 统一资源传输（1503/1507/1509/1511/1513 新协议）---
+// --- 统一资源传输（1503/1505/1507/1509/1511 新协议）---
 bool ScenarioResourceCreate();     // resource-create: 1503 校验链（超限/坏哈希/幂等/冲突/伪造/非成员）
 bool ScenarioResourceUpload();     // resource-upload: 多分片上传-下载逐字节一致
 bool ScenarioResourceResume();     // resource-resume: 杀 ResourceServer 重启后从非零偏移续传

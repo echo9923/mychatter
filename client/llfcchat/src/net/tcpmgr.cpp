@@ -851,7 +851,7 @@ void TcpMgr::CreatePlaceholderResourceMsgL(QString cache_dir, QString msg_conten
     auto chat_data = std::make_shared<ImgChatData>(file_info, "", thread_id, ChatFormType::PRIVATE,
         msg_type, send_uid, status, chat_time);
     chat_datas.push_back(chat_data);
-    //加入下载列表；图片自动下载（1511 元数据先行，FileTcpMgr 内部投递）
+    //加入下载列表；图片自动下载（1509 元数据先行，FileTcpMgr 内部投递）
     UserMgr::GetInstance()->AddTransFile(msg_content, file_info);
     if (is_pic) {
         FileTcpMgr::GetInstance()->StartResourceDownload(file_info);

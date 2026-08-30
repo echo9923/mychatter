@@ -59,28 +59,28 @@ inline constexpr const char* REDIS_PASSWD = "123456";
 
 // ---- TCP/JSON protocol message IDs (数值来源 proto/protocol_ids.h) ----------
 // 编号规则：百位=功能域（11连接/12好友/13聊天/14同步/15资源/16头像），
-// 奇数=发起方（请求/通知），偶数=回包，同一动作 REQ→RSP→NOTIFY 连号。
+// 奇数=发起方（请求/通知），偶数=回包；请求/响应连续成对编号。
 inline constexpr short ID_CHAT_LOGIN              = llfc_proto::MSG_CHAT_LOGIN;         // 1101
 inline constexpr short ID_CHAT_LOGIN_RSP          = llfc_proto::MSG_CHAT_LOGIN_RSP;     // 1102
 inline constexpr short ID_ADD_FRIEND_REQ          = llfc_proto::MSG_ADD_FRIEND_REQ;     // 1203
 inline constexpr short ID_ADD_FRIEND_RSP          = llfc_proto::MSG_ADD_FRIEND_RSP;     // 1204
-inline constexpr short ID_HANDLE_FRIEND_REQ       = llfc_proto::MSG_HANDLE_FRIEND_REQ;  // 1207
-inline constexpr short ID_HANDLE_FRIEND_RSP       = llfc_proto::MSG_HANDLE_FRIEND_RSP;  // 1208
+inline constexpr short ID_HANDLE_FRIEND_REQ       = llfc_proto::MSG_HANDLE_FRIEND_REQ;  // 1205
+inline constexpr short ID_HANDLE_FRIEND_RSP       = llfc_proto::MSG_HANDLE_FRIEND_RSP;  // 1206
 inline constexpr short ID_TEXT_CHAT_MSG_REQ       = llfc_proto::MSG_TEXT_CHAT_REQ;      // 1301
 inline constexpr short ID_TEXT_CHAT_MSG_RSP       = llfc_proto::MSG_TEXT_CHAT_RSP;      // 1302
 inline constexpr short ID_NOTIFY_USER_MESSAGE     = llfc_proto::MSG_NOTIFY_USER_MESSAGE; // 1701
 // 资源消息（图片/文件统一传输）：创建-分片上传-进度查询-下载信息-分片下载
 inline constexpr short ID_CREATE_RESOURCE_MSG_REQ   = llfc_proto::MSG_CREATE_RESOURCE_REQ;   // 1503
 inline constexpr short ID_CREATE_RESOURCE_MSG_RSP   = llfc_proto::MSG_CREATE_RESOURCE_RSP;  // 1504
-inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ;   // 1507
-inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP;  // 1508
-inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ;  // 1509
-inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP; // 1510
-// 旧 1043/1044 续传分支已废弃：首传/续传统一 1507+1509
-inline constexpr short ID_RESOURCE_DOWN_INFO_REQ    = llfc_proto::MSG_RESOURCE_DOWN_INFO_REQ;   // 1511
-inline constexpr short ID_RESOURCE_DOWN_INFO_RSP    = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP;  // 1512
-inline constexpr short ID_RESOURCE_CHUNK_DOWN_REQ   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ; // 1513
-inline constexpr short ID_RESOURCE_CHUNK_DOWN_RSP   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP; // 1514
+inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ;   // 1505
+inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP;  // 1506
+inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ;  // 1507
+inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP; // 1508
+// 旧 1043/1044 续传分支已废弃：首传/续传统一 1505+1507
+inline constexpr short ID_RESOURCE_DOWN_INFO_REQ    = llfc_proto::MSG_RESOURCE_DOWN_INFO_REQ;   // 1509
+inline constexpr short ID_RESOURCE_DOWN_INFO_RSP    = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP;  // 1510
+inline constexpr short ID_RESOURCE_CHUNK_DOWN_REQ   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ; // 1511
+inline constexpr short ID_RESOURCE_CHUNK_DOWN_RSP   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP; // 1512
 // 1405/1406 增量同步（按 recv_seq 游标）。
 inline constexpr short ID_SYNC_USER_MESSAGE_REQ   = llfc_proto::MSG_SYNC_USER_MESSAGE_REQ; // 1405
 inline constexpr short ID_SYNC_USER_MESSAGE_RSP   = llfc_proto::MSG_SYNC_USER_MESSAGE_RSP; // 1406

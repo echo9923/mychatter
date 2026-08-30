@@ -4,10 +4,11 @@
 //
 // 编号规则（三句话）：
 //   1. 百位 = 功能域：10 账户 / 11 连接保活 / 12 好友 / 13 聊天 /
-//      14 历史同步 / 15 资源 / 16 头像 / 17 统一用户消息；18xx 预留群聊
-//   2. 奇数 = 发起方（请求或服务端推送通知），偶数 = 回包
+//      14 历史同步 / 15 资源 / 16 头像 / 17 统一用户消息
+//   2. TCP 业务中奇数 = 发起方（请求或服务端推送通知），偶数 = 回包；
+//      10xx 仅为客户端 HTTP 回调路由 ID，不适用请求/响应配对规则
 //   3. 业务请求/响应成对编号；所有用户消息实时通知统一使用 1701，
-//      旧的分类型通知号保持为空且没有兼容语义。
+//      未定义的数字没有预留或兼容语义。
 //
 // 错误码独立于消息 ID：20xx 通用表（Gate/Status/Chat 同一语义），
 // 21xx 资源文件表（ResourceServer 专属）。1xxx 与 2xxx 永不混用。
@@ -40,14 +41,14 @@ enum MsgId {
 	MSG_SEARCH_USER_RSP     = 1202, ///< 搜索用户响应
 	MSG_ADD_FRIEND_REQ      = 1203, ///< 申请添加好友请求
 	MSG_ADD_FRIEND_RSP      = 1204, ///< 申请添加好友响应
-	MSG_HANDLE_FRIEND_REQ   = 1207, ///< 处理好友申请请求（action=accept/reject）
-	MSG_HANDLE_FRIEND_RSP   = 1208, ///< 处理好友申请响应
+	MSG_HANDLE_FRIEND_REQ   = 1205, ///< 处理好友申请请求（action=accept/reject）
+	MSG_HANDLE_FRIEND_RSP   = 1206, ///< 处理好友申请响应
 
 	// --- 13xx 聊天域（ChatServer TCP）
 	MSG_TEXT_CHAT_REQ          = 1301, ///< 发送文本聊天消息请求
 	MSG_TEXT_CHAT_RSP          = 1302, ///< 文本聊天消息发送响应
-	MSG_CREATE_PRIVATE_CHAT_REQ = 1305, ///< 创建私聊会话请求
-	MSG_CREATE_PRIVATE_CHAT_RSP = 1306, ///< 创建私聊会话响应
+	MSG_CREATE_PRIVATE_CHAT_REQ = 1303, ///< 创建私聊会话请求
+	MSG_CREATE_PRIVATE_CHAT_RSP = 1304, ///< 创建私聊会话响应
 
 	// --- 14xx 历史与同步域（ChatServer TCP）
 	MSG_LOAD_CHAT_THREAD_REQ = 1401, ///< 加载聊天会话列表请求
@@ -62,14 +63,14 @@ enum MsgId {
 	MSG_RESOURCE_LOGIN_RSP   = 1502, ///< 资源服务器登录鉴权响应
 	MSG_CREATE_RESOURCE_REQ  = 1503, ///< 创建资源消息请求（图片/文件统一，元数据先行）
 	MSG_CREATE_RESOURCE_RSP  = 1504, ///< 创建资源消息响应（返回 message_id，resource_status=0）
-	MSG_RESOURCE_CHUNK_UPLOAD_REQ     = 1507, ///< 上传资源分片请求（message_id/offset/chunk_sha256）
-	MSG_RESOURCE_CHUNK_UPLOAD_RSP     = 1508, ///< 上传资源分片响应（带 server_offset/resource_status）
-	MSG_RESOURCE_UPLOAD_PROGRESS_REQ  = 1509, ///< 查询上传进度请求（返回服务端 .part 实际字节数）
-	MSG_RESOURCE_UPLOAD_PROGRESS_RSP  = 1510, ///< 查询上传进度响应
-	MSG_RESOURCE_DOWN_INFO_REQ        = 1511, ///< 查询资源下载信息请求（含权限校验）
-	MSG_RESOURCE_DOWN_INFO_RSP        = 1512, ///< 查询资源下载信息响应
-	MSG_RESOURCE_CHUNK_DOWN_REQ       = 1513, ///< 按偏移量下载资源分片请求
-	MSG_RESOURCE_CHUNK_DOWN_RSP       = 1514, ///< 按偏移量下载资源分片响应（随片下发 SHA-256）
+	MSG_RESOURCE_CHUNK_UPLOAD_REQ     = 1505, ///< 上传资源分片请求（message_id/offset/chunk_sha256）
+	MSG_RESOURCE_CHUNK_UPLOAD_RSP     = 1506, ///< 上传资源分片响应（带 server_offset/resource_status）
+	MSG_RESOURCE_UPLOAD_PROGRESS_REQ  = 1507, ///< 查询上传进度请求（返回服务端 .part 实际字节数）
+	MSG_RESOURCE_UPLOAD_PROGRESS_RSP  = 1508, ///< 查询上传进度响应
+	MSG_RESOURCE_DOWN_INFO_REQ        = 1509, ///< 查询资源下载信息请求（含权限校验）
+	MSG_RESOURCE_DOWN_INFO_RSP        = 1510, ///< 查询资源下载信息响应
+	MSG_RESOURCE_CHUNK_DOWN_REQ       = 1511, ///< 按偏移量下载资源分片请求
+	MSG_RESOURCE_CHUNK_DOWN_RSP       = 1512, ///< 按偏移量下载资源分片响应（随片下发 SHA-256）
 
 	// --- 16xx 头像域（ResourceServer TCP，旧 seq+MD5 协议保留，与资源新协议隔离）
 	MSG_UPLOAD_HEAD_ICON_REQ = 1601, ///< 上传头像请求

@@ -33,13 +33,13 @@ private:
 	void handleUploadHeadIcon(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 	// 1603 头像/旧文件下载
 	void handleDownloadFile(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1507 资源分片上传
+	// 1505 资源分片上传
 	void handleResourceChunkUpload(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1509 上传进度查询
+	// 1507 上传进度查询
 	void handleResourceUploadProgress(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1511 资源下载元数据
+	// 1509 资源下载元数据
 	void handleResourceDownInfo(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
-	// 1513 资源分片下载
+	// 1511 资源分片下载
 	void handleResourceChunkDown(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 	// 1501 Resource 登录鉴权
 	void handleResourceLogin(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
@@ -51,4 +51,3 @@ private:
 	std::condition_variable _cv;
 	std::unordered_map<short, MsgHandler> _fun_callbacks;
 };
-

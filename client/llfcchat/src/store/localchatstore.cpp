@@ -40,8 +40,9 @@ void LocalChatWorker::slot_close_db()
 
 void LocalChatWorker::slot_enqueue_send(LocalMessageDTO dto)
 {
-    bool ok = _db.enqueueSend(dto);
-    emit sig_send_enqueued(ok, dto);
+    OutboxEntryDTO entry;
+    bool ok = _db.enqueueSend(dto, &entry);
+    emit sig_send_enqueued(ok, dto, entry);
 }
 
 void LocalChatWorker::slot_confirm_text_sent(QString clientMessageId, qint64 serverMessageId,
@@ -135,17 +136,6 @@ void LocalChatWorker::slot_load_outbox()
     emit sig_outbox_loaded(ok, entries);
 }
 
-void LocalChatWorker::slot_delete_outbox_entry(QString dedupKey)
-{
-    _db.deleteOutboxEntry(dedupKey);
-}
-
-void LocalChatWorker::slot_update_outbox_retry(QString dedupKey, int retryCount,
-    qint64 nextRetryAt)
-{
-    _db.updateOutboxRetry(dedupKey, retryCount, nextRetryAt);
-}
-
 void LocalChatWorker::slot_load_conversations()
 {
     QList<LocalConversationDTO> convs;
@@ -217,8 +207,6 @@ LocalChatStore::LocalChatStore()
     connect(this, &LocalChatStore::sig_get_sync_state, &_worker, &LocalChatWorker::slot_get_sync_state);
     connect(this, &LocalChatStore::sig_mark_bootstrap_complete, &_worker, &LocalChatWorker::slot_mark_bootstrap_complete);
     connect(this, &LocalChatStore::sig_load_outbox, &_worker, &LocalChatWorker::slot_load_outbox);
-    connect(this, &LocalChatStore::sig_delete_outbox_entry, &_worker, &LocalChatWorker::slot_delete_outbox_entry);
-    connect(this, &LocalChatStore::sig_update_outbox_retry, &_worker, &LocalChatWorker::slot_update_outbox_retry);
     connect(this, &LocalChatStore::sig_load_conversations, &_worker, &LocalChatWorker::slot_load_conversations);
     connect(this, &LocalChatStore::sig_load_recent_messages, &_worker, &LocalChatWorker::slot_load_recent_messages);
     connect(this, &LocalChatStore::sig_load_older_messages, &_worker, &LocalChatWorker::slot_load_older_messages);
@@ -313,15 +301,6 @@ void LocalChatStore::markBootstrapComplete(qint64 checkpoint)
     emit sig_mark_bootstrap_complete(checkpoint);
 }
 void LocalChatStore::loadOutbox() { emit sig_load_outbox(); }
-void LocalChatStore::deleteOutboxEntry(const QString& dedupKey)
-{
-    emit sig_delete_outbox_entry(dedupKey);
-}
-void LocalChatStore::updateOutboxRetry(const QString& dedupKey, int retryCount,
-    qint64 nextRetryAt)
-{
-    emit sig_update_outbox_retry(dedupKey, retryCount, nextRetryAt);
-}
 void LocalChatStore::loadConversations() { emit sig_load_conversations(); }
 void LocalChatStore::loadRecentMessages(qint64 threadId, int limit)
 {

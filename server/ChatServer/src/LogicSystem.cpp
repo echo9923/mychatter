@@ -417,7 +417,7 @@ void LogicSystem::LoginHandler(shared_ptr<CSession> session, const short &msg_ty
 			}
 			else {
 				//旧登录在其它服务器：经 gRPC 通知踢人
-				KickUserReq kick_req;
+				message::KickUserReq kick_req;
 				kick_req.set_uid(uid);
 				ChatGrpcClient::GetInstance()->NotifyKickUser(uid_ip_value, kick_req);
 			}
