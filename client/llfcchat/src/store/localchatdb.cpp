@@ -14,7 +14,7 @@
 
 namespace {
 
-const int kSchemaVersion = 4;
+const int kSchemaVersion = 5;
 const char* kMessageColumns =
 	"m.local_message_id,m.message_id,m.client_message_id,m.thread_id,"
 	"m.sender_user_id,m.message_type,m.text_content,m.send_status,m.created_at";
@@ -32,16 +32,6 @@ QVariant NullableText(const QString& value) {
 
 QVariant NonNullText(const QString& value) {
 	return QVariant(value.isNull() ? QStringLiteral("") : value);
-}
-
-QString PreviewFor(const LocalMessageDTO& message) {
-	if (message.message_type == static_cast<int>(ChatMsgType::PIC)) {
-		return QStringLiteral("[图片]");
-	}
-	if (message.message_type == static_cast<int>(ChatMsgType::FILE)) {
-		return QStringLiteral("[文件]");
-	}
-	return message.text_content;
 }
 
 } // namespace
@@ -90,7 +80,7 @@ bool LocalChatDb::open(const QString& dbPath, qint64 selfUserId) {
 		if (!_db.commit()) return false;
 	}
 	if (!initSchema()) return false;
-	return query.exec(QStringLiteral("PRAGMA user_version=4"));
+	return query.exec(QStringLiteral("PRAGMA user_version=%1").arg(kSchemaVersion));
 }
 
 void LocalChatDb::close() {
@@ -133,8 +123,6 @@ bool LocalChatDb::initSchema() {
 		"thread_id INTEGER PRIMARY KEY,"
 		"peer_user_id INTEGER NOT NULL,"
 		"last_message_id INTEGER NULL,"
-		"last_message_preview TEXT NOT NULL DEFAULT '',"
-		"unread_count INTEGER NOT NULL DEFAULT 0,"
 		"oldest_loaded_message_id INTEGER NULL,"
 		"history_complete INTEGER NOT NULL DEFAULT 0,"
 		"updated_at INTEGER NOT NULL)",
@@ -465,8 +453,7 @@ bool LocalChatDb::insertMessageIgnore(const LocalMessageDTO& message,
 	return query.exec();
 }
 
-bool LocalChatDb::upsertConversationOnMessage(const LocalMessageDTO& message,
-	bool incoming) {
+bool LocalChatDb::upsertConversationOnMessage(const LocalMessageDTO& message) {
 	qint64 peerUserId = 0;
 	if (message.sender_user_id != _self_user_id) {
 		peerUserId = message.sender_user_id;
@@ -478,25 +465,18 @@ bool LocalChatDb::upsertConversationOnMessage(const LocalMessageDTO& message,
 		peerUserId = existing.value(0).toLongLong();
 	}
 	if (peerUserId <= 0) return false;
-	const int unreadIncrement = incoming && message.sender_user_id != _self_user_id ? 1 : 0;
 	QSqlQuery query(_db);
 	query.prepare(QStringLiteral(
-		"INSERT INTO conversations(thread_id,peer_user_id,last_message_id,last_message_preview,"
-		"unread_count,updated_at) VALUES(?,?,?,?,?,?) "
+		"INSERT INTO conversations(thread_id,peer_user_id,last_message_id,updated_at) "
+		"VALUES(?,?,?,?) "
 		"ON CONFLICT(thread_id) DO UPDATE SET peer_user_id=excluded.peer_user_id,"
 		"last_message_id=CASE WHEN conversations.last_message_id IS NULL OR "
 		"excluded.last_message_id>=conversations.last_message_id THEN excluded.last_message_id "
 		"ELSE conversations.last_message_id END,"
-		"last_message_preview=CASE WHEN conversations.last_message_id IS NULL OR "
-		"excluded.last_message_id>=conversations.last_message_id THEN excluded.last_message_preview "
-		"ELSE conversations.last_message_preview END,"
-		"unread_count=conversations.unread_count+excluded.unread_count,"
 		"updated_at=MAX(conversations.updated_at,excluded.updated_at)"));
 	query.addBindValue(message.thread_id);
 	query.addBindValue(peerUserId);
 	query.addBindValue(NullableId(message.message_id));
-	query.addBindValue(PreviewFor(message));
-	query.addBindValue(unreadIncrement);
 	query.addBindValue(message.created_at);
 	return query.exec();
 }
@@ -511,7 +491,7 @@ bool LocalChatDb::insertIncoming(const QList<LocalMessageDTO>& messages,
 		bool inserted = false;
 		qint64 localId = 0;
 		if (!insertMessageIgnore(messages[i], resources[i], &inserted, &localId)
-			|| (inserted && !upsertConversationOnMessage(messages[i], true))) {
+			|| (inserted && !upsertConversationOnMessage(messages[i]))) {
 			_db.rollback();
 			return false;
 		}
@@ -573,7 +553,7 @@ bool LocalChatDb::applyEvent(const UserEventDTO& event,
 			bool inserted = false;
 			qint64 localId = 0;
 			if (!insertMessageIgnore(messages[i], resources[i], &inserted, &localId)
-				|| (inserted && !upsertConversationOnMessage(messages[i], true))) return false;
+				|| (inserted && !upsertConversationOnMessage(messages[i]))) return false;
 			if (inserted && insertedMessageIds) insertedMessageIds->append(event.message_id);
 			return true;
 		}
@@ -694,13 +674,11 @@ bool LocalChatDb::upsertConversations(
 	for (const LocalConversationDTO& conversation : conversations) {
 		if (conversation.thread_id <= 0 || conversation.peer_user_id <= 0) return false;
 		query.prepare(QStringLiteral(
-			"INSERT INTO conversations(thread_id,peer_user_id,last_message_id,last_message_preview,"
-			"unread_count,oldest_loaded_message_id,history_complete,updated_at) "
-			"VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET "
+			"INSERT INTO conversations(thread_id,peer_user_id,last_message_id,"
+			"oldest_loaded_message_id,history_complete,updated_at) "
+			"VALUES(?,?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET "
 			"peer_user_id=excluded.peer_user_id,"
 			"last_message_id=COALESCE(excluded.last_message_id,conversations.last_message_id),"
-			"last_message_preview=CASE WHEN excluded.last_message_preview<>'' "
-			"THEN excluded.last_message_preview ELSE conversations.last_message_preview END,"
 			"oldest_loaded_message_id=COALESCE(excluded.oldest_loaded_message_id,"
 			"conversations.oldest_loaded_message_id),"
 			"history_complete=MAX(conversations.history_complete,excluded.history_complete),"
@@ -708,8 +686,6 @@ bool LocalChatDb::upsertConversations(
 		query.addBindValue(conversation.thread_id);
 		query.addBindValue(conversation.peer_user_id);
 		query.addBindValue(NullableId(conversation.last_message_id));
-		query.addBindValue(NonNullText(conversation.last_message_preview));
-		query.addBindValue(conversation.unread_count);
 		query.addBindValue(NullableId(conversation.oldest_loaded_message_id));
 		query.addBindValue(conversation.history_complete ? 1 : 0);
 		query.addBindValue(conversation.updated_at > 0
@@ -800,7 +776,7 @@ bool LocalChatDb::loadConversations(
 	conversations->clear();
 	QSqlQuery query(_db);
 	if (!query.exec(QStringLiteral(
-		"SELECT thread_id,peer_user_id,last_message_id,last_message_preview,unread_count,"
+		"SELECT thread_id,peer_user_id,last_message_id,"
 		"oldest_loaded_message_id,history_complete,updated_at FROM conversations "
 		"ORDER BY updated_at DESC,thread_id DESC"))) return false;
 	while (query.next()) {
@@ -808,12 +784,10 @@ bool LocalChatDb::loadConversations(
 		conversation.thread_id = query.value(0).toLongLong();
 		conversation.peer_user_id = query.value(1).toLongLong();
 		conversation.last_message_id = query.value(2).isNull() ? 0 : query.value(2).toLongLong();
-		conversation.last_message_preview = query.value(3).toString();
-		conversation.unread_count = query.value(4).toInt();
-		conversation.oldest_loaded_message_id = query.value(5).isNull()
-			? 0 : query.value(5).toLongLong();
-		conversation.history_complete = query.value(6).toInt() != 0;
-		conversation.updated_at = query.value(7).toLongLong();
+		conversation.oldest_loaded_message_id = query.value(3).isNull()
+			? 0 : query.value(3).toLongLong();
+		conversation.history_complete = query.value(4).toInt() != 0;
+		conversation.updated_at = query.value(5).toLongLong();
 		conversations->append(conversation);
 	}
 	return true;

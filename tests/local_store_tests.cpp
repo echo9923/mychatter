@@ -127,8 +127,8 @@ OutboxEntryDTO Outbox(const QString& clientMessageId) {
 
 void TestSchema(LocalChatDb& db, const QString& dbPath) {
     Check(db.isOpen(), "database opened");
-    Check(SqlValue(dbPath, QStringLiteral("PRAGMA user_version")).toInt() == 4,
-        "schema version is 4");
+    Check(SqlValue(dbPath, QStringLiteral("PRAGMA user_version")).toInt() == 5,
+        "schema version is 5");
     Check(SqlValue(dbPath, QStringLiteral("PRAGMA journal_mode")).toString()
         .compare(QStringLiteral("wal"), Qt::CaseInsensitive) == 0,
         "journal mode is WAL");
@@ -269,10 +269,8 @@ void TestIncomingAndHistory(LocalChatDb& db, const QString& dbPath) {
 
     QList<LocalConversationDTO> conversations;
     Check(db.loadConversations(&conversations) && conversations.size() == 1
-        && conversations.first().last_message_id == 7000000002LL
-        && conversations.first().last_message_preview == QStringLiteral("[图片]")
-        && conversations.first().unread_count == 2,
-        "incoming messages update preview and unread count once");
+        && conversations.first().last_message_id == 7000000002LL,
+        "incoming messages update the conversation cursor");
 
     const QString downloadedPath = QStringLiteral("C:/cache/7000000002/photo.png");
     Check(db.updateResourceLocalPath(7000000002LL, downloadedPath),
@@ -290,18 +288,12 @@ void TestIncomingAndHistory(LocalChatDb& db, const QString& dbPath) {
     }
     Check(foundResource, "loaded resource carries persisted cache path");
 
-    const int unreadBeforeHistory = SqlValue(dbPath, QStringLiteral(
-        "SELECT unread_count FROM conversations WHERE thread_id=35")).toInt();
     QList<LocalMessageDTO> history;
     QList<LocalMessageResourceDTO> historyResources;
     history << IncomingText(6999999999LL, 100);
     historyResources << LocalMessageResourceDTO();
     Check(db.insertHistoryPage(kThread, history, historyResources, true),
         "history page is inserted");
-    Check(SqlValue(dbPath, QStringLiteral(
-        "SELECT unread_count FROM conversations WHERE thread_id=35")).toInt()
-        == unreadBeforeHistory,
-        "history does not increase unread count");
     Check(SqlValue(dbPath, QStringLiteral(
         "SELECT history_complete FROM conversations WHERE thread_id=35")).toInt() == 1,
         "history completion is persisted");

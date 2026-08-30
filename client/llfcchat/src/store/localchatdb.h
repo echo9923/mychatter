@@ -68,7 +68,7 @@ private:
 	bool initSchema();
 	bool insertMessageIgnore(const LocalMessageDTO& message,
 		const LocalMessageResourceDTO& resource, bool* inserted, qint64* localMessageId);
-	bool upsertConversationOnMessage(const LocalMessageDTO& message, bool incoming);
+	bool upsertConversationOnMessage(const LocalMessageDTO& message);
 	bool upsertFriendRequest(const LocalFriendRequestDTO& request);
 	bool upsertContact(const LocalContactDTO& contact);
 	bool applyEvent(const UserEventDTO& event,
