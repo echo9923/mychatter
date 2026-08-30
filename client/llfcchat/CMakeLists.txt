@@ -47,7 +47,6 @@ set(LLFCCHAT_SOURCES
   src/dialogs/findfaildlg.cpp
   src/dialogs/findsuccessdlg.cpp
   src/dialogs/loadingdlg.cpp
-  src/dialogs/friendlabel.cpp
   src/dialogs/imagecropperlabel.cpp
   src/chat/chatpage.cpp
   src/chat/ChatView.cpp
@@ -104,7 +103,6 @@ set(LLFCCHAT_HEADERS
   src/dialogs/findfaildlg.h
   src/dialogs/findsuccessdlg.h
   src/dialogs/loadingdlg.h
-  src/dialogs/friendlabel.h
   src/dialogs/imagecropperdialog.h
   src/dialogs/imagecropperlabel.h
   src/chat/chatpage.h
@@ -164,7 +162,6 @@ set(LLFCCHAT_UIS
   src/dialogs/findfaildlg.ui
   src/dialogs/findsuccessdlg.ui
   src/dialogs/loadingdlg.ui
-  src/dialogs/friendlabel.ui
   src/chat/chatpage.ui
   src/contact/applyfriendpage.ui
   src/contact/chatuserwid.ui

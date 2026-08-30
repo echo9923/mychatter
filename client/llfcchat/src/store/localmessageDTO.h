@@ -1,67 +1,92 @@
 #ifndef LOCALMESSAGEDTO_H
 #define LOCALMESSAGEDTO_H
 
-#include <QString>
 #include <QList>
 #include <QMetaType>
+#include <QString>
 
-//本地消息值对象（跨线程传递，仅含值类型字段，禁止携带裸指针）
+struct UserEventDTO {
+	qint64 event_seq = 0;
+	int event_type = 0;
+	qint64 message_id = 0;
+	qint64 friend_request_id = 0;
+};
+
 struct LocalMessageDTO {
-    qint64 local_id = 0;            //messages 表自增主键（0=未入库）
-    qint64 server_message_id = 0;   //服务端 message_id（0=未确认/NULL 语义）
-	qint64 recv_seq = 0;            //接收者维度连续序号
-    QString client_message_id;      //客户端幂等键（QUuid 串）
-    qint64 thread_id = 0;
-    qint64 sender_id = 0;
-    qint64 receiver_id = 0;
-    int message_type = 0;           //0 文本 1 图片 3 文件（对齐 ChatMsgType）
-    QString content;                //文本内容 / 资源原始文件名（仅展示）
-    QString local_path;             //资源本地路径（发送端源文件/接收端缓存）
-    QString content_size;           //十进制字符串，维持线协议现状
-    int resource_status = 0;        //资源生命周期（0 待上传/1 就绪/2 失败过期；文本为 0）
-    QString content_hash;           //整文件 SHA-256（资源消息）
-    QString mime_type;              //资源 MIME 类型（资源消息）
-    QString send_state;             //sending/sent/failed
-    QString created_at;             //chat_time 字符串
-	int business_status = 0;        //0 NONE/1 PENDING/2 ACCEPTED/3 REJECTED
-	qint64 related_message_id = 0;
-	QString handled_at;
-	QString requester_remark;
-	QString sender_name;
-	QString sender_nick;
-	QString sender_icon;
-	QString sender_desc;
-	int sender_sex = 0;
+	qint64 local_message_id = 0;
+	qint64 message_id = 0;
+	QString client_message_id;
+	qint64 thread_id = 0;
+	qint64 sender_user_id = 0;
+	int message_type = 0;
+	QString text_content;
+	int send_status = 0;
+	qint64 created_at = 0;
 };
 
-//本地会话值对象
+struct LocalMessageResourceDTO {
+	qint64 local_message_id = 0;
+	QString original_file_name;
+	QString local_file_path;
+	qint64 file_size_bytes = 0;
+	QString sha256;
+	QString mime_type;
+};
+
 struct LocalConversationDTO {
-    qint64 thread_id = 0;
-    qint64 peer_uid = 0;                    //私聊对方 uid
-    qint64 last_server_message_id = 0;      //最后一条服务端 message_id
-    QString last_message_preview;
-    int unread_count = 0;
-    qint64 oldest_loaded_message_id = 0;    //本地已加载的最旧 message_id（1403 游标）
-    bool history_complete = false;          //历史是否已全部拉取
-    QString updated_at;
+	qint64 thread_id = 0;
+	qint64 peer_user_id = 0;
+	qint64 last_message_id = 0;
+	QString last_message_preview;
+	int unread_count = 0;
+	qint64 oldest_loaded_message_id = 0;
+	bool history_complete = false;
+	qint64 updated_at = 0;
 };
 
-//outbox 可靠重试条目（持久化真值快照；重试退避是 Dispatcher 纯运行时状态，
-//崩溃重启后从小退避重新开始，不落盘）
+struct LocalFriendRequestDTO {
+	qint64 friend_request_id = 0;
+	qint64 requester_user_id = 0;
+	qint64 target_user_id = 0;
+	QString request_message;
+	int status = 0;
+	qint64 thread_id = 0;
+	QString peer_username;
+	QString peer_nickname;
+	QString peer_avatar_key;
+	int peer_gender = 0;
+};
+
+struct LocalContactDTO {
+	qint64 user_id = 0;
+	qint64 thread_id = 0;
+	QString username;
+	QString nickname;
+	QString avatar_key;
+	int gender = 0;
+};
+
 struct OutboxEntryDTO {
-    qint64 operation_id = 0;        //outbox 表自增主键
-	QString operation_type;         //SEND_TEXT/SEND_RESOURCE
-    QString dedup_key;              //去重键（唯一约束）
-	QString request_id;             //关联 client_message_id
-	QString payload;                //文本或资源发送的原始请求 JSON
-    QString stage;                  //资源阶段：metadata/uploading，其余为空
+	qint64 operation_id = 0;
+	QString client_message_id;
+	QString operation_type;
+	QString stage;
+	QString payload_json;
 };
 
+Q_DECLARE_METATYPE(UserEventDTO)
 Q_DECLARE_METATYPE(LocalMessageDTO)
+Q_DECLARE_METATYPE(LocalMessageResourceDTO)
 Q_DECLARE_METATYPE(LocalConversationDTO)
+Q_DECLARE_METATYPE(LocalFriendRequestDTO)
+Q_DECLARE_METATYPE(LocalContactDTO)
 Q_DECLARE_METATYPE(OutboxEntryDTO)
+Q_DECLARE_METATYPE(QList<UserEventDTO>)
 Q_DECLARE_METATYPE(QList<LocalMessageDTO>)
+Q_DECLARE_METATYPE(QList<LocalMessageResourceDTO>)
 Q_DECLARE_METATYPE(QList<LocalConversationDTO>)
+Q_DECLARE_METATYPE(QList<LocalFriendRequestDTO>)
+Q_DECLARE_METATYPE(QList<LocalContactDTO>)
 Q_DECLARE_METATYPE(QList<OutboxEntryDTO>)
 
-#endif // LOCALMESSAGEDTO_H
+#endif

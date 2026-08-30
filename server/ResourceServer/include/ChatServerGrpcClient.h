@@ -11,7 +11,7 @@ using grpc::Channel;
  *
  * 同时携带 gRPC transport 状态码与对端应用层 error，供 FileWorker 记录日志/决策。
  * 重试决策完全封装在 ChatServerGrpcClient 内部（每次尝试新 ClientContext+deadline，
- * 按 [Delivery] 配置最多 RpcMaxAttempts 次）。资源就绪和 recv_seq 已先提交，
+ * 按 [Delivery] 配置最多 RpcMaxAttempts 次）。消息发布和 event_seq 已先提交，
  * 因此重试耗尽只影响实时性，客户端仍会通过统一增量同步补齐。
  */
 struct NotifyResult {
@@ -32,11 +32,11 @@ public:
 	 * UNAVAILABLE/DEADLINE_EXCEEDED/RESOURCE_EXHAUSTED 或对端应用层 SERVER_BUSY(2016)
 	 * 重试，间隔 RpcBackoffMs、2×RpcBackoffMs（回退 100/200ms）；接收者离线、
 	 * 未知 server 或参数错误立即停止。重试耗尽不回滚已提交消息。
-	 * @param message_id 已分配 recv_seq 的消息 ID
+	 * @param message_id 已创建 user_events 行的消息 ID
 	 * @param chatserver 目标 ChatServer 节点名（_hash_channels 键）
 	 * @return 同时含 grpc 状态码与对端应用层 error 的 NotifyResult
 	 */
-	NotifyResult NotifyUserMessage(long long message_id, int to_uid,
+	NotifyResult NotifyUserMessage(long long message_id, int event_type, int to_uid,
 		std::string chatserver);
 private:
 	ChatServerGrpcClient() = default;

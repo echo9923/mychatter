@@ -1,219 +1,225 @@
 #include "MysqlDao.h"
-#include "ConfigMgr.h"
-#include "const.h"
-#include "PasswordHash.h"
 
-MysqlDao::MysqlDao()
-{
+#include "ConfigMgr.h"
+#include "Defer.h"
+
+#include <iostream>
+
+namespace {
+
+const char* kResourceMessageProjection =
+	"m.message_id,m.thread_id,m.sender_user_id,"
+	"CASE WHEN pc.lower_user_id=m.sender_user_id THEN pc.higher_user_id "
+	"ELSE pc.lower_user_id END AS recipient_user_id,"
+	"m.client_message_id,m.message_type,m.status,m.created_at,"
+	"r.original_file_name,r.file_size_bytes,r.sha256,r.mime_type,"
+	"COALESCE(e.event_seq,0) AS event_seq ";
+
+} // namespace
+
+MysqlDao::MysqlDao() {
 	auto& cfg = ConfigMgr::Inst();
-	const auto& host = cfg["Mysql"]["Host"];
-	const auto& port = cfg["Mysql"]["Port"];
-	const auto& pwd = cfg["Mysql"]["Passwd"];
-	const auto& schema = cfg["Mysql"]["Schema"];
-	const auto& user = cfg["Mysql"]["User"];
-	pool_.reset(new MySqlPool(host + ":" + port, user, pwd, schema, 5));
+	pool_.reset(new MySqlPool(cfg["Mysql"]["Host"] + ":" + cfg["Mysql"]["Port"],
+		cfg["Mysql"]["User"], cfg["Mysql"]["Passwd"], cfg["Mysql"]["Schema"], 5));
 }
 
 MysqlDao::~MysqlDao() {
 	pool_->Close();
 }
 
-std::shared_ptr<UserInfo> MysqlDao::GetUser(int uid)
-{
-	auto con = pool_->getConnection();
-	if (con == nullptr) {
-		return nullptr;
-	}
-
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
+std::shared_ptr<UserInfo> MysqlDao::GetUser(int user_id) {
+	auto connection = pool_->getConnection();
+	if (!connection) return nullptr;
+	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
 	try {
-		// 准备SQL语句
-		std::unique_ptr<sql::PreparedStatement> pstmt(con->_con->prepareStatement("SELECT * FROM user WHERE uid = ?"));
-		pstmt->setInt(1, uid); // 将uid替换为你要查询的uid
-
-		// 执行查询
-		std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
-		std::shared_ptr<UserInfo> user_ptr = nullptr;
-		// 遍历结果集
-		while (res->next()) {
-			user_ptr.reset(new UserInfo);
-			user_ptr->email = res->getString("email");
-			user_ptr->name = res->getString("name");
-			user_ptr->nick = res->getString("nick");
-			user_ptr->desc = res->getString("desc");
-			user_ptr->sex = res->getInt("sex");
-			user_ptr->icon = res->getString("icon");
-			user_ptr->uid = uid;
-			break;
-		}
-		return user_ptr;
-	}
-	catch (sql::SQLException& e) {
-		std::cerr << "SQLException: " << e.what();
-		std::cerr << " (MySQL error code: " << e.getErrorCode();
-		std::cerr << ", SQLState: " << e.getSQLState() << " )" << std::endl;
+		auto query = std::unique_ptr<sql::PreparedStatement>(connection->_con->prepareStatement(
+			"SELECT user_id,username,email,nickname,profile_bio,gender,avatar_key "
+			"FROM users WHERE user_id=?"));
+		query->setInt(1, user_id);
+		auto result = std::unique_ptr<sql::ResultSet>(query->executeQuery());
+		if (!result->next()) return nullptr;
+		auto user = std::make_shared<UserInfo>();
+		user->user_id = result->getInt("user_id");
+		user->username = result->getString("username");
+		user->email = result->getString("email");
+		user->nickname = result->getString("nickname");
+		user->profile_bio = result->getString("profile_bio");
+		user->gender = result->getInt("gender");
+		user->avatar_key = result->getString("avatar_key");
+		return user;
+	} catch (const sql::SQLException& error) {
+		std::cerr << "GetUser SQLException: " << error.what() << std::endl;
 		return nullptr;
 	}
 }
 
-bool MysqlDao::UpdateHeadInfo(int uid, const std::string& icon)
-{
-	auto con = pool_->getConnection();
-	if (!con) {
-		return false;
-	}
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
-	auto& conn = con->_con;
+bool MysqlDao::UpdateHeadInfo(int user_id, const std::string& avatar_key) {
+	auto connection = pool_->getConnection();
+	if (!connection) return false;
+	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
 	try {
-		std::string update_sql =
-			"UPDATE user SET icon = ? WHERE uid = ?;";
-
-		std::unique_ptr<sql::PreparedStatement> pstmt(conn->prepareStatement(update_sql));
-		pstmt->setString(1, icon);
-		pstmt->setInt64(2, uid);
-
-		int affected_rows = pstmt->executeUpdate();
-
-		// 检查是否有行被更新（可选）
-		if (affected_rows == 0) {
-			std::cerr << "No user found with uid: " << uid << std::endl;
-			return false;
-		}
-
-		return true;
-	}
-	catch (sql::SQLException& e) {
-		std::cerr << "SQLException in UpdateHeadInfo: " << e.what() << std::endl;
+		auto update = std::unique_ptr<sql::PreparedStatement>(connection->_con->prepareStatement(
+			"UPDATE users SET avatar_key=? WHERE user_id=?"));
+		update->setString(1, avatar_key);
+		update->setInt(2, user_id);
+		return update->executeUpdate() == 1;
+	} catch (const sql::SQLException& error) {
+		std::cerr << "UpdateHeadInfo SQLException: " << error.what() << std::endl;
 		return false;
 	}
-	return false;
 }
 
-bool MysqlDao::CompleteResourceUpload(long long chat_message_id, int sender_id, int recv_id,
-	unsigned long long& recv_seq) {
-	recv_seq = 0;
-	auto con = pool_->getConnection();
-	if (!con) return false;
-	Defer defer([this, &con]() { pool_->returnConnection(std::move(con)); });
-	auto& conn = con->_con;
+bool MysqlDao::CompleteResourceUpload(long long message_id, int sender_user_id,
+	unsigned long long& event_seq) {
+	event_seq = 0;
+	auto connection = pool_->getConnection();
+	if (!connection) return false;
+	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
+	auto& db = connection->_con;
+	auto finish = [&db](bool commit) {
+		if (commit) db->commit(); else db->rollback();
+		db->setAutoCommit(true);
+	};
 	try {
-		conn->setAutoCommit(false);
-		auto read = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
-			"SELECT sender_id, recv_id, resource_status, recv_seq FROM chat_message "
-			"WHERE message_id = ? FOR UPDATE"));
-		read->setInt64(1, chat_message_id);
-		auto rs = std::unique_ptr<sql::ResultSet>(read->executeQuery());
-		if (!rs->next() || rs->getInt("sender_id") != sender_id ||
-			rs->getInt("recv_id") != recv_id) {
-			conn->rollback();
+		db->setAutoCommit(false);
+		auto read = std::unique_ptr<sql::PreparedStatement>(db->prepareStatement(
+			"SELECT m.sender_user_id,m.message_type,m.status,"
+			"CASE WHEN pc.lower_user_id=m.sender_user_id THEN pc.higher_user_id "
+			"ELSE pc.lower_user_id END AS recipient_user_id "
+			"FROM chat_messages m "
+			"JOIN private_chats pc ON pc.thread_id=m.thread_id "
+			"JOIN message_resources r ON r.message_id=m.message_id "
+			"WHERE m.message_id=? FOR UPDATE"));
+		read->setInt64(1, message_id);
+		auto row = std::unique_ptr<sql::ResultSet>(read->executeQuery());
+		if (!row->next() || row->getInt("sender_user_id") != sender_user_id) {
+			finish(false);
 			return false;
 		}
-		const int status = rs->getInt("resource_status");
-		if (status == 1 && !rs->isNull("recv_seq")) {
-			recv_seq = rs->getUInt64("recv_seq");
-			conn->commit();
+		const int message_type = row->getInt("message_type");
+		const int status = row->getInt("status");
+		const int recipient_user_id = row->getInt("recipient_user_id");
+		if ((message_type != 1 && message_type != 3) || recipient_user_id <= 0) {
+			finish(false);
+			return false;
+		}
+
+		if (status == static_cast<int>(MessageStatus::Published)) {
+			auto event = std::unique_ptr<sql::PreparedStatement>(db->prepareStatement(
+				"SELECT event_seq FROM user_events "
+				"WHERE recipient_user_id=? AND event_type=? AND message_id=?"));
+			event->setInt(1, recipient_user_id);
+			event->setInt(2, message_type);
+			event->setInt64(3, message_id);
+			auto existing = std::unique_ptr<sql::ResultSet>(event->executeQuery());
+			if (!existing->next()) {
+				finish(false);
+				return false;
+			}
+			event_seq = existing->getUInt64("event_seq");
+			finish(true);
 			return true;
 		}
-		if (status != 0) {
-			conn->rollback();
+		if (status != static_cast<int>(MessageStatus::Pending)) {
+			finish(false);
 			return false;
 		}
 
-		auto seq_stmt = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
-			"SELECT last_recv_seq FROM user WHERE uid = ? FOR UPDATE"));
-		seq_stmt->setInt(1, recv_id);
-		auto seq_rs = std::unique_ptr<sql::ResultSet>(seq_stmt->executeQuery());
-		if (!seq_rs->next()) {
-			conn->rollback();
+		auto read_head = std::unique_ptr<sql::PreparedStatement>(db->prepareStatement(
+			"SELECT last_event_seq FROM users WHERE user_id=? FOR UPDATE"));
+		read_head->setInt(1, recipient_user_id);
+		auto head = std::unique_ptr<sql::ResultSet>(read_head->executeQuery());
+		if (!head->next()) {
+			finish(false);
 			return false;
 		}
-		recv_seq = seq_rs->getUInt64("last_recv_seq") + 1;
-		auto update_user = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
-			"UPDATE user SET last_recv_seq = ? WHERE uid = ?"));
-		update_user->setUInt64(1, recv_seq);
-		update_user->setInt(2, recv_id);
-		if (update_user->executeUpdate() != 1) {
-			conn->rollback();
+		event_seq = head->getUInt64("last_event_seq") + 1;
+
+		auto update_head = std::unique_ptr<sql::PreparedStatement>(db->prepareStatement(
+			"UPDATE users SET last_event_seq=? WHERE user_id=?"));
+		update_head->setUInt64(1, event_seq);
+		update_head->setInt(2, recipient_user_id);
+		if (update_head->executeUpdate() != 1) {
+			finish(false);
 			return false;
 		}
-		auto publish = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
-			"UPDATE chat_message SET resource_status = 1, recv_seq = ? "
-			"WHERE message_id = ? AND resource_status = 0 AND recv_seq IS NULL"));
-		publish->setUInt64(1, recv_seq);
-		publish->setInt64(2, chat_message_id);
+
+		auto publish = std::unique_ptr<sql::PreparedStatement>(db->prepareStatement(
+			"UPDATE chat_messages SET status=? WHERE message_id=? AND status=?"));
+		publish->setInt(1, static_cast<int>(MessageStatus::Published));
+		publish->setInt64(2, message_id);
+		publish->setInt(3, static_cast<int>(MessageStatus::Pending));
 		if (publish->executeUpdate() != 1) {
-			conn->rollback();
+			finish(false);
 			return false;
 		}
-		conn->commit();
+
+		auto insert_event = std::unique_ptr<sql::PreparedStatement>(db->prepareStatement(
+			"INSERT INTO user_events(recipient_user_id,event_seq,event_type,message_id) "
+			"VALUES(?,?,?,?)"));
+		insert_event->setInt(1, recipient_user_id);
+		insert_event->setUInt64(2, event_seq);
+		insert_event->setInt(3, message_type);
+		insert_event->setInt64(4, message_id);
+		if (insert_event->executeUpdate() != 1) {
+			finish(false);
+			return false;
+		}
+
+		finish(true);
 		return true;
-	}
-	catch (const sql::SQLException& e) {
-		conn->rollback();
-		std::cerr << "CompleteResourceUpload SQLException: " << e.what() << std::endl;
+	} catch (const sql::SQLException& error) {
+		try {
+			db->rollback();
+			db->setAutoCommit(true);
+		} catch (...) {
+		}
+		std::cerr << "CompleteResourceUpload SQLException: " << error.what() << std::endl;
 		return false;
 	}
 }
 
 std::shared_ptr<ChatMessage> MysqlDao::GetChatMsgById(long long message_id) {
-	auto con = pool_->getConnection();
-	if (!con) {
-		return nullptr;
-	}
-
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
-	auto& conn = con->_con;
-
+	auto connection = pool_->getConnection();
+	if (!connection) return nullptr;
+	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
 	try {
-		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
-			conn->prepareStatement(
-				"SELECT message_id, thread_id, recv_seq, sender_id, recv_id, "
-				"content, created_at, updated_at, status, msg_type, resource_status, "
-				"content_size, content_hash, mime_type, business_status, "
-				"related_message_id, handled_at, requester_remark "
-				"FROM chat_message WHERE message_id = ?"
-			)
-			);
+		std::string sql = "SELECT ";
+		sql += kResourceMessageProjection;
+		sql +=
+			"FROM chat_messages m "
+			"JOIN private_chats pc ON pc.thread_id=m.thread_id "
+			"JOIN message_resources r ON r.message_id=m.message_id "
+			"LEFT JOIN user_events e ON e.recipient_user_id="
+			"CASE WHEN pc.lower_user_id=m.sender_user_id THEN pc.higher_user_id "
+			"ELSE pc.lower_user_id END "
+			"AND e.event_type=m.message_type AND e.message_id=m.message_id "
+			"WHERE m.message_id=?";
+		auto query = std::unique_ptr<sql::PreparedStatement>(
+			connection->_con->prepareStatement(sql));
+		query->setInt64(1, message_id);
+		auto row = std::unique_ptr<sql::ResultSet>(query->executeQuery());
+		if (!row->next()) return nullptr;
 
-		pstmt->setUInt64(1, message_id);
-		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
-
-		if (rs->next()) {
-			auto msg = std::make_shared<ChatMessage>();
-			msg->message_id = rs->getUInt64("message_id");
-			msg->thread_id = rs->isNull("thread_id") ? 0 : rs->getUInt64("thread_id");
-			msg->recv_seq = rs->isNull("recv_seq") ? 0 : rs->getUInt64("recv_seq");
-			msg->sender_id = rs->getUInt64("sender_id");
-			msg->recv_id = rs->getUInt64("recv_id");
-			msg->content = rs->getString("content");
-			msg->chat_time = rs->getString("created_at");
-			msg->status = rs->getInt("status");
-			msg->msg_type = rs->getInt("msg_type");
-			msg->resource_status = rs->getInt("resource_status");
-			msg->content_size = rs->getUInt64("content_size");
-			msg->content_hash = rs->isNull("content_hash") ? "" : rs->getString("content_hash");
-			msg->mime_type = rs->isNull("mime_type") ? "" : rs->getString("mime_type");
-			msg->business_status = rs->getInt("business_status");
-			msg->related_message_id = rs->isNull("related_message_id") ? 0 : rs->getInt64("related_message_id");
-			msg->handled_at = rs->isNull("handled_at") ? "" : rs->getString("handled_at");
-			msg->requester_remark = rs->isNull("requester_remark") ? "" : rs->getString("requester_remark");
-			return msg;
-		}
-
-		return nullptr;
-
-	}
-	catch (sql::SQLException& e) {
-		std::cerr << "GetChatMessageById SQLException: " << e.what() << std::endl;
+		auto message = std::make_shared<ChatMessage>();
+		message->message_id = row->getInt64("message_id");
+		message->thread_id = row->getInt64("thread_id");
+		message->sender_user_id = row->getInt("sender_user_id");
+		message->recipient_user_id = row->getInt("recipient_user_id");
+		message->client_message_id = row->getString("client_message_id");
+		message->message_type = row->getInt("message_type");
+		message->status = static_cast<MessageStatus>(row->getInt("status"));
+		message->created_at = row->getString("created_at");
+		message->event_seq = row->getUInt64("event_seq");
+		message->resource = std::make_shared<MessageResource>();
+		message->resource->message_id = message->message_id;
+		message->resource->original_file_name = row->getString("original_file_name");
+		message->resource->file_size_bytes = row->getUInt64("file_size_bytes");
+		message->resource->sha256 = row->getString("sha256");
+		message->resource->mime_type = row->getString("mime_type");
+		return message;
+	} catch (const sql::SQLException& error) {
+		std::cerr << "GetChatMsgById SQLException: " << error.what() << std::endl;
 		return nullptr;
 	}
 }
@@ -221,72 +227,58 @@ std::shared_ptr<ChatMessage> MysqlDao::GetChatMsgById(long long message_id) {
 bool MysqlDao::GetExpiredResourceIds(const std::string& before_time, int limit,
 	std::vector<ExpiredResource>& out) {
 	out.clear();
-	auto con = pool_->getConnection();
-	if (!con) {
-		return false;
-	}
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
-	auto& conn = con->_con;
+	auto connection = pool_->getConnection();
+	if (!connection) return false;
+	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
 	try {
-		//仅看 resource_status=0（待上传）：Ready 资源不清理，Expired 无需重复标记
-		auto pstmt = std::unique_ptr<sql::PreparedStatement>(
-			conn->prepareStatement(
-				"SELECT message_id, sender_id, recv_id FROM chat_message "
-				"WHERE resource_status = 0 AND msg_type IN (1, 3) AND updated_at < ? "
-				"ORDER BY updated_at ASC LIMIT ?"
-			)
-			);
-		pstmt->setString(1, before_time);
-		pstmt->setInt(2, limit);
-		auto rs = std::unique_ptr<sql::ResultSet>(pstmt->executeQuery());
-		while (rs->next()) {
+		auto query = std::unique_ptr<sql::PreparedStatement>(connection->_con->prepareStatement(
+			"SELECT message_id,sender_user_id FROM chat_messages "
+			"WHERE status=? AND message_type IN (1,3) AND created_at<? "
+			"ORDER BY created_at ASC LIMIT ?"));
+		query->setInt(1, static_cast<int>(MessageStatus::Pending));
+		query->setString(2, before_time);
+		query->setInt(3, limit);
+		auto rows = std::unique_ptr<sql::ResultSet>(query->executeQuery());
+		while (rows->next()) {
 			ExpiredResource item;
-			item.message_id = rs->getUInt64("message_id");
-			item.sender_id = rs->getUInt64("sender_id");
-			item.recv_id = rs->getUInt64("recv_id");
+			item.message_id = rows->getInt64("message_id");
+			item.sender_user_id = rows->getInt("sender_user_id");
 			out.push_back(item);
 		}
 		return true;
-	}
-	catch (sql::SQLException& e) {
-		std::cerr << "GetExpiredResourceIds SQLException: " << e.what() << std::endl;
+	} catch (const sql::SQLException& error) {
+		std::cerr << "GetExpiredResourceIds SQLException: " << error.what() << std::endl;
 		out.clear();
 		return false;
 	}
 }
 
 bool MysqlDao::MarkResourceExpired(const std::vector<ExpiredResource>& items) {
-	if (items.empty()) {
-		return true;
-	}
-	auto con = pool_->getConnection();
-	if (!con) {
-		return false;
-	}
-	Defer defer([this, &con]() {
-		pool_->returnConnection(std::move(con));
-		});
-
-	auto& conn = con->_con;
+	if (items.empty()) return true;
+	auto connection = pool_->getConnection();
+	if (!connection) return false;
+	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
+	auto& db = connection->_con;
 	try {
-		conn->setAutoCommit(false);
-		// 未发布资源没有 recv_seq，过期只更新权威资源状态，不通知接收者。
-		auto upd = std::unique_ptr<sql::PreparedStatement>(conn->prepareStatement(
-			"UPDATE chat_message SET resource_status = 2 "
-			"WHERE message_id = ? AND resource_status = 0"));
+		db->setAutoCommit(false);
+		auto update = std::unique_ptr<sql::PreparedStatement>(db->prepareStatement(
+			"UPDATE chat_messages SET status=? WHERE message_id=? AND status=?"));
 		for (const auto& item : items) {
-			upd->setInt64(1, item.message_id);
-			upd->executeUpdate();
+			update->setInt(1, static_cast<int>(MessageStatus::Failed));
+			update->setInt64(2, item.message_id);
+			update->setInt(3, static_cast<int>(MessageStatus::Pending));
+			update->executeUpdate();
 		}
-		conn->commit();
+		db->commit();
+		db->setAutoCommit(true);
 		return true;
-	}
-	catch (sql::SQLException& e) {
-		std::cerr << "MarkResourceExpired SQLException: " << e.what() << std::endl;
-		conn->rollback();
+	} catch (const sql::SQLException& error) {
+		try {
+			db->rollback();
+			db->setAutoCommit(true);
+		} catch (...) {
+		}
+		std::cerr << "MarkResourceExpired SQLException: " << error.what() << std::endl;
 		return false;
 	}
 }

@@ -24,8 +24,9 @@ struct RuntimeEntry {
     int retry_count = 0;            //退避重试计数（不落盘，重启从小退避重计）
     qint64 next_retry_at = 0;       //下次动作时刻（epoch ms，0=立即）
     PendingStoreAction action = PENDING_NONE;
-    qint64 server_message_id = 0;   //资源运行时已知（1504/恢复回查），重连免查库
-    QString chat_time;              //PENDING_CONFIRM_TEXT 参数
+    qint64 message_id = 0;          //资源运行时已知（1504/恢复回查），重连免查库
+    qint64 created_at = 0;          //PENDING_CONFIRM_TEXT 参数
+    LocalMessageResourceDTO resource;
 };
 
 //OutboxDispatcher：驻留 TCP 线程（与 TcpMgr 同线程，独立 QObject）。
@@ -37,7 +38,7 @@ struct RuntimeEntry {
 //旧登记簿，slot_start 触发一次快照恢复，恢复期间暂停派发）。
 //SEND_TEXT→1301；SEND_RESOURCE metadata→1503，1504 成功（stage 落库提交后）
 //→uploading 并向 ResourceServer 发 1507 查服务端真实偏移，1508 对齐后
-//FileTcpMgr 窗口续发 1505，1506 resource_status=1 → confirmResourceSent。
+//FileTcpMgr 窗口续发 1505，1506 status=PUBLISHED → confirmResourceSent。
 //重试退避（retry_count/next_retry_at）为纯内存状态，不落盘。
 class OutboxDispatcher : public QObject, public Singleton<OutboxDispatcher>,
         public std::enable_shared_from_this<OutboxDispatcher>
@@ -50,25 +51,26 @@ public:
     void start();
 public slots:
     //TcpMgr 转发的 1302 文本回包（含冲突/transient）
-    void slot_text_msg_rsp(int error, QString unique_id, qint64 message_id,
-        QString chat_time);
+    void slot_text_msg_rsp(int error, QString clientMessageId, qint64 messageId,
+        QString createdAt);
     //TcpMgr 转发的 1504 资源消息创建回包（含冲突/transient/permanent）
-    void slot_resource_msg_meta_rsp(int error, QString unique_id, QString file_name,
-        qint64 message_id, qint64 thread_id, qint64 fromuid, qint64 touid);
-    //FileTcpMgr 资源上传收全（1506 resource_status=1）
-    void slot_resource_upload_done(QString unique_name);
+    void slot_resource_msg_meta_rsp(int error, QString clientMessageId,
+        qint64 messageId);
+    //FileTcpMgr 资源上传收全（1506 status=PUBLISHED）
+    void slot_resource_upload_done(QString unique_name, QString local_file_path);
     //FileTcpMgr 资源上传永久失败（2115/2116 等）
     void slot_resource_upload_failed(QString unique_name, int error);
     //FileTcpMgr 转发的 1508 上传进度回包（恢复续传的统一对齐点）
     void slot_upload_progress_rsp(qint64 message_id, int error, qint64 server_offset,
-        int resource_status);
+        int status);
     //TcpMgr 断线通知：停止扫描，登记簿保留等重连
     void slot_connection_closed();
 private slots:
     void slot_start();
     void slot_scan_timeout();
     //CommittedSend：enqueueSend 事务 commit 成功后的增量登记
-    void slot_send_enqueued_registered(bool ok, LocalMessageDTO dto, OutboxEntryDTO entry);
+    void slot_send_enqueued_registered(bool ok, LocalMessageDTO message,
+        LocalMessageResourceDTO resource, OutboxEntryDTO entry);
     //本地事务结果——销账/推进 commit 成功后才动登记簿
     void slot_send_confirmed(bool ok, LocalMessageDTO dto);
     void slot_send_failed_marked(bool ok, LocalMessageDTO dto);
@@ -76,8 +78,9 @@ private slots:
     void slot_resource_stage_updated(bool ok, LocalMessageDTO dto);
     //冷启动/换用户恢复：全表快照登记（仅此一处消费全量查询）
     void slot_outbox_loaded(bool ok, QList<OutboxEntryDTO> entries);
-    //uploading 恢复时回查 server_message_id
-    void slot_message_loaded(bool ok, LocalMessageDTO dto);
+    //uploading 恢复时回查 message_id
+    void slot_message_loaded(bool ok, LocalMessageDTO message,
+        LocalMessageResourceDTO resource);
     //用户库打开/切换：旧登记簿整体作废，待 slot_start 从新库恢复
     void slot_db_opened(bool ok, int uid);
     void slot_db_closed();
@@ -107,18 +110,18 @@ private:
     void eraseEntry(const QString& key);
     //重建 MsgInfo 并发 1507 查询服务端偏移（首传/续传统一入口）；
     //源文件丢失→MARK_FAILED
-    void startResourceUpload(RuntimeEntry& rt, qint64 server_message_id);
+    void startResourceUpload(RuntimeEntry& rt, qint64 message_id);
     //1508 回包对齐 MsgInfo 后驱动窗口续发
-    void resumeUploadByProgress(qint64 message_id, qint64 server_offset, int resource_status);
+    void resumeUploadByProgress(qint64 message_id, qint64 server_offset, int status);
     //指数退避推进（2s→30s），纯内存
     void scheduleRetry(RuntimeEntry& rt);
     //资源发送失败收尾（映射 file_name → client_message_id）
     void failResourceByName(const QString& unique_name);
-    //进程内重连：uploading 条目按登记簿恢复（server_message_id 已知免查库）
+    //进程内重连：uploading 条目按登记簿恢复（message_id 已知免查库）
     void resumeUploadingEntries();
 
     QTimer* _scan_timer;                    //250ms 扫描定时器，parent 到 this
-    QMap<QString, RuntimeEntry> _entries;   //dedup_key → 运行时登记（只在 TCP 线程访问）
+    QMap<QString, RuntimeEntry> _entries;   //client_message_id → 运行时登记（只在 TCP 线程访问）
     QMap<QString, QString> _uploading;      //file_name → client_message_id（上传中）
     QSet<QString> _resume_pending;          //等待 getMessageByClientId 回查的恢复项
     qint64 _retry_initial_ms;               //配置 RequestRetryInitialMs

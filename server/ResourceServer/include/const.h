@@ -36,23 +36,9 @@ enum ErrorCodes {
 	MsgIdErr = llfc_proto::RS_MSG_ID_ERR,             //2111 消息id错误
 	FileHashMismatch = llfc_proto::RS_FILE_HASH_MISMATCH,     //2112 分片/整文件 SHA-256 校验失败
 	FileSizeExceeded = llfc_proto::RS_FILE_SIZE_EXCEEDED,     //2113 资源超过类型上限
-	ResourceNotReady = llfc_proto::RS_RESOURCE_NOT_READY,     //2114 resource_status != Ready 时请求下载
+	ResourceNotReady = llfc_proto::RS_RESOURCE_NOT_READY,     //2114 message status != PUBLISHED 时请求下载
 	ResourceForbidden = llfc_proto::RS_RESOURCE_FORBIDDEN,    //2115 请求者不是消息发送者或接收者
 	ResourceStateInvalid = llfc_proto::RS_RESOURCE_STATE_INVALID, //2116 对已失败/已就绪资源的非法上传操作
-};
-
-enum MsgStatus {
-	UN_READ = 0,  //对方未读
-	SEND_FAILED = 1,  //发送失败
-	READED = 2,  //对方已读
-	//原 3=UN_UPLOAD 已废弃：资源生命周期一律读 chat_message.resource_status
-};
-
-/// 资源生命周期（对应 chat_message.resource_status，与 ChatServer 侧定义一致）
-enum class ResourceStatus {
-	Uploading = 0, //待上传（分片未收齐）
-	Ready     = 1, //就绪（整文件 SHA-256 校验通过、已进同步流）
-	Expired   = 2  //失败/过期（7 天清理标记或校验失败终态）
 };
 
 // Defer 已迁移至 common/include/Defer.h

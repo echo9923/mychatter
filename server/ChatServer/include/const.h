@@ -88,7 +88,7 @@ enum MSG_TYPES {
 	ID_LOAD_CHAT_MSG_REQ = llfc_proto::MSG_LOAD_CHAT_MSG_REQ, ///< 加载历史聊天消息请求 1403（分页）
 	ID_LOAD_CHAT_MSG_RSP = llfc_proto::MSG_LOAD_CHAT_MSG_RSP, ///< 加载历史聊天消息响应 1404
 	ID_CREATE_RESOURCE_MSG_REQ = llfc_proto::MSG_CREATE_RESOURCE_REQ, ///< 创建资源消息请求 1503（图片/文件统一，元数据先行）
-	ID_CREATE_RESOURCE_MSG_RSP = llfc_proto::MSG_CREATE_RESOURCE_RSP, ///< 创建资源消息响应 1504（返回 message_id，resource_status=0）
+	ID_CREATE_RESOURCE_MSG_RSP = llfc_proto::MSG_CREATE_RESOURCE_RSP, ///< 创建资源消息响应 1504（返回 PENDING message_id）
 	// 1505~1512 分片上传/进度查询/下载信息/分片下载由 ResourceServer 处理，不在此声明
 	ID_SYNC_USER_MESSAGE_REQ = llfc_proto::MSG_SYNC_USER_MESSAGE_REQ, ///< 统一消息同步请求 1405
 	ID_SYNC_USER_MESSAGE_RSP = llfc_proto::MSG_SYNC_USER_MESSAGE_RSP, ///< 统一消息同步响应 1406
@@ -143,19 +143,6 @@ inline short ReqToRspId(short req_id) {
 #define LOCK_TIME_OUT 10
 /// 分布式锁的获取重试超时时间（秒），超过此时间未获取到锁则放弃
 #define ACQUIRE_TIME_OUT 5
-
-/**
- * @brief 聊天消息状态枚举
- *
- * 表示一条聊天消息当前的阅读状态（纯阅读态）。
- * 原 3=UN_UPLOAD 语义已废弃：资源生命周期一律读 chat_message.resource_status
- * （对应 data.h 的 ResourceStatus 枚举）。
- */
-enum MsgStatus {
-	UN_READ = 0,     ///< 对方未读
-	SEND_FAILED = 1, ///< 发送失败
-	READED = 2,      ///< 对方已读
-};
 
 /// 资源大小上限默认值（字节），可被 config.ini [Resource] 段覆盖：
 /// MaxImageSize / MaxFileSize

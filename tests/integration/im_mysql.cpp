@@ -1,44 +1,49 @@
-// im_mysql.cpp - MySQL verification helpers for the unified user-message stream.
+// MySQL verification helpers for the current chat/event schema.
 #include "im_mysql.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 
-#include <jdbc/mysql_driver.h>
-#include <jdbc/mysql_connection.h>
 #include <jdbc/cppconn/exception.h>
 #include <jdbc/cppconn/prepared_statement.h>
 #include <jdbc/cppconn/resultset.h>
 #include <jdbc/cppconn/statement.h>
+#include <jdbc/mysql_driver.h>
 
 namespace imt {
 namespace {
 
 const char* kMessageColumns =
-	"message_id, thread_id, sender_id, recv_id, recv_seq, unique_id, content, "
-	"created_at AS chat_time, status, msg_type, resource_status, business_status, "
-	"related_message_id, content_hash, content_size ";
+	"m.message_id,m.thread_id,m.sender_user_id,m.client_message_id,"
+	"m.message_type,m.text_content,m.status,m.created_at,"
+	"r.original_file_name,r.file_size_bytes,r.sha256,r.mime_type ";
 
-ChatMessageRow ReadMessageRow(sql::ResultSet& res) {
+ChatMessageRow ReadMessageRow(sql::ResultSet& result) {
 	ChatMessageRow row;
-	row.message_id = res.getInt64("message_id");
-	row.thread_id = res.isNull("thread_id") ? 0 : res.getInt64("thread_id");
-	row.sender_id = res.getInt("sender_id");
-	row.recv_id = res.getInt("recv_id");
-	row.recv_seq = res.isNull("recv_seq")
-		? 0 : static_cast<std::uint64_t>(res.getInt64("recv_seq"));
-	row.unique_id = res.getString("unique_id");
-	row.content = res.getString("content");
-	row.chat_time = res.getString("chat_time");
-	row.status = res.getInt("status");
-	row.msg_type = res.getInt("msg_type");
-	row.resource_status = res.getInt("resource_status");
-	row.business_status = res.getInt("business_status");
-	row.related_message_id = res.isNull("related_message_id")
-		? 0 : res.getInt64("related_message_id");
-	row.content_hash = res.isNull("content_hash") ? "" : res.getString("content_hash");
-	row.content_size = static_cast<std::uint64_t>(res.getInt64("content_size"));
+	row.message_id = result.getInt64("message_id");
+	row.thread_id = result.getInt64("thread_id");
+	row.sender_user_id = result.getInt("sender_user_id");
+	row.client_message_id = result.getString("client_message_id");
+	row.message_type = result.getInt("message_type");
+	row.text_content = result.isNull("text_content")
+		? std::string() : result.getString("text_content");
+	row.status = result.getInt("status");
+	row.created_at = result.getString("created_at");
+	row.original_file_name = result.isNull("original_file_name")
+		? std::string() : result.getString("original_file_name");
+	row.file_size_bytes = result.isNull("file_size_bytes")
+		? 0 : static_cast<std::uint64_t>(result.getInt64("file_size_bytes"));
+	row.sha256 = result.isNull("sha256")
+		? std::string() : result.getString("sha256");
+	row.mime_type = result.isNull("mime_type")
+		? std::string() : result.getString("mime_type");
 	return row;
+}
+
+void OrderedPair(int first, int second, int& lower, int& higher) {
+	lower = std::min(first, second);
+	higher = std::max(first, second);
 }
 
 } // namespace
@@ -46,316 +51,306 @@ ChatMessageRow ReadMessageRow(sql::ResultSet& res) {
 Mysql::~Mysql() { Close(); }
 
 bool Mysql::Connect(const std::string& host, int port, const std::string& user,
-	                const std::string& pwd, const std::string& schema) {
+	const std::string& password, const std::string& schema) {
 	Close();
 	try {
 		auto* driver = sql::mysql::get_mysql_driver_instance();
-		con_ = driver->connect("tcp://" + host + ":" + std::to_string(port), user, pwd);
+		con_ = driver->connect(
+			"tcp://" + host + ":" + std::to_string(port), user, password);
 		if (!con_) return false;
 		con_->setSchema(schema);
 		return true;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] connect failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] connect failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return false;
 	}
 }
 
 void Mysql::Close() {
-	if (con_) {
-		delete con_;
-		con_ = nullptr;
-	}
+	delete con_;
+	con_ = nullptr;
 }
 
-std::vector<ChatMessageRow> Mysql::QueryByUniqueId(
-	int sender_id, const std::string& unique_id) {
-	std::vector<ChatMessageRow> out;
-	if (!con_) return out;
+std::vector<ChatMessageRow> Mysql::QueryByClientMessageId(
+	int senderUserId, const std::string& clientMessageId) {
+	std::vector<ChatMessageRow> output;
+	if (!con_) return output;
 	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			std::string("SELECT ") + kMessageColumns +
-			"FROM chat_message WHERE sender_id = ? AND unique_id = ?"));
-		stmt->setInt(1, sender_id);
-		stmt->setString(2, unique_id);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
-		while (rows->next()) out.push_back(ReadMessageRow(*rows));
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] QueryByUniqueId failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		auto statement = std::unique_ptr<sql::PreparedStatement>(
+			con_->prepareStatement(std::string("SELECT ") + kMessageColumns +
+				"FROM chat_messages m LEFT JOIN message_resources r "
+				"ON r.message_id=m.message_id "
+				"WHERE m.sender_user_id=? AND m.client_message_id=?"));
+		statement->setInt(1, senderUserId);
+		statement->setString(2, clientMessageId);
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
+		while (rows->next()) output.push_back(ReadMessageRow(*rows));
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] QueryByClientMessageId failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 	}
-	return out;
+	return output;
 }
 
-std::vector<ChatMessageRow> Mysql::QueryByMessageId(std::int64_t message_id) {
-	std::vector<ChatMessageRow> out;
-	if (!con_) return out;
+std::vector<ChatMessageRow> Mysql::QueryMessageById(std::int64_t messageId) {
+	std::vector<ChatMessageRow> output;
+	if (!con_) return output;
 	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			std::string("SELECT ") + kMessageColumns +
-			"FROM chat_message WHERE message_id = ?"));
-		stmt->setInt64(1, message_id);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
-		while (rows->next()) out.push_back(ReadMessageRow(*rows));
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] QueryByMessageId failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		auto statement = std::unique_ptr<sql::PreparedStatement>(
+			con_->prepareStatement(std::string("SELECT ") + kMessageColumns +
+				"FROM chat_messages m LEFT JOIN message_resources r "
+				"ON r.message_id=m.message_id WHERE m.message_id=?"));
+		statement->setInt64(1, messageId);
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
+		while (rows->next()) output.push_back(ReadMessageRow(*rows));
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] QueryMessageById failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 	}
-	return out;
+	return output;
 }
 
-long long Mysql::CountByUniqueId(const std::string& unique_id) {
+long long Mysql::CountByClientMessageId(const std::string& clientMessageId) {
 	if (!con_) return -1;
 	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"SELECT COUNT(*) AS c FROM chat_message WHERE unique_id = ?"));
-		stmt->setString(1, unique_id);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+			"SELECT COUNT(*) AS c FROM chat_messages WHERE client_message_id=?"));
+		statement->setString(1, clientMessageId);
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
 		return rows->next() ? rows->getInt64("c") : 0;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] CountByUniqueId failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] CountByClientMessageId failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return -1;
 	}
 }
 
-long long Mysql::CountByUniqueIdLike(const std::string& pattern) {
+long long Mysql::CountByClientMessageIdLike(const std::string& pattern) {
 	if (!con_) return -1;
 	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"SELECT COUNT(*) AS c FROM chat_message WHERE unique_id LIKE ?"));
-		stmt->setString(1, pattern);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+			"SELECT COUNT(*) AS c FROM chat_messages WHERE client_message_id LIKE ?"));
+		statement->setString(1, pattern);
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
 		return rows->next() ? rows->getInt64("c") : 0;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] CountByUniqueIdLike failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] CountByClientMessageIdLike failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return -1;
 	}
 }
 
-long long Mysql::CountVisibleByUniqueIdLike(const std::string& pattern) {
+long long Mysql::CountPublishedByClientMessageIdLike(const std::string& pattern) {
 	if (!con_) return -1;
 	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"SELECT COUNT(*) AS c FROM chat_message "
-			"WHERE unique_id LIKE ? AND recv_seq IS NOT NULL"));
-		stmt->setString(1, pattern);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+			"SELECT COUNT(*) AS c FROM chat_messages "
+			"WHERE client_message_id LIKE ? AND status=1"));
+		statement->setString(1, pattern);
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
 		return rows->next() ? rows->getInt64("c") : 0;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] CountVisibleByUniqueIdLike failed: %s (code=%d)\n",
-			e.what(), e.getErrorCode());
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] CountPublishedByClientMessageIdLike failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return -1;
 	}
 }
 
-long long Mysql::DeleteByUniqueIdLike(const std::string& pattern) {
+long long Mysql::DeleteTestDataByClientIdLike(const std::string& pattern) {
 	if (!con_) return -1;
-	try {
-		auto results = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"DELETE r FROM chat_message r "
-			"INNER JOIN chat_message a ON r.related_message_id = a.message_id "
-			"WHERE a.unique_id LIKE ?"));
-		results->setString(1, pattern);
-		const long long result_rows = static_cast<long long>(results->executeUpdate());
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"DELETE FROM chat_message WHERE unique_id LIKE ?"));
-		stmt->setString(1, pattern);
-		return result_rows + static_cast<long long>(stmt->executeUpdate());
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] DeleteByUniqueIdLike failed: %s (code=%d)\n", e.what(), e.getErrorCode());
-		return -1;
-	}
-}
-
-bool Mysql::SnapshotFriendPair(int first_uid, int second_uid, FriendPairState& state) {
-	state = FriendPairState{};
-	if (!con_) return false;
-	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"SELECT self_id, friend_id, back FROM friend WHERE "
-			"(self_id = ? AND friend_id = ?) OR (self_id = ? AND friend_id = ?)"));
-		stmt->setInt(1, first_uid);
-		stmt->setInt(2, second_uid);
-		stmt->setInt(3, second_uid);
-		stmt->setInt(4, first_uid);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
-		while (rows->next()) {
-			if (rows->getInt("self_id") == first_uid) {
-				state.first_to_second = true;
-				state.first_remark = rows->getString("back");
-			} else {
-				state.second_to_first = true;
-				state.second_remark = rows->getString("back");
-			}
-		}
-		return true;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] SnapshotFriendPair failed: %s (code=%d)\n",
-			e.what(), e.getErrorCode());
-		return false;
-	}
-}
-
-bool Mysql::RemoveFriendPair(int first_uid, int second_uid) {
-	if (!con_) return false;
-	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"DELETE FROM friend WHERE (self_id = ? AND friend_id = ?) "
-			"OR (self_id = ? AND friend_id = ?)"));
-		stmt->setInt(1, first_uid);
-		stmt->setInt(2, second_uid);
-		stmt->setInt(3, second_uid);
-		stmt->setInt(4, first_uid);
-		stmt->executeUpdate();
-		return true;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] RemoveFriendPair failed: %s (code=%d)\n",
-			e.what(), e.getErrorCode());
-		return false;
-	}
-}
-
-bool Mysql::RestoreFriendPair(int first_uid, int second_uid,
-	                          const FriendPairState& state) {
-	if (!con_) return false;
 	try {
 		con_->setAutoCommit(false);
-		auto clear = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"DELETE FROM friend WHERE (self_id = ? AND friend_id = ?) "
-			"OR (self_id = ? AND friend_id = ?)"));
-		clear->setInt(1, first_uid);
-		clear->setInt(2, second_uid);
-		clear->setInt(3, second_uid);
-		clear->setInt(4, first_uid);
-		clear->executeUpdate();
-
-		auto insert = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"INSERT INTO friend(self_id, friend_id, back) VALUES(?, ?, ?)"));
-		if (state.first_to_second) {
-			insert->setInt(1, first_uid);
-			insert->setInt(2, second_uid);
-			insert->setString(3, state.first_remark);
-			insert->executeUpdate();
-		}
-		if (state.second_to_first) {
-			insert->setInt(1, second_uid);
-			insert->setInt(2, first_uid);
-			insert->setString(3, state.second_remark);
-			insert->executeUpdate();
-		}
+		long long affected = 0;
+		auto deleteMessageEvents = std::unique_ptr<sql::PreparedStatement>(
+			con_->prepareStatement(
+				"DELETE e FROM user_events e INNER JOIN chat_messages m "
+				"ON m.message_id=e.message_id WHERE m.client_message_id LIKE ?"));
+		deleteMessageEvents->setString(1, pattern);
+		affected += deleteMessageEvents->executeUpdate();
+		auto deleteFriendEvents = std::unique_ptr<sql::PreparedStatement>(
+			con_->prepareStatement(
+				"DELETE e FROM user_events e INNER JOIN friend_requests f "
+				"ON f.friend_request_id=e.friend_request_id "
+				"WHERE f.client_request_id LIKE ?"));
+		deleteFriendEvents->setString(1, pattern);
+		affected += deleteFriendEvents->executeUpdate();
+		auto deleteMessages = std::unique_ptr<sql::PreparedStatement>(
+			con_->prepareStatement(
+				"DELETE FROM chat_messages WHERE client_message_id LIKE ?"));
+		deleteMessages->setString(1, pattern);
+		affected += deleteMessages->executeUpdate();
+		auto deleteRequests = std::unique_ptr<sql::PreparedStatement>(
+			con_->prepareStatement(
+				"DELETE FROM friend_requests WHERE client_request_id LIKE ?"));
+		deleteRequests->setString(1, pattern);
+		affected += deleteRequests->executeUpdate();
 		con_->commit();
 		con_->setAutoCommit(true);
-		return true;
-	} catch (const sql::SQLException& e) {
-		try {
-			con_->rollback();
-			con_->setAutoCommit(true);
-		} catch (...) {
-		}
-		std::printf("[mysql] RestoreFriendPair failed: %s (code=%d)\n",
-			e.what(), e.getErrorCode());
-		return false;
-	}
-}
-
-long long Mysql::CountFriendDirections(int first_uid, int second_uid) {
-	if (!con_) return -1;
-	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"SELECT COUNT(*) AS c FROM friend WHERE "
-			"(self_id = ? AND friend_id = ?) OR (self_id = ? AND friend_id = ?)"));
-		stmt->setInt(1, first_uid);
-		stmt->setInt(2, second_uid);
-		stmt->setInt(3, second_uid);
-		stmt->setInt(4, first_uid);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
-		return rows->next() ? rows->getInt64("c") : 0;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] CountFriendDirections failed: %s (code=%d)\n",
-			e.what(), e.getErrorCode());
+		return affected;
+	} catch (const sql::SQLException& error) {
+		try { con_->rollback(); con_->setAutoCommit(true); } catch (...) {}
+		std::printf("[mysql] DeleteTestDataByClientIdLike failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return -1;
 	}
 }
 
-std::vector<RecvRow> Mysql::QueryRecvRows(std::int64_t uid,
-	                                     std::uint64_t after_recv_seq,
-	                                     int limit) {
-	std::vector<RecvRow> out;
-	if (!con_) return out;
+bool Mysql::SnapshotFriendship(int firstUserId, int secondUserId,
+	FriendshipState& state) {
+	state = FriendshipState{};
+	if (!con_) return false;
 	try {
-		std::string sql =
-			"SELECT recv_seq, message_id FROM chat_message "
-			"WHERE recv_id = ? AND recv_seq > ? ORDER BY recv_seq ASC";
-		if (limit > 0) sql += " LIMIT " + std::to_string(limit);
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(sql));
-		stmt->setInt64(1, uid);
-		stmt->setUInt64(2, after_recv_seq);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
-		while (rows->next()) {
-			RecvRow row;
-			row.recv_seq = static_cast<std::uint64_t>(rows->getInt64("recv_seq"));
-			row.message_id = static_cast<std::uint64_t>(rows->getInt64("message_id"));
-			out.push_back(row);
-		}
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] QueryRecvRows failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+		int lower = 0, higher = 0;
+		OrderedPair(firstUserId, secondUserId, lower, higher);
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+			"SELECT 1 FROM friendships WHERE lower_user_id=? AND higher_user_id=?"));
+		statement->setInt(1, lower);
+		statement->setInt(2, higher);
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
+		state.exists = rows->next();
+		return true;
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] SnapshotFriendship failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
+		return false;
 	}
-	return out;
 }
 
-std::uint64_t Mysql::LastRecvSeq(std::int64_t uid) {
+bool Mysql::RemoveFriendship(int firstUserId, int secondUserId) {
+	if (!con_) return false;
+	try {
+		int lower = 0, higher = 0;
+		OrderedPair(firstUserId, secondUserId, lower, higher);
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+			"DELETE FROM friendships WHERE lower_user_id=? AND higher_user_id=?"));
+		statement->setInt(1, lower);
+		statement->setInt(2, higher);
+		statement->executeUpdate();
+		return true;
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] RemoveFriendship failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
+		return false;
+	}
+}
+
+bool Mysql::RestoreFriendship(int firstUserId, int secondUserId,
+	const FriendshipState& state) {
+	if (!RemoveFriendship(firstUserId, secondUserId)) return false;
+	if (!state.exists) return true;
+	try {
+		int lower = 0, higher = 0;
+		OrderedPair(firstUserId, secondUserId, lower, higher);
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+			"INSERT INTO friendships(lower_user_id,higher_user_id) VALUES(?,?)"));
+		statement->setInt(1, lower);
+		statement->setInt(2, higher);
+		statement->executeUpdate();
+		return true;
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] RestoreFriendship failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
+		return false;
+	}
+}
+
+long long Mysql::CountFriendship(int firstUserId, int secondUserId) {
+	FriendshipState state;
+	return SnapshotFriendship(firstUserId, secondUserId, state)
+		? (state.exists ? 1 : 0) : -1;
+}
+
+std::vector<UserEventRow> Mysql::QueryUserEvents(std::int64_t userId,
+	std::uint64_t afterEventSeq, int limit) {
+	std::vector<UserEventRow> output;
+	if (!con_) return output;
+	try {
+		std::string query =
+			"SELECT event_seq,event_type,message_id,friend_request_id "
+			"FROM user_events WHERE recipient_user_id=? AND event_seq>? "
+			"ORDER BY event_seq ASC";
+		if (limit > 0) query += " LIMIT " + std::to_string(limit);
+		auto statement = std::unique_ptr<sql::PreparedStatement>(
+			con_->prepareStatement(query));
+		statement->setInt64(1, userId);
+		statement->setUInt64(2, afterEventSeq);
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
+		while (rows->next()) {
+			UserEventRow row;
+			row.event_seq = static_cast<std::uint64_t>(rows->getInt64("event_seq"));
+			row.event_type = rows->getInt("event_type");
+			row.message_id = rows->isNull("message_id")
+				? 0 : static_cast<std::uint64_t>(rows->getInt64("message_id"));
+			row.friend_request_id = rows->isNull("friend_request_id")
+				? 0 : static_cast<std::uint64_t>(rows->getInt64("friend_request_id"));
+			output.push_back(row);
+		}
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] QueryUserEvents failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
+	}
+	return output;
+}
+
+std::uint64_t Mysql::LastEventSeq(std::int64_t userId) {
 	if (!con_) return 0;
 	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"SELECT last_recv_seq FROM user WHERE uid = ?"));
-		stmt->setInt64(1, uid);
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+			"SELECT last_event_seq FROM users WHERE user_id=?"));
+		statement->setInt64(1, userId);
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
 		return rows->next()
-			? static_cast<std::uint64_t>(rows->getInt64("last_recv_seq")) : 0;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] LastRecvSeq failed: %s (code=%d)\n", e.what(), e.getErrorCode());
+			? static_cast<std::uint64_t>(rows->getInt64("last_event_seq")) : 0;
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] LastEventSeq failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return 0;
 	}
 }
 
-long long Mysql::GetChatMessageAutoIncrement() {
+long long Mysql::GetChatMessagesAutoIncrement() {
 	if (!con_) return -1;
 	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
 			"SELECT AUTO_INCREMENT FROM information_schema.TABLES "
-			"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_message'"));
-		auto rows = std::unique_ptr<sql::ResultSet>(stmt->executeQuery());
+			"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='chat_messages'"));
+		auto rows = std::unique_ptr<sql::ResultSet>(statement->executeQuery());
 		return rows->next() ? rows->getInt64("AUTO_INCREMENT") : -1;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] GetChatMessageAutoIncrement failed: %s (code=%d)\n",
-			e.what(), e.getErrorCode());
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] GetChatMessagesAutoIncrement failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return -1;
 	}
 }
 
-bool Mysql::SetChatMessageAutoIncrement(std::int64_t value) {
+bool Mysql::SetChatMessagesAutoIncrement(std::int64_t value) {
 	if (!con_) return false;
 	try {
-		auto stmt = std::unique_ptr<sql::Statement>(con_->createStatement());
-		stmt->execute("ALTER TABLE chat_message AUTO_INCREMENT = " + std::to_string(value));
+		auto statement = std::unique_ptr<sql::Statement>(con_->createStatement());
+		statement->execute(
+			"ALTER TABLE chat_messages AUTO_INCREMENT=" + std::to_string(value));
 		return true;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] SetChatMessageAutoIncrement failed: %s (code=%d)\n",
-			e.what(), e.getErrorCode());
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] SetChatMessagesAutoIncrement failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return false;
 	}
 }
 
-bool Mysql::BackdateMessageUpdatedAt(std::int64_t message_id, int days_ago) {
+bool Mysql::BackdateMessageCreatedAt(std::int64_t messageId, int daysAgo) {
 	if (!con_) return false;
 	try {
-		auto stmt = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
-			"UPDATE chat_message SET updated_at = "
-			"DATE_SUB(NOW(), INTERVAL ? DAY) WHERE message_id = ?"));
-		stmt->setInt(1, days_ago);
-		stmt->setInt64(2, message_id);
-		stmt->executeUpdate();
+		auto statement = std::unique_ptr<sql::PreparedStatement>(con_->prepareStatement(
+			"UPDATE chat_messages SET created_at=DATE_SUB(NOW(),INTERVAL ? DAY) "
+			"WHERE message_id=?"));
+		statement->setInt(1, daysAgo);
+		statement->setInt64(2, messageId);
+		statement->executeUpdate();
 		return true;
-	} catch (const sql::SQLException& e) {
-		std::printf("[mysql] BackdateMessageUpdatedAt failed: %s (code=%d)\n",
-			e.what(), e.getErrorCode());
+	} catch (const sql::SQLException& error) {
+		std::printf("[mysql] BackdateMessageCreatedAt failed: %s (code=%d)\n",
+			error.what(), error.getErrorCode());
 		return false;
 	}
 }

@@ -31,13 +31,14 @@ ApplyFriendPage::~ApplyFriendPage()
 void ApplyFriendPage::AddNewApply(std::shared_ptr<AddFriendApply> apply)
 {
 	//std::unordered_map::contains 是 C++20，客户端固定 C++11，用 count 判重
-	if (!apply || apply->_message_id <= 0 || _unauth_items.count(apply->_message_id) > 0) {
+	if (!apply || apply->_friend_request_id <= 0
+		|| _unauth_items.count(apply->_friend_request_id) > 0) {
 		return;
 	}
 	auto* apply_item = new ApplyFriendItem();
     auto apply_info = std::make_shared<ApplyInfo>(apply->_from_uid,
 		 apply->_name, apply->_desc, apply->_icon, apply->_nick, apply->_sex,
-		 static_cast<int>(FriendRequestStatus::PENDING), apply->_message_id);
+		 static_cast<int>(FriendRequestStatus::PENDING), apply->_friend_request_id);
     apply_item->SetInfo( apply_info);
 	QListWidgetItem* item = new QListWidgetItem;
 	//qDebug()<<"chat_user_wid sizeHint is " << chat_user_wid->sizeHint();
@@ -46,7 +47,7 @@ void ApplyFriendPage::AddNewApply(std::shared_ptr<AddFriendApply> apply)
 	ui->apply_friend_list->insertItem(0,item);
 	ui->apply_friend_list->setItemWidget(item, apply_item);
 	apply_item->ShowStatus(FriendRequestStatus::PENDING);
-	_unauth_items[apply->_message_id] = apply_item;
+	_unauth_items[apply->_friend_request_id] = apply_item;
 	//收到审核好友信号
     connect(apply_item, &ApplyFriendItem::sig_auth_friend, [this](std::shared_ptr<ApplyInfo> apply_info) {
 		auto* authFriend = new AuthenFriend(this);
@@ -80,7 +81,7 @@ void ApplyFriendPage::loadApplyList()
 		const auto status = static_cast<FriendRequestStatus>(apply->_status);
 		apply_item->ShowStatus(status);
 		if (status == FriendRequestStatus::PENDING) {
-			_unauth_items[apply_item->GetMessageId()] = apply_item;
+			_unauth_items[apply_item->GetFriendRequestId()] = apply_item;
 		}
 
         //收到审核好友信号
@@ -97,11 +98,11 @@ void ApplyFriendPage::slot_auth_rsp(std::shared_ptr<AuthRsp> auth_rsp) {
 	Q_UNUSED(auth_rsp);
 }
 
-void ApplyFriendPage::slot_request_handled(qint64 messageId, int businessStatus)
+void ApplyFriendPage::slot_request_handled(qint64 friendRequestId, int status)
 {
-	auto found = _unauth_items.find(messageId);
+	auto found = _unauth_items.find(friendRequestId);
 	if (found == _unauth_items.end()) return;
-	found->second->ShowStatus(static_cast<FriendRequestStatus>(businessStatus));
+	found->second->ShowStatus(static_cast<FriendRequestStatus>(status));
 	_unauth_items.erase(found);
 }
 

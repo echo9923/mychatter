@@ -48,7 +48,7 @@ public:
     void ContinueUploadFile(QString unique_name);
     void ContinueDownloadFile(QString unique_name);
     //复制文件到用户资源目录（发送完成后的本地归档）
-    void CopyFile(QString src_path, QString dst_path, QString dst_dir);
+    bool CopyFile(QString src_path, QString dst_path, QString dst_dir);
 private:
     void initHandlers();
     // 1502 Resource 登录回包
@@ -106,15 +106,15 @@ signals:
      void sig_batch_send(std::shared_ptr<MsgInfo>);
      void sig_update_download_progress(std::shared_ptr<MsgInfo>);
      void sig_download_finish(std::shared_ptr<MsgInfo>,QString file_path);
-     //资源上传收全（1506 resource_status=1），OutboxDispatcher 据此 confirmResourceSent
-     void sig_resource_upload_done(QString unique_name);
+     //资源上传收全（1506 status=1），OutboxDispatcher 据此 confirmResourceSent
+     void sig_resource_upload_done(QString unique_name, QString local_file_path);
      //资源上传永久失败（2115/2116 等），OutboxDispatcher 据此 markSendFailed
      void sig_resource_upload_failed(QString unique_name, int error);
      //资源下载失败/终态（UI 据此把气泡置为失败/已过期）
      void sig_download_failed(std::shared_ptr<MsgInfo>, int error);
      //1507/1508 上传进度查询回包（OutboxDispatcher 重启恢复续传用）
      void sig_upload_progress_rsp(qint64 message_id, int error, qint64 server_offset,
-         int resource_status);
+          int status);
      //3.2 Resource 登录(1502)成功信号
      void sig_resource_login_success();
      //3.2 Resource 登录(1502)失败信号（携带用户可见错误）

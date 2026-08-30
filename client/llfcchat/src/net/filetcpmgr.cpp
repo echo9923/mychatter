@@ -286,7 +286,7 @@ void FileTcpMgr::initHandlers()
 
     // ---------- 资源上传通道（1505/1506 + 1507/1508，offset+SHA-256） ----------
 
-    //1506 上传分片回包：{error, message_id:"<str>", server_offset:"<str>", resource_status}
+    //1506 上传分片回包：{error, message_id:"<str>", server_offset:"<str>", status}
     _handlers.insert(ID_RESOURCE_CHUNK_UPLOAD_RSP, &FileTcpMgr::handleResourceChunkUploadRsp);
 
     //1508 上传进度查询回包（OutboxDispatcher 重启/重连恢复续传用）
@@ -294,8 +294,8 @@ void FileTcpMgr::initHandlers()
 
     // ---------- 资源下载通道（1509/1510 + 1511/1512，offset+SHA-256） ----------
 
-    //1510 下载信息回包：{error, message_id, file_name, total_size, content_hash, mime_type,
-    //msg_type, resource_status}
+    //1510 下载信息回包：{error, message_id, original_file_name, file_size_bytes,
+    //sha256, mime_type, message_type, status}
     _handlers.insert(ID_RESOURCE_DOWN_INFO_RSP, &FileTcpMgr::handleResourceDownInfoRsp);
 
     //1512 分片下载回包：{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
@@ -511,8 +511,8 @@ void FileTcpMgr::handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data
     const qint64 message_id = recvObj["message_id"].toVariant().toLongLong();
     const int err = recvObj["error"].toInt();
     const qint64 server_offset = recvObj["server_offset"].toVariant().toLongLong();
-    const int resource_status = recvObj.contains("resource_status")
-        ? recvObj["resource_status"].toInt() : -1;
+    const int status = recvObj.contains("status")
+        ? recvObj["status"].toInt() : -1;
     auto file_info = UserMgr::GetInstance()->GetTransFileByMsgId(message_id);
     if (!file_info) {
         qDebug() << "[FileTcpMgr] 1506 for unknown message " << message_id;
@@ -541,7 +541,7 @@ void FileTcpMgr::handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data
         file_info->_seq = file_info->_last_confirmed_seq + 1;
         file_info->_rsp_size = qMin(server_offset, file_info->_total_size);
 
-        if (resource_status == RESOURCE_READY
+        if (status == static_cast<int>(MessageStatus::Published)
             || file_info->_rsp_size >= file_info->_total_size) {
             //上传收全：发送方本地归档一份到资源目录，通知 UI/Outbox
             auto uid = UserMgr::GetInstance()->GetUid();
@@ -549,10 +549,16 @@ void FileTcpMgr::handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data
             QString res_dir = storageDir + "/user/" + QString::number(uid)
                 + "/resources/" + QString::number(file_info->_sender);
             QString dest_path = res_dir + '/' + QString::number(message_id);
-            CopyFile(file_info->_text_or_url, dest_path, res_dir);
+            if (!CopyFile(file_info->_text_or_url, dest_path, res_dir)) {
+                file_info->_transfer_state = TransferState::Failed;
+                emit sig_resource_upload_failed(name, ErrorCodes::ERR_NETWORK);
+                UserMgr::GetInstance()->RmvTransFileByName(name);
+                return;
+            }
+            file_info->_local_download_path = dest_path;
             file_info->_transfer_state = TransferState::Completed;
             emit sig_update_upload_progress(file_info);
-            emit sig_resource_upload_done(name);
+            emit sig_resource_upload_done(name, dest_path);
             UserMgr::GetInstance()->RmvTransFileByName(name);
             //窗口腾出后继续下一个排队文件（由 OutboxDispatcher 重新驱动，不再自动轮转）
             return;
@@ -597,7 +603,7 @@ void FileTcpMgr::handleResourceUploadProgressRsp(ReqId id, int len, QByteArray d
         recvObj["message_id"].toVariant().toLongLong(),
         recvObj.contains("error") ? recvObj["error"].toInt() : ErrorCodes::ERR_JSON,
         recvObj["server_offset"].toVariant().toLongLong(),
-        recvObj.contains("resource_status") ? recvObj["resource_status"].toInt() : -1);
+        recvObj.contains("status") ? recvObj["status"].toInt() : -1);
 }
 
 void FileTcpMgr::handleResourceDownInfoRsp(ReqId id, int len, QByteArray data)
@@ -633,16 +639,17 @@ void FileTcpMgr::handleResourceDownInfoRsp(ReqId id, int len, QByteArray data)
         return;
     }
 
-    //元数据就位（file_name 为原始文件名，仅展示；缓存按 message_id 隔离）
-    file_info->_total_size = jsonObj["total_size"].toString().toLongLong();
-    file_info->_content_hash = jsonObj["content_hash"].toString();
+    //元数据就位（原始文件名仅展示；缓存按 message_id 隔离）
+    file_info->_total_size = jsonObj["file_size_bytes"].toString().toLongLong();
+    file_info->_content_hash = jsonObj["sha256"].toString();
     file_info->_max_seq = (file_info->_total_size + MAX_FILE_LEN - 1) / MAX_FILE_LEN;
     const QString cache_dir = resourceCacheDir(message_id);
     QDir dir(cache_dir);
     if (!dir.exists()) {
         dir.mkpath(".");
     }
-    const QString file_name = jsonObj["file_name"].toString();
+    const QString file_name = jsonObj["original_file_name"].toString();
+    file_info->_unique_name = file_name;
     const QString part_path = cache_dir + '/' + file_name + ".part";
 
     //从本地 .part 实际大小续传（首传为 0）
@@ -795,20 +802,16 @@ QString FileTcpMgr::resourceCacheDir(qint64 message_id)
         + "/cache/" + QString::number(message_id);
 }
 
-void FileTcpMgr::CopyFile(QString src_path, QString dst_path, QString dst_dir) {
-    //将文件移动到用户自己的资源目录
-
+bool FileTcpMgr::CopyFile(QString src_path, QString dst_path, QString dst_dir) {
     QDir resDir(dst_dir);
     if (!resDir.exists()) {
-        resDir.mkpath(".");
+        if (!resDir.mkpath(".")) return false;
     }
-
-    if (QFile::copy(src_path, dst_path)) {
-        qDebug() << "文件拷贝成功";
+    if (QFileInfo(src_path).absoluteFilePath() == QFileInfo(dst_path).absoluteFilePath()) {
+        return QFile::exists(dst_path);
     }
-    else {
-        qDebug() << "文件拷贝失败";
-    }
+    QFile::remove(dst_path);
+    return QFile::copy(src_path, dst_path);
 }
 
 void FileTcpMgr::StartResourceDownload(std::shared_ptr<MsgInfo> msg_info) {

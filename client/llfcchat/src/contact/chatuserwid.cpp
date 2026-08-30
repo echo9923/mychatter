@@ -27,8 +27,8 @@ QSize ChatUserWid::sizeHint() const
 
 void ChatUserWid::SetChatData(std::shared_ptr<ChatThreadData> chat_data) {
     _chat_data = chat_data;
-    auto other_id = _chat_data->GetOtherId();
-    auto other_info = UserMgr::GetInstance()->GetFriendById(other_id);
+    auto peer_user_id = _chat_data->GetPeerUserId();
+    auto other_info = UserMgr::GetInstance()->GetFriendById(peer_user_id);
     // 加载图片
 
     QString head_icon = UserMgr::GetInstance()->GetIcon();
@@ -135,5 +135,4 @@ void ChatUserWid::updateLastMsg(std::vector<std::shared_ptr<TextChatData>> msgs)
     _chat_data->SetLastMsgId(last_msg_id);
     ui->user_chat_lb->setText(last_msg);
 }
-
 

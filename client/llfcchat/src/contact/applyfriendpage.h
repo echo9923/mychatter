@@ -28,7 +28,7 @@ private:
     std::unordered_map<qint64, ApplyFriendItem*> _unauth_items;
 public slots:
     void slot_auth_rsp(std::shared_ptr<AuthRsp> );
-	void slot_request_handled(qint64 messageId, int businessStatus);
+	void slot_request_handled(qint64 friendRequestId, int status);
 signals:
     void sig_show_search(bool);
 };

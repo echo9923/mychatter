@@ -76,6 +76,9 @@ public:
 
 	/// Serialize a persisted message for 1302, 1406 and 1701.
 	static json BuildMessageEnvelope(const std::shared_ptr<ChatMessage>& msg);
+	static json BuildFriendRequestEnvelope(const std::shared_ptr<FriendRequest>& request,
+		int recipient_user_id);
+	static json BuildUserEventEnvelope(const UserEvent& event, int recipient_user_id);
 
 private:
 	/// 私有构造函数，启动工作线程并注册所有消息回调
@@ -160,7 +163,8 @@ private:
 	 * @param list [out] 输出的申请信息列表
 	 * @return 是否成功获取
 	 */
-	bool GetFriendApplyInfo(int to_uid, std::vector<std::shared_ptr<ApplyInfo>>& list);
+	bool GetFriendApplyInfo(int target_user_id,
+		std::vector<std::shared_ptr<ApplyInfo>>& list);
 
 	/**
 	 * @brief 获取指定用户的好友列表
@@ -168,7 +172,7 @@ private:
 	 * @param user_list [out] 输出的好友信息列表
 	 * @return 是否成功获取
 	 */
-	bool GetFriendList(int self_id, std::vector<std::shared_ptr<UserInfo>> & user_list);
+	bool GetFriendList(int user_id, std::vector<ContactInfo>& contacts);
 
 	/**
 	 * @brief 处理加载用户聊天会话列表请求（分页）
@@ -210,21 +214,15 @@ private:
 	/**
 	 * @brief 增量消息同步处理器（1405/1406）
 	 *
-	 * UID 来自认证 Session；after_recv_seq 按十进制字符串解析，limit clamp
-	 * [1,200]。响应按 recv_seq 升序返回完整 envelope、next_recv_seq 和 has_more。
+	 * UID 来自认证 Session；after_event_seq 按十进制字符串解析，limit clamp
+	 * [1,200]。响应按 event_seq 升序返回业务投影、next_event_seq 和 has_more。
 	 */
 	void DealSyncMessage(std::shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 
 	/**
-	 * @brief 将一条 ChatMessage 序列化为统一 envelope（业务响应、1701、1406 共用）
-	 *
-	 * 固定字段：message_id,unique_id,thread_id,fromuid,touid,msg_type,content,
-	 * content_size,chat_time,status。message_id/thread_id/content_size 一律十进制
-	 * 字符串，避免 Qt JSON number 对 64 位值丢精度。
-	 * @param msg 待序列化的消息
-	 * @return 填充好的 envelope JSON 对象
+	 * @brief 将一条 user_events 记录解析为聊天或好友业务投影并发送 1701
 	 */
-	void DeliverUserMessage(const std::shared_ptr<ChatMessage>& msg);
+	void DeliverUserEvent(const UserEvent& event, int recipient_user_id);
 	
 	/// client/gRPC 入口停机标志：置 true 后 PostMsgToQue/PostToUser 拒绝新投递
 	std::atomic<bool> _ingress_stopping{false};

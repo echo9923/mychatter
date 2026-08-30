@@ -95,7 +95,7 @@ std::shared_ptr<Channel> ChatServerGrpcClient::ResolveChannel(
 }
 
 NotifyResult ChatServerGrpcClient::NotifyUserMessage(long long message_id,
-	int to_uid, std::string chatserver)
+	int event_type, int to_uid, std::string chatserver)
 {
 	NotifyResult result{ grpc::StatusCode::OK, ErrorCodes::Success };
 
@@ -119,6 +119,7 @@ NotifyResult ChatServerGrpcClient::NotifyUserMessage(long long message_id,
 	//避免展示字段在 gRPC 层与 DB 真值分叉
 	NotifyUserMessageReq request;
 	request.set_message_id(message_id);
+	request.set_event_type(event_type);
 	request.set_to_uid(to_uid);
 
 	for (int attempt = 1; attempt <= max_attempts; ++attempt) {

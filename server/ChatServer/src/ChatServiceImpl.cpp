@@ -13,23 +13,28 @@ grpc::Status ChatServiceImpl::NotifyUserMessage(
 	message::NotifyUserMessageRsp* response)
 {
 	response->set_message_id(request->message_id());
+	response->set_friend_request_id(request->friend_request_id());
 	const int uid = request->to_uid();
 	if (!UserMgr::GetInstance()->GetSession(uid)) {
 		response->set_error(ErrorCodes::RECIPIENT_OFFLINE);
 		return grpc::Status::OK;
 	}
 
+	const int event_type = request->event_type();
 	const std::int64_t message_id = request->message_id();
-	if (!LogicSystem::GetInstance()->PostToUser(uid, [uid, message_id]() {
+	const std::int64_t friend_request_id = request->friend_request_id();
+	if (!LogicSystem::GetInstance()->PostToUser(uid,
+		[uid, event_type, message_id, friend_request_id]() {
 		auto session = UserMgr::GetInstance()->GetSession(uid);
 		if (!session) return;
-		auto msg = MysqlMgr::GetInstance()->GetChatMsgById(message_id);
-		if (!msg || msg->recv_id != uid || msg->recv_seq == 0) {
-			std::cerr << "NotifyUserMessage: invalid message " << message_id
+		UserEvent event;
+		if (!MysqlMgr::GetInstance()->GetUserEvent(uid, event_type, message_id,
+			friend_request_id, event)) {
+			std::cerr << "NotifyUserMessage: invalid event for message " << message_id
 				<< " for uid " << uid << std::endl;
 			return;
 		}
-		auto envelope = LogicSystem::BuildMessageEnvelope(msg);
+		auto envelope = LogicSystem::BuildUserEventEnvelope(event, uid);
 		envelope["error"] = ErrorCodes::Success;
 		session->Send(envelope.dump(), ID_NOTIFY_USER_MESSAGE);
 	})) {
