@@ -399,7 +399,7 @@ QWidget* ChatPage::makeResourceBubble(ChatMsgType type, const std::shared_ptr<Ms
         auto file_bubble = new FileBubble(info->_unique_name, info->_total_size, role);
         file_bubble->setMsgInfo(info);
         file_bubble->setState(info->_transfer_state);
-        //接收方向：下载按钮触发 1511；暂停/继续复用既有链路
+        //接收方向：下载按钮触发 1509；暂停/继续复用既有链路
         connect(file_bubble, &FileBubble::downloadRequested, this,
             [this](QString unique_name) {
                 auto info = UserMgr::GetInstance()->GetTransFileByName(unique_name);
@@ -546,9 +546,11 @@ void ChatPage::on_send_btn_clicked() {
     }
 }
 
-//入库提交成功：上屏（sending 气泡）+ 通知 Dispatcher 立即派发
-void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto)
+//入库提交成功：上屏（sending 气泡）。可靠派发由 Dispatcher 订阅同一信号
+//自行登记，不再经由 ChatPage 中转——聊天页关闭不影响已落库消息的发送
+void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO entry)
 {
+    Q_UNUSED(entry);
     auto iter = _pending_sends.find(dto.client_message_id);
     if (iter == _pending_sends.end()) {
         return;
@@ -630,9 +632,6 @@ void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto)
             delete pChatItem;
         }
     }
-
-    //通知 Dispatcher 立即派发 outbox 条目
-    OutboxDispatcher::GetInstance()->notifySendEnqueued(dto);
 }
 
 

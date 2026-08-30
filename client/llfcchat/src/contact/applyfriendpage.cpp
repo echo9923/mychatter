@@ -30,7 +30,8 @@ ApplyFriendPage::~ApplyFriendPage()
 
 void ApplyFriendPage::AddNewApply(std::shared_ptr<AddFriendApply> apply)
 {
-	if (!apply || apply->_message_id <= 0 || _unauth_items.contains(apply->_message_id)) {
+	//std::unordered_map::contains 是 C++20，客户端固定 C++11，用 count 判重
+	if (!apply || apply->_message_id <= 0 || _unauth_items.count(apply->_message_id) > 0) {
 		return;
 	}
 	auto* apply_item = new ApplyFriendItem();

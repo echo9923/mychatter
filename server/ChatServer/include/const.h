@@ -65,7 +65,7 @@ enum ErrorCodes {
  * 消息协议格式：[2字节消息类型][2字节消息长度][数据体]
  * 数值唯一来源 proto/protocol_ids.h（llfc_proto 命名空间）。
  * 编号规则：百位=功能域（11连接/12好友/13聊天/14同步/15资源创建与通知），
- * 奇数=发起方（请求或通知），偶数=回包，同一动作 REQ→RSP→NOTIFY 连号。
+ * 奇数=发起方（请求或通知），偶数=回包；请求/响应连续成对编号。
  */
 enum MSG_TYPES {
 	MSG_CHAT_LOGIN = llfc_proto::MSG_CHAT_LOGIN,          ///< 用户登录请求 1101
@@ -74,8 +74,8 @@ enum MSG_TYPES {
 	ID_SEARCH_USER_RSP = llfc_proto::MSG_SEARCH_USER_RSP, ///< 搜索用户响应 1202
 	ID_ADD_FRIEND_REQ = llfc_proto::MSG_ADD_FRIEND_REQ,   ///< 申请添加好友请求 1203
 	ID_ADD_FRIEND_RSP  = llfc_proto::MSG_ADD_FRIEND_RSP,  ///< 申请添加好友响应 1204
-	ID_HANDLE_FRIEND_REQ = llfc_proto::MSG_HANDLE_FRIEND_REQ, ///< 处理好友申请请求 1207
-	ID_HANDLE_FRIEND_RSP = llfc_proto::MSG_HANDLE_FRIEND_RSP, ///< 处理好友申请响应 1208
+	ID_HANDLE_FRIEND_REQ = llfc_proto::MSG_HANDLE_FRIEND_REQ, ///< 处理好友申请请求 1205
+	ID_HANDLE_FRIEND_RSP = llfc_proto::MSG_HANDLE_FRIEND_RSP, ///< 处理好友申请响应 1206
 	ID_TEXT_CHAT_MSG_REQ = llfc_proto::MSG_TEXT_CHAT_REQ, ///< 发送文本聊天消息请求 1301
 	ID_TEXT_CHAT_MSG_RSP = llfc_proto::MSG_TEXT_CHAT_RSP, ///< 文本聊天消息发送响应 1302
 	ID_NOTIFY_OFF_LINE_REQ = llfc_proto::MSG_NOTIFY_OFF_LINE, ///< 服务端通知用户被踢下线 1105
@@ -83,13 +83,13 @@ enum MSG_TYPES {
 	ID_HEARTBEAT_RSP = llfc_proto::MSG_HEARTBEAT_RSP,     ///< 服务端心跳响应 1104
 	ID_LOAD_CHAT_THREAD_REQ = llfc_proto::MSG_LOAD_CHAT_THREAD_REQ, ///< 加载聊天会话列表请求 1401
 	ID_LOAD_CHAT_THREAD_RSP = llfc_proto::MSG_LOAD_CHAT_THREAD_RSP, ///< 加载聊天会话列表响应 1402
-	ID_CREATE_PRIVATE_CHAT_REQ = llfc_proto::MSG_CREATE_PRIVATE_CHAT_REQ, ///< 创建私聊会话请求 1305
-	ID_CREATE_PRIVATE_CHAT_RSP = llfc_proto::MSG_CREATE_PRIVATE_CHAT_RSP, ///< 创建私聊会话响应 1306
+	ID_CREATE_PRIVATE_CHAT_REQ = llfc_proto::MSG_CREATE_PRIVATE_CHAT_REQ, ///< 创建私聊会话请求 1303
+	ID_CREATE_PRIVATE_CHAT_RSP = llfc_proto::MSG_CREATE_PRIVATE_CHAT_RSP, ///< 创建私聊会话响应 1304
 	ID_LOAD_CHAT_MSG_REQ = llfc_proto::MSG_LOAD_CHAT_MSG_REQ, ///< 加载历史聊天消息请求 1403（分页）
 	ID_LOAD_CHAT_MSG_RSP = llfc_proto::MSG_LOAD_CHAT_MSG_RSP, ///< 加载历史聊天消息响应 1404
 	ID_CREATE_RESOURCE_MSG_REQ = llfc_proto::MSG_CREATE_RESOURCE_REQ, ///< 创建资源消息请求 1503（图片/文件统一，元数据先行）
 	ID_CREATE_RESOURCE_MSG_RSP = llfc_proto::MSG_CREATE_RESOURCE_RSP, ///< 创建资源消息响应 1504（返回 message_id，resource_status=0）
-	// 1507~1514 分片上传/进度查询/下载信息/分片下载由 ResourceServer 处理，不在此声明
+	// 1505~1512 分片上传/进度查询/下载信息/分片下载由 ResourceServer 处理，不在此声明
 	ID_SYNC_USER_MESSAGE_REQ = llfc_proto::MSG_SYNC_USER_MESSAGE_REQ, ///< 统一消息同步请求 1405
 	ID_SYNC_USER_MESSAGE_RSP = llfc_proto::MSG_SYNC_USER_MESSAGE_RSP, ///< 统一消息同步响应 1406
 	ID_NOTIFY_USER_MESSAGE = llfc_proto::MSG_NOTIFY_USER_MESSAGE ///< 统一实时消息通知 1701
@@ -110,11 +110,11 @@ inline short ReqToRspId(short req_id) {
 	case MSG_CHAT_LOGIN:               return MSG_CHAT_LOGIN_RSP;          // 1101 -> 1102
 	case ID_SEARCH_USER_REQ:           return ID_SEARCH_USER_RSP;          // 1201 -> 1202
 	case ID_ADD_FRIEND_REQ:            return ID_ADD_FRIEND_RSP;           // 1203 -> 1204
-	case ID_HANDLE_FRIEND_REQ:         return ID_HANDLE_FRIEND_RSP;        // 1207 -> 1208
+	case ID_HANDLE_FRIEND_REQ:         return ID_HANDLE_FRIEND_RSP;        // 1205 -> 1206
 	case ID_TEXT_CHAT_MSG_REQ:         return ID_TEXT_CHAT_MSG_RSP;        // 1301 -> 1302
 	case ID_HEART_BEAT_REQ:            return ID_HEARTBEAT_RSP;            // 1103 -> 1104
 	case ID_LOAD_CHAT_THREAD_REQ:      return ID_LOAD_CHAT_THREAD_RSP;     // 1401 -> 1402
-	case ID_CREATE_PRIVATE_CHAT_REQ:   return ID_CREATE_PRIVATE_CHAT_RSP;  // 1305 -> 1306
+	case ID_CREATE_PRIVATE_CHAT_REQ:   return ID_CREATE_PRIVATE_CHAT_RSP;  // 1303 -> 1304
 	case ID_LOAD_CHAT_MSG_REQ:         return ID_LOAD_CHAT_MSG_RSP;        // 1403 -> 1404
 	case ID_CREATE_RESOURCE_MSG_REQ:   return ID_CREATE_RESOURCE_MSG_RSP;   // 1503 -> 1504
 	case ID_SYNC_USER_MESSAGE_REQ:    return ID_SYNC_USER_MESSAGE_RSP;    // 1405 -> 1406

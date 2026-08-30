@@ -46,7 +46,8 @@ struct LocalConversationDTO {
     QString updated_at;
 };
 
-//outbox 可靠重试条目
+//outbox 可靠重试条目（持久化真值快照；重试退避是 Dispatcher 纯运行时状态，
+//崩溃重启后从小退避重新开始，不落盘）
 struct OutboxEntryDTO {
     qint64 operation_id = 0;        //outbox 表自增主键
 	QString operation_type;         //SEND_TEXT/SEND_RESOURCE
@@ -54,8 +55,6 @@ struct OutboxEntryDTO {
 	QString request_id;             //关联 client_message_id
 	QString payload;                //文本或资源发送的原始请求 JSON
     QString stage;                  //资源阶段：metadata/uploading，其余为空
-    int retry_count = 0;
-    qint64 next_retry_at = 0;       //下次重试时刻（epoch ms）
 };
 
 Q_DECLARE_METATYPE(LocalMessageDTO)

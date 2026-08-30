@@ -745,7 +745,7 @@ void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)
 }
 
 void DownloadWorker::HandleResourceChunkDown(std::shared_ptr<ResourceChunkDownTask> task) {
-	//1514 统一响应：{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
+	//1512 统一响应：{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
 	auto respond = [task](int error, const std::string& data, unsigned long long bytes,
 		const std::string& chunk_hash, bool is_last) {
 		json result;

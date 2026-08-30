@@ -47,8 +47,9 @@ private slots:
     void on_clicked_paused(QString unique_name, TransferType transfer_type);
     //接收PictureBubble传回来的继续信号
     void on_clicked_resume(QString unique_name, TransferType transfer_type);
-    //本地库入库提交成功后才上屏（sending 气泡）并通知 Dispatcher
-    void slot_send_enqueued(bool ok, LocalMessageDTO dto);
+    //本地库入库提交成功后才上屏（sending 气泡）；可靠派发由 Dispatcher
+    //订阅同一 sig_send_enqueued 自行登记，与 GUI 互不依赖
+    void slot_send_enqueued(bool ok, LocalMessageDTO dto, OutboxEntryDTO entry);
 
 private:
     void clearItems();

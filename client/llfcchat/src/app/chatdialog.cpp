@@ -620,7 +620,7 @@ void ChatDialog::slot_resource_stage_updated(bool ok, LocalMessageDTO dto)
 }
 
 //本地 DTO → 窗口消息对象。文本直接构造；资源消息（图片/文件）复用/新建 MsgInfo，
-//接收端缺本地缓存时用占位图，图片自动下载、文件等用户点击（1511 元数据先行）
+//接收端缺本地缓存时用占位图，图片自动下载、文件等用户点击（1509 元数据先行）
 std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(const LocalMessageDTO& dto)
 {
 	auto self_info = UserMgr::GetInstance()->GetUserInfo();
@@ -696,7 +696,7 @@ std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(const LocalMessageDTO& d
 			UserMgr::GetInstance()->AddTransFile(dto.content, file_info);
 
 			if (!is_self && is_pic && dto.server_message_id > 0) {
-				//图片自动下载（1511 元数据先行，内部经信号投递到 File 线程）
+				//图片自动下载（1509 元数据先行，内部经信号投递到 File 线程）
 				FileTcpMgr::GetInstance()->StartResourceDownload(file_info);
 			}
 		}

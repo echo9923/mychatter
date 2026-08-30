@@ -150,6 +150,64 @@ llfc_apply_msvc_defaults(local_store_tests)
 
 add_test(NAME local_store_tests COMMAND local_store_tests)
 
+# --- Client outbox dispatcher (commit boundary state machine) tests -----------
+# Compiles the production dispatcher + its singleton closure directly
+# (outboxdispatcher/tcpmgr/filetcpmgr/chatsyncmanager/usermgr/store/db).
+# The test keeps every singleton on the main thread (no LocalChatThread /
+# TcpThread), so the store request→worker→result chain runs synchronously and
+# the 1302/1504/login_ready stimuli are injected by emitting public signals.
+# QApplication is required (1504 path builds a QPixmap); AUTOMOC is on because
+# the closure contains Q_OBJECT headers.
+add_executable(outbox_dispatcher_tests
+  outbox_dispatcher_tests.cpp
+  ../client/llfcchat/src/store/outboxdispatcher.cpp
+  ../client/llfcchat/src/store/localchatstore.cpp
+  ../client/llfcchat/src/store/localchatdb.cpp
+  ../client/llfcchat/src/store/chatsyncmanager.cpp
+  ../client/llfcchat/src/store/usermgr.cpp
+  ../client/llfcchat/src/store/userdata.cpp
+  ../client/llfcchat/src/net/tcpmgr.cpp
+  ../client/llfcchat/src/net/filetcpmgr.cpp
+  ../client/llfcchat/src/protocol/global.cpp
+)
+
+target_include_directories(outbox_dispatcher_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/app"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/dialogs"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/chat"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/contact"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/widgets"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/net"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/store"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/protocol"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client/llfcchat/src/util"
+  "${LLFC_REPO_ROOT}/proto"
+)
+
+target_link_libraries(outbox_dispatcher_tests PRIVATE
+  Qt5::Core
+  Qt5::Gui
+  Qt5::Network
+  Qt5::Sql
+  Qt5::Widgets
+)
+
+set_target_properties(outbox_dispatcher_tests PROPERTIES
+  AUTOMOC ON
+  CXX_STANDARD 11
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+)
+
+qt5_import_plugins(outbox_dispatcher_tests
+  INCLUDE_BY_TYPE platforms Qt5::QWindowsIntegrationPlugin
+  INCLUDE_BY_TYPE sqldrivers Qt5::QSQLiteDriverPlugin
+)
+
+llfc_apply_msvc_defaults(outbox_dispatcher_tests)
+
+add_test(NAME outbox_dispatcher_tests COMMAND outbox_dispatcher_tests)
+
 # ---------------------------------------------------------------------------
 # Integration tests — headless client + harness (Verification.2-3 first half).
 #

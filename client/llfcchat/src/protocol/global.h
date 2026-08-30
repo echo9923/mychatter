@@ -37,7 +37,8 @@ extern std::function<QString(QString)> xorString;
  *
  * 数值唯一来源为 proto/protocol_ids.h（llfc_proto 命名空间）。
  * 编号规则：百位=功能域（10账户/11连接/12好友/13聊天/14同步/15资源/16头像），
- * 奇数=发起方（请求或服务端通知），偶数=回包，同一动作 REQ→RSP→NOTIFY 连号。
+ * TCP 业务奇数=发起方（请求或服务端通知），偶数=回包；请求/响应连续成对编号。
+ * 1001~1005 仅为 HTTP 回调路由 ID，不适用该配对规则。
  */
 enum ReqId{
     ID_GET_VARIFY_CODE = llfc_proto::MSG_GET_VARIFY_CODE,     //1001 获取验证码
@@ -53,12 +54,12 @@ enum ReqId{
     ID_SEARCH_USER_RSP = llfc_proto::MSG_SEARCH_USER_RSP,     //1202 搜索用户回包
     ID_ADD_FRIEND_REQ = llfc_proto::MSG_ADD_FRIEND_REQ,       //1203 添加好友申请
     ID_ADD_FRIEND_RSP = llfc_proto::MSG_ADD_FRIEND_RSP,       //1204 申请添加好友回复
-    ID_HANDLE_FRIEND_REQ = llfc_proto::MSG_HANDLE_FRIEND_REQ, //1207 处理好友申请
-    ID_HANDLE_FRIEND_RSP = llfc_proto::MSG_HANDLE_FRIEND_RSP, //1208 处理好友申请回复
+    ID_HANDLE_FRIEND_REQ = llfc_proto::MSG_HANDLE_FRIEND_REQ, //1205 处理好友申请
+    ID_HANDLE_FRIEND_RSP = llfc_proto::MSG_HANDLE_FRIEND_RSP, //1206 处理好友申请回复
     ID_TEXT_CHAT_MSG_REQ  = llfc_proto::MSG_TEXT_CHAT_REQ,    //1301 文本聊天信息请求
     ID_TEXT_CHAT_MSG_RSP  = llfc_proto::MSG_TEXT_CHAT_RSP,    //1302 文本聊天信息回复
-    ID_CREATE_PRIVATE_CHAT_REQ = llfc_proto::MSG_CREATE_PRIVATE_CHAT_REQ,   //1305 创建私聊请求
-    ID_CREATE_PRIVATE_CHAT_RSP = llfc_proto::MSG_CREATE_PRIVATE_CHAT_RSP,   //1306 创建私聊回复
+    ID_CREATE_PRIVATE_CHAT_REQ = llfc_proto::MSG_CREATE_PRIVATE_CHAT_REQ,   //1303 创建私聊请求
+    ID_CREATE_PRIVATE_CHAT_RSP = llfc_proto::MSG_CREATE_PRIVATE_CHAT_RSP,   //1304 创建私聊回复
     ID_LOAD_CHAT_THREAD_REQ = llfc_proto::MSG_LOAD_CHAT_THREAD_REQ,  //1401 加载聊天会话列表
     ID_LOAD_CHAT_THREAD_RSP = llfc_proto::MSG_LOAD_CHAT_THREAD_RSP,  //1402 加载聊天会话列表回复
     ID_LOAD_CHAT_MSG_REQ = llfc_proto::MSG_LOAD_CHAT_MSG_REQ,        //1403 加载聊天消息
@@ -69,14 +70,14 @@ enum ReqId{
     ID_RESOURCE_LOGIN_RSP = llfc_proto::MSG_RESOURCE_LOGIN_RSP,      //1502 资源服务器登录回复
     ID_CREATE_RESOURCE_MSG_REQ = llfc_proto::MSG_CREATE_RESOURCE_REQ,   //1503 创建资源消息请求
     ID_CREATE_RESOURCE_MSG_RSP = llfc_proto::MSG_CREATE_RESOURCE_RSP,   //1504 创建资源消息回复
-    ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ,   //1507 上传资源分片
-    ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP,   //1508 上传资源分片回复
-    ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ,  //1509 查询上传进度
-    ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP, //1510 查询上传进度回复
-    ID_RESOURCE_DOWN_INFO_REQ = llfc_proto::MSG_RESOURCE_DOWN_INFO_REQ,      //1511 查询资源下载信息请求
-    ID_RESOURCE_DOWN_INFO_RSP = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP,      //1512 查询资源下载信息回复
-    ID_RESOURCE_CHUNK_DOWN_REQ = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ,    //1513 按偏移量下载资源分片请求
-    ID_RESOURCE_CHUNK_DOWN_RSP = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP,    //1514 按偏移量下载资源分片回复
+    ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ,   //1505 上传资源分片
+    ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP,   //1506 上传资源分片回复
+    ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ,  //1507 查询上传进度
+    ID_RESOURCE_UPLOAD_PROGRESS_RSP = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_RSP, //1508 查询上传进度回复
+    ID_RESOURCE_DOWN_INFO_REQ = llfc_proto::MSG_RESOURCE_DOWN_INFO_REQ,      //1509 查询资源下载信息请求
+    ID_RESOURCE_DOWN_INFO_RSP = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP,      //1510 查询资源下载信息回复
+    ID_RESOURCE_CHUNK_DOWN_REQ = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ,    //1511 按偏移量下载资源分片请求
+    ID_RESOURCE_CHUNK_DOWN_RSP = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP,    //1512 按偏移量下载资源分片回复
     ID_UPLOAD_HEAD_ICON_REQ  = llfc_proto::MSG_UPLOAD_HEAD_ICON_REQ,  //1601 上传头像请求
     ID_UPLOAD_HEAD_ICON_RSP  = llfc_proto::MSG_UPLOAD_HEAD_ICON_RSP,  //1602 上传头像回复
     ID_DOWN_LOAD_FILE_REQ = llfc_proto::MSG_DOWN_LOAD_FILE_REQ,      //1603 下载文件请求（旧头像链路）
