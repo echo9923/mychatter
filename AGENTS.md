@@ -55,7 +55,7 @@ out/run/<Config>/ResourceServer/ResourceServer.exe
 
 - 不迁移旧假数据；唯一建库入口为 `sql备份/20260830_database_rebuild.sql`，执行后服务端只使用 `users/friendships/private_chats/chat_messages/message_resources/friend_requests/user_events` 七表。
 - `chat_messages` 只保存文本、图片、文件；`message_resources` 是资源一对一扩展；好友申请与处理状态只在 `friend_requests`；`user_events` 只保存接收顺序和业务引用。当前无群聊、好友申请撤销和好友备注。
-- 客户端每用户一个 SQLite：`AppDataLocation/user/<user_id>/chat.db`，只使用 `messages/message_resources/conversations/friend_requests/contacts/outbox/sync_state` 七表（WAL + synchronous=FULL，`user_version=4` 破坏性重建）。
+- 客户端每用户一个 SQLite：`AppDataLocation/user/<user_id>/chat.db`，只使用 `messages/message_resources/conversations/friend_requests/contacts/outbox/sync_state` 七表（WAL + synchronous=FULL，`user_version=5` 破坏性重建）。
 - 新模块（`client/llfcchat/`，C++11）：`localmessageDTO.h`（跨线程值对象）、`localchatdb`（同步 SQL 核心，非 QObject）、`localchatstore`（独立 QThread 独占 QSQLITE 命名连接，GUI/TCP/File 线程禁止直接触碰 QSqlDatabase）、`outboxdispatcher`（驻留 TCP 线程）、`chatsyncmanager`（登录/重连/缺口/30～60 秒随机周期的 1405/1406 增量同步，驻留 TCP 线程）
 - **OutboxDispatcher 为单向状态模型**：SQLite outbox 是唯一真值，内存 `_entries`（`client_message_id` 到运行时条目）只是登记簿。`enqueueSend` 事务提交后才广播；1302/1504/1506 只发起本地销账或阶段推进，结果事务提交后条目才离开登记簿。退避只在内存，不写 SQLite。服务端 1301/1503 按 `(sender_user_id,client_message_id)` 幂等。
 - TcpMgr 已回归纯网络传输；旧 QSettings pending/replay/离线轮询（llfcchat-delivery.ini、旧号 1051/1052 pending 拉取、Redis offline_msg ZSET）已全部删除

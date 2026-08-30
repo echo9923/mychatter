@@ -37,8 +37,6 @@ struct LocalConversationDTO {
 	qint64 thread_id = 0;
 	qint64 peer_user_id = 0;
 	qint64 last_message_id = 0;
-	QString last_message_preview;
-	int unread_count = 0;
 	qint64 oldest_loaded_message_id = 0;
 	bool history_complete = false;
 	qint64 updated_at = 0;
