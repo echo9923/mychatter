@@ -112,7 +112,7 @@ void LogicWorker::RegisterCallBacks()
 	//固定路由 message_id % FILE_WORKER_COUNT：同一 .part 只被一个线程写
 	_fun_callbacks[ID_RESOURCE_CHUNK_UPLOAD_REQ] = &LogicWorker::handleResourceChunkUpload;
 	//1507 查询上传进度：{message_id:"<str>"} -> {error, message_id, server_offset, total_size,
-	//status, sha256}。与 1505 同 worker 串行化，server_offset 为磁盘 .part 真值
+	//status, sha256}。与 1505 共用会话；首次恢复回退尾片，查询不重复回退
 	_fun_callbacks[ID_RESOURCE_UPLOAD_PROGRESS_REQ] = &LogicWorker::handleResourceUploadProgress;
 	//1509 查询资源下载信息：{message_id:"<str>"} -> {error, message_id, file_name, total_size,
 	//sha256, mime_type, message_type, status}。权限：请求者必须是私聊成员
@@ -312,7 +312,7 @@ void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, con
 	}
 
 	const int uid = session->GetUserId();
-	auto callback = [session, message_id, uid]() {
+	auto callback = [session, message_id, uid](FileWorker& worker) {
 		auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(static_cast<long long>(message_id));
 		json rtvalue;
 		rtvalue["message_id"] = std::to_string(message_id);
@@ -326,7 +326,7 @@ void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, con
 			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
-		if (chat_msg->message_type != 1 && chat_msg->message_type != 3) {
+		if ((chat_msg->message_type != 1 && chat_msg->message_type != 3) || !chat_msg->resource) {
 			rtvalue["error"] = ErrorCodes::ResourceStateInvalid;
 			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
@@ -336,17 +336,21 @@ void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, con
 		if (chat_msg->status == MessageStatus::Published) {
 			server_offset = chat_msg->resource->file_size_bytes;
 		}
-		else {
-			//磁盘真值：.part 实际长度（无文件即 0），error_code 重载防异常穿出线程
-			const auto part_path = ResourceFilePath(chat_msg->sender_user_id,
-				static_cast<long long>(message_id)).string() + ".part";
-			boost::system::error_code fs_ec;
-			if (boost::filesystem::exists(part_path, fs_ec)) {
-				boost::uintmax_t size = boost::filesystem::file_size(part_path, fs_ec);
-				if (!fs_ec) {
-					server_offset = static_cast<unsigned long long>(size);
-				}
+		else if (chat_msg->status == MessageStatus::Pending) {
+			auto upload = worker.FindUploadSession(static_cast<long long>(message_id));
+			if (!upload) upload = worker.LoadUploadSession(static_cast<long long>(message_id), chat_msg);
+			if (!upload) {
+				rtvalue["error"] = ErrorCodes::FileWritePermissionFailed;
+				session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+				return;
 			}
+			server_offset = upload->received;
+		}
+		else {
+			rtvalue["error"] = ErrorCodes::ResourceStateInvalid;
+			rtvalue["status"] = static_cast<int>(chat_msg->status);
+			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			return;
 		}
 
 		rtvalue["error"] = ErrorCodes::Success;

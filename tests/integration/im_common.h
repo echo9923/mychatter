@@ -10,6 +10,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "protocol_ids.h"  // 协议号单一来源（proto/protocol_ids.h）
@@ -48,14 +49,31 @@ inline constexpr int  STATUS_GRPC_PORT  = 15052;
 inline constexpr int  RESOURCE_HTTP_PORT = 18081;
 
 // ---- Live externals (plan Verification.5) ----------------------------------
-inline constexpr const char* MYSQL_HOST   = "127.0.0.1";
-inline constexpr int         MYSQL_PORT   = 3308;
-inline constexpr const char* MYSQL_USER   = "root";
-inline constexpr const char* MYSQL_PASSWD = "123456.";
-inline constexpr const char* MYSQL_SCHEMA = "llfc";
-inline constexpr const char* REDIS_HOST   = "127.0.0.1";
-inline constexpr int         REDIS_PORT   = 6380;
-inline constexpr const char* REDIS_PASSWD = "123456";
+// Environment overrides let real integration runs use isolated dependencies.
+// Existing developer defaults remain available when no override is supplied.
+inline const char* TestEnvOr(const char* name, const char* fallback) {
+	const char* value = std::getenv(name);
+	return value && *value ? value : fallback;
+}
+inline int TestPortOr(const char* name, int fallback) {
+	const char* value = std::getenv(name);
+	if (!value || !*value) return fallback;
+	char* end = nullptr;
+	const long port = std::strtol(value, &end, 10);
+	if (*end || port < 1 || port > 65535) {
+		std::fprintf(stderr, "Invalid test port in %s\n", name);
+		std::abort();
+	}
+	return static_cast<int>(port);
+}
+inline const char* MYSQL_HOST   = TestEnvOr("LLFC_TEST_MYSQL_HOST", "127.0.0.1");
+inline const int   MYSQL_PORT   = TestPortOr("LLFC_TEST_MYSQL_PORT", 3308);
+inline const char* MYSQL_USER   = TestEnvOr("LLFC_TEST_MYSQL_USER", "root");
+inline const char* MYSQL_PASSWD = TestEnvOr("LLFC_TEST_MYSQL_PASSWORD", "123456.");
+inline const char* MYSQL_SCHEMA = TestEnvOr("LLFC_TEST_MYSQL_SCHEMA", "llfc");
+inline const char* REDIS_HOST   = TestEnvOr("LLFC_TEST_REDIS_HOST", "127.0.0.1");
+inline const int   REDIS_PORT   = TestPortOr("LLFC_TEST_REDIS_PORT", 6380);
+inline const char* REDIS_PASSWD = TestEnvOr("LLFC_TEST_REDIS_PASSWORD", "123456");
 
 // ---- TCP/JSON protocol message IDs (数值来源 proto/protocol_ids.h) ----------
 // 编号规则：百位=功能域（11连接/12好友/13聊天/14同步/15资源/16头像），

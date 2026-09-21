@@ -7,6 +7,7 @@
 #include "ChatServerGrpcClient.h"
 #include "Sha256.h"
 #include "FileInfo.h"
+#include "ResourceUploadFile.h"
 
 #include <fstream>
 
@@ -22,36 +23,6 @@ boost::filesystem::path ResourceFilePath(long long sender_id, long long message_
 		/ std::to_string(sender_id) / std::to_string(message_id);
 }
 
-/// 读 .part 实际长度（磁盘真值）；文件不存在返回 0，出错返回 ~0ULL
-unsigned long long PartFileLength(const boost::filesystem::path& part_path) {
-	boost::system::error_code ec;
-	if (!boost::filesystem::exists(part_path, ec)) {
-		return 0;
-	}
-	boost::uintmax_t size = boost::filesystem::file_size(part_path, ec);
-	if (ec) {
-		std::cerr << "ResourceServer: file_size(" << part_path.string()
-			<< ") ec=" << ec.message() << std::endl;
-		return ~0ULL;
-	}
-	return static_cast<unsigned long long>(size);
-}
-
-/// 从 .part 读回 [offset, offset+len) 并计算 SHA-256；失败返回空串
-std::string HashPartRange(const boost::filesystem::path& part_path,
-	unsigned long long offset, unsigned long long len) {
-	std::ifstream in(part_path.string(), std::ios::binary);
-	if (!in) {
-		return std::string();
-	}
-	in.seekg(static_cast<std::streamoff>(offset));
-	std::string buf(len, '\0');
-	in.read(&buf[0], static_cast<std::streamsize>(len));
-	if (static_cast<unsigned long long>(in.gcount()) != len) {
-		return std::string();
-	}
-	return llfc::Sha256Hex(buf);
-}
 } // namespace
 
 FileWorker::FileWorker() :_b_stop(false)
@@ -201,11 +172,11 @@ void FileWorker::PostChunkTask(std::shared_ptr<ResourceChunkTask> task)
 	_cv.notify_one();
 }
 
-void FileWorker::PostClosure(std::function<void()> fn)
+void FileWorker::PostClosure(std::function<void(FileWorker&)> fn)
 {
 	{
 		std::lock_guard<std::mutex> lock(_mtx);
-		_task_que.push(std::move(fn));
+		_task_que.push([this, fn = std::move(fn)]() { fn(*this); });
 	}
 
 	_cv.notify_one();
@@ -239,19 +210,11 @@ std::shared_ptr<UploadSession> FileWorker::LoadUploadSession(long long message_i
 	session->sha256 = msg->resource->sha256;
 	session->sender_user_id = msg->sender_user_id;
 	session->recipient_user_id = msg->recipient_user_id;
-	//磁盘真值：.part 实际长度（ResourceServer 重启后据此续传）
+	//长度不能证明最后一片写完；仅在会话重建时回退，后续查询复用缓存。
 	const auto part_path = ResourceFilePath(msg->sender_user_id, message_id).string() + ".part";
-	session->received = PartFileLength(part_path);
-	if (session->received == ~0ULL) {
+	if (!llfc::RecoverUploadFile(part_path, msg->resource->file_size_bytes, session->received)) {
+		std::cerr << "ResourceServer: upload recovery failed msg=" << message_id << std::endl;
 		return nullptr;
-	}
-	if (session->received > static_cast<unsigned long long>(session->file_size_bytes)) {
-		//.part 超过 total（异常残留）：截断为 0，从重头收
-		std::cerr << "ResourceServer: part larger than total for msg " << message_id
-			<< ", reset (" << session->received << " > " << session->file_size_bytes << ")" << std::endl;
-		boost::system::error_code ec;
-		boost::filesystem::remove(part_path, ec);
-		session->received = 0;
 	}
 	session->last_active = std::chrono::steady_clock::now();
 	_upload_sessions[message_id] = session;
@@ -330,95 +293,15 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 		return;
 	}
 
-	//分片解码与尺寸校验
-	std::string decoded = base64_decode(task->_file_data);
-	if (decoded.empty() || decoded.size() > MAX_FILE_LEN) {
-		respond(ErrorCodes::FileSizeExceeded, session->received, -1);
-		return;
-	}
-	const unsigned long long offset = static_cast<unsigned long long>(task->_offset);
-	const unsigned long long len = decoded.size();
-	if (offset + len > static_cast<unsigned long long>(session->file_size_bytes)) {
-		//越界：分片超出 total_size，永远无法收齐
-		respond(ErrorCodes::FileOffsetInvalid, session->received, -1);
-		return;
-	}
-
 	const auto base_path = ResourceFilePath(session->sender_user_id, task->_message_id);
 	const auto part_path = base_path.string() + ".part";
-
-	if (offset == session->received) {
-		//顺序片：校验分片 SHA-256 后写入 .part 并读回验证
-		if (!llfc::IsValidSha256Hex(task->_chunk_sha256) ||
-			llfc::Sha256Hex(decoded) != task->_chunk_sha256) {
-			std::cerr << "ResourceServer: chunk hash mismatch msg=" << task->_message_id
-				<< " offset=" << offset << std::endl;
-			respond(ErrorCodes::FileHashMismatch, session->received, -1);
-			return;
-		}
-
-		boost::system::error_code ec;
-		const auto dir = base_path.parent_path();
-		if (!boost::filesystem::exists(dir) && !boost::filesystem::create_directories(dir, ec)) {
-			std::cerr << "ResourceServer: create dir failed " << dir.string()
-				<< " ec=" << ec.message() << std::endl;
-			respond(ErrorCodes::CreateFilePathFailed, session->received, -1);
-			return;
-		}
-
-		//写后读回校验：打开失败/写短/读回哈希不符都拒绝推进（防半写）
-		{
-			std::fstream io(part_path,
-				std::ios::binary | std::ios::in | std::ios::out);
-			if (!io) {
-				//.part 不存在时用 out|trunc 语义创建（in|out 不建新文件）
-				std::ofstream create(part_path, std::ios::binary | std::ios::app);
-				if (!create) {
-					respond(ErrorCodes::FileWritePermissionFailed, session->received, -1);
-					return;
-				}
-				create.close();
-				io.clear();
-				io.open(part_path, std::ios::binary | std::ios::in | std::ios::out);
-				if (!io) {
-					respond(ErrorCodes::FileWritePermissionFailed, session->received, -1);
-					return;
-				}
-			}
-			io.seekp(static_cast<std::streamoff>(offset));
-			io.write(decoded.data(), static_cast<std::streamsize>(len));
-			io.flush();
-			if (!io) {
-				std::cerr << "ResourceServer: write failed msg=" << task->_message_id
-					<< " offset=" << offset << std::endl;
-				respond(ErrorCodes::FileWritePermissionFailed, session->received, -1);
-				return;
-			}
-			io.seekg(static_cast<std::streamoff>(offset));
-			std::string readback(len, '\0');
-			io.read(&readback[0], static_cast<std::streamsize>(len));
-			if (static_cast<unsigned long long>(io.gcount()) != len || readback != decoded) {
-				std::cerr << "ResourceServer: readback mismatch msg=" << task->_message_id
-					<< " offset=" << offset << std::endl;
-				respond(ErrorCodes::FileWritePermissionFailed, session->received, -1);
-				return;
-			}
-		}
-
-		session->received += len;
-	}
-	else if (offset + len <= session->received) {
-		//重复片（响应丢失后客户端重发）：读回该区间比对哈希，幂等确认，绝不追加两次
-		if (HashPartRange(part_path, offset, len) != task->_chunk_sha256) {
-			std::cerr << "ResourceServer: dup chunk hash mismatch msg=" << task->_message_id
-				<< " offset=" << offset << " (data divergence)" << std::endl;
-			respond(ErrorCodes::FileHashMismatch, session->received, -1);
-			return;
-		}
-	}
-	else {
-		//offset 超前（洞）：返回服务端真实位置供客户端对齐重发
-		respond(ErrorCodes::FileOffsetInvalid, session->received, -1);
+	const int error = llfc::WriteUploadChunk(part_path, session->file_size_bytes,
+		static_cast<unsigned long long>(task->_offset), base64_decode(task->_file_data),
+		task->_chunk_sha256, session->received);
+	if (error != ErrorCodes::Success) {
+		std::cerr << "ResourceServer: upload chunk failed msg=" << task->_message_id
+			<< " offset=" << task->_offset << " error=" << error << std::endl;
+		respond(error, session->received, -1);
 		return;
 	}
 
@@ -460,6 +343,10 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 			<< " expected=" << session->sha256 << " actual=" << full_hash << std::endl;
 		boost::system::error_code rm_ec;
 		boost::filesystem::remove(part_path, rm_ec);
+		if (rm_ec) {
+			respond_error(ErrorCodes::FileWritePermissionFailed, session->received);
+			return;
+		}
 		session->received = 0;
 		respond_error(ErrorCodes::FileHashMismatch, 0);
 		return;

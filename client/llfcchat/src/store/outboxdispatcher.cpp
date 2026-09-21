@@ -393,7 +393,7 @@ void OutboxDispatcher::startResourceUpload(RuntimeEntry& rt, qint64 message_id)
     file_info->_transfer_state = TransferState::Uploading;
     _uploading.insert(name, rt.entry.client_message_id);
 
-    //首传/续传统一入口：1507 查服务端真实偏移（.part 长度），1508 回包对齐后窗口续发
+    //首传/续传统一入口：1507 查服务端恢复后的偏移，1508 回包对齐后窗口续发
     QJsonObject req;
     req["message_id"] = QString::number(message_id);
     FileTcpMgr::GetInstance()->SendData(ID_RESOURCE_UPLOAD_PROGRESS_REQ,
@@ -451,9 +451,8 @@ void OutboxDispatcher::resumeUploadByProgress(qint64 message_id, qint64 server_o
         return;
     }
 
-    if (status == LOCAL_SEND_SENT
-        || (file_info->_total_size > 0 && server_offset >= file_info->_total_size)) {
-        //服务端已收齐（重试路径幂等）：按完成收尾——先本地销账，commit 后删登记
+    if (status == LOCAL_SEND_SENT) {
+        //服务端已发布（重试路径幂等）：先本地销账，commit 后删登记
         const QString client_message_id = _uploading.value(name);
         _uploading.remove(name);
         auto iter = _entries.find(client_message_id);
@@ -466,7 +465,7 @@ void OutboxDispatcher::resumeUploadByProgress(qint64 message_id, qint64 server_o
 
     //按服务端真值对齐确认偏移，从下一片续发
     qint64 confirmed = (file_info->_total_size > 0 && server_offset >= file_info->_total_size)
-        ? file_info->_max_seq : server_offset / MAX_FILE_LEN;
+        ? qMax<qint64>(0, file_info->_max_seq - 1) : server_offset / MAX_FILE_LEN;
     file_info->_rsp_seqs.clear();
     file_info->_flighting_seqs.clear();
     file_info->_last_confirmed_seq = confirmed;

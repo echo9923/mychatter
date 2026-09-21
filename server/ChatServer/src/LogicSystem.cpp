@@ -1104,10 +1104,12 @@ void LogicSystem::DealCreateResourceMsg(std::shared_ptr<CSession> session,
 	}
 
 	//5. 文件名：清洗后作为 content 存储（磁盘文件以 message_id 命名，content 仅展示用）
-	if (!SanitizeFileName(original_file_name, original_file_name)) {
+	std::string sanitized_file_name;
+	if (!SanitizeFileName(original_file_name, sanitized_file_name)) {
 		reject(ErrorCodes::ResourceInvalid);
 		return;
 	}
+	original_file_name = std::move(sanitized_file_name);
 
 	//6. 整文件哈希：64 位小写 hex（ResourceServer 收齐分片后据此校验）
 	if (!llfc::IsValidSha256Hex(sha256)) {
