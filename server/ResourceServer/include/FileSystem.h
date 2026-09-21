@@ -16,10 +16,9 @@ public:
 	/// 资源分片下载（1511）：index 必须由 ResourceWorkerIndex(message_id, DOWN_LOAD_WORKER_COUNT) 计算
 	void PostChunkDownToQue(std::shared_ptr<ResourceChunkDownTask> msg, int index);
 	/// 任意闭包到指定 FileWorker（1507 进度查询等，与分片写入同 worker 串行化）
-	void PostClosureToQue(std::function<void()> fn, int index);
+	void PostClosureToQue(std::function<void(FileWorker&)> fn, int index);
 private:
 	FileSystem();
 	std::vector<std::shared_ptr<FileWorker>>  _file_workers;
 	std::vector<std::shared_ptr<DownloadWorker>> _down_load_worker;
 };
-

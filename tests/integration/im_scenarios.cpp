@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -470,8 +471,18 @@ struct OrderSide {
 static void OrderConsumer(OrderSide& s, std::atomic<int>& gseq, int deadline_ms) {
 	const auto deadline = std::chrono::steady_clock::now()
 		+ std::chrono::milliseconds(deadline_ms);
+	auto nextHeartbeat = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	json heartbeat;
+	heartbeat["uid"] = s.uid;
 	while (s.collected.load() < s.total) {
 		if (std::chrono::steady_clock::now() >= deadline) { s.ok = false; return; }
+		// Keep the authenticated connection alive while the burst drains to durable storage.
+		if (std::chrono::steady_clock::now() >= nextHeartbeat) {
+			if (!s.client->Send(llfc_proto::MSG_HEART_BEAT_REQ, heartbeat.dump())) {
+				s.ok = false; return;
+			}
+			nextHeartbeat = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		}
 		Frame f;
 		if (!s.client->Wait(0, 500, &f)) {
 			if (s.client->IsClosed()) { s.ok = false; return; }
@@ -930,16 +941,19 @@ bool ScenarioFriendWorkflow() {
 		"last_event_seq=" + std::to_string(mysql.LastEventSeq(RECEIVER_UID)));
 
 	json forbiddenResponse;
-	expect(exchange(requester, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(rejectedRequestId, "reject"), forbiddenResponse)
+	// Complete the exchange before evaluating diagnostics: argument order is unspecified.
+	const bool forbiddenOk = exchange(requester, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(rejectedRequestId, "reject"), forbiddenResponse);
+	expect(forbiddenOk
 		&& forbiddenResponse.value("error", -1) == ERR_FRIEND_REQUEST_NOT_FOUND,
 		"friend-workflow: requester cannot handle own application",
-		"error=" + std::to_string(forbiddenResponse.value("error", -1)));
+		forbiddenResponse.dump());
 
 	const std::uint64_t requesterHead = mysql.LastEventSeq(SENDER_UID);
 	json rejectResponse;
-	expect(exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(rejectedRequestId, "reject"), rejectResponse)
+	const bool rejectOk = exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(rejectedRequestId, "reject"), rejectResponse);
+	expect(rejectOk
 		&& rejectResponse.value("error", -1) == ERR_SUCCESS
 		&& JsonIdStr(rejectResponse, "friend_request_id", 0) == rejectedRequestId
 		&& rejectResponse.value("event_type", -1) == MSG_TYPE_FRIEND_REJECT
@@ -964,20 +978,22 @@ bool ScenarioFriendWorkflow() {
 		"friend-workflow: duplicate reject is idempotent",
 		"last_event_seq=" + std::to_string(mysql.LastEventSeq(SENDER_UID)));
 	json oppositeResponse;
-	expect(exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(rejectedRequestId, "accept"), oppositeResponse)
+	const bool oppositeOk = exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(rejectedRequestId, "accept"), oppositeResponse);
+	expect(oppositeOk
 		&& oppositeResponse.value("error", -1) == ERR_FRIEND_REQUEST_HANDLED,
 		"friend-workflow: opposite action is rejected",
-		"error=" + std::to_string(oppositeResponse.value("error", -1)));
+		oppositeResponse.dump());
 
 	const std::string acceptedClientId = "imtest-friend-accept-" + tag;
 	json secondApplyResponse;
-	expect(exchange(requester, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
+	const bool secondApplyOk = exchange(requester, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
 		BuildFriendApplyReq(RECEIVER_UID, "try again", acceptedClientId),
-		secondApplyResponse)
+		secondApplyResponse);
+	expect(secondApplyOk
 		&& secondApplyResponse.value("error", -1) == ERR_SUCCESS,
 		"friend-workflow: rejection permits a new application",
-		"error=" + std::to_string(secondApplyResponse.value("error", -1)));
+		secondApplyResponse.dump());
 	const std::int64_t acceptedRequestId =
 		JsonIdStr(secondApplyResponse, "friend_request_id", 0);
 	json ignoredNotification;
@@ -985,8 +1001,9 @@ bool ScenarioFriendWorkflow() {
 
 	const std::uint64_t beforeAccept = mysql.LastEventSeq(SENDER_UID);
 	json acceptResponse;
-	expect(exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
-		BuildFriendHandleReq(acceptedRequestId, "accept"), acceptResponse)
+	const bool acceptOk = exchange(target, ID_HANDLE_FRIEND_REQ, ID_HANDLE_FRIEND_RSP,
+		BuildFriendHandleReq(acceptedRequestId, "accept"), acceptResponse);
+	expect(acceptOk
 		&& acceptResponse.value("error", -1) == ERR_SUCCESS
 		&& acceptResponse.value("event_type", -1) == MSG_TYPE_FRIEND_ACCEPT
 		&& acceptResponse.value("status", -1) == FRIEND_REQUEST_ACCEPTED
@@ -1004,12 +1021,13 @@ bool ScenarioFriendWorkflow() {
 		"friend_request_id=" + std::to_string(acceptedRequestId));
 
 	json alreadyFriendsResponse;
-	expect(exchange(requester, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
+	const bool alreadyFriendsOk = exchange(requester, ID_ADD_FRIEND_REQ, ID_ADD_FRIEND_RSP,
 		BuildFriendApplyReq(RECEIVER_UID, "again",
-			"imtest-friend-already-" + tag), alreadyFriendsResponse)
+			"imtest-friend-already-" + tag), alreadyFriendsResponse);
+	expect(alreadyFriendsOk
 		&& alreadyFriendsResponse.value("error", -1) == ERR_ALREADY_FRIENDS,
 		"friend-workflow: friends cannot create another request",
-		"error=" + std::to_string(alreadyFriendsResponse.value("error", -1)));
+		alreadyFriendsResponse.dump());
 
 	requester.Close(); target.Close(); pm.StopAll(); cleanup();
 	return allOk;
@@ -2697,6 +2715,22 @@ bool ScenarioSyncBootstrap() {
 		Fail("sync-bootstrap: start ChatServer", "ready timeout"); cleanup(); pm.StopAll(); return false;
 	}
 
+	// Cleanup deletes test events without rewinding the monotonic user counter.
+	// Seed a retained event so paging reaches the head and excludes real pre-checkpoint data.
+	TcpClient cS;
+	if (!LoginUser(cS, SENDER_UID).ok) {
+		Fail("sync-bootstrap: login sender", "gate/chat login failed"); cleanup(); pm.StopAll(); return false;
+	}
+	Frame baselineFrame;
+	const bool baselineReceived = cS.Send(ID_TEXT_CHAT_MSG_REQ,
+		BuildTextReq(RECEIVER_UID, THREAD_ID, "before-checkpoint", "imtest-boot-before-" + tag))
+		&& cS.Wait(ID_TEXT_CHAT_MSG_RSP, 10000, &baselineFrame);
+	const auto baseline = baselineReceived ? ParseJson(baselineFrame.body) : json();
+	if (!Check(baseline.is_object() && baseline.value("error", -1) == ERR_SUCCESS,
+		"sync-bootstrap: retained message exists before checkpoint", baseline.dump())) {
+		cS.Close(); cleanup(); pm.StopAll(); return false;
+	}
+
 	// receiver 登录并拉到当前 checkpoint；与 DB 序号头一致。
 	TcpClient cR;
 	if (!LoginUser(cR, RECEIVER_UID).ok) {
@@ -2715,10 +2749,6 @@ bool ScenarioSyncBootstrap() {
 	}
 
 	// checkpoint 之后 sender 发 3 条。
-	TcpClient cS;
-	if (!LoginUser(cS, SENDER_UID).ok) {
-		Fail("sync-bootstrap: login sender", "gate/chat login failed"); cR.Close(); cleanup(); pm.StopAll(); return false;
-	}
 	std::vector<std::int64_t> sent_mids;
 	bool send_ok = true;
 	for (int i = 0; i < MSG_COUNT; ++i) {
@@ -3273,7 +3303,7 @@ bool ScenarioResourceUpload() {
 
 // ---------------------------------------------------------------------------
 // resource-resume：上传中途 kill ResourceServer 重启 → .part 保留 →
-// 1507 返回非零偏移 → 从该偏移续传成功，已确认内容不重传
+// 1507 回退末尾一片；半片/长度完整但损坏的尾片都从片头重传
 // ---------------------------------------------------------------------------
 bool ScenarioResourceResume() {
 	std::printf("\n=== scenario: resource-resume ===\n");
@@ -3290,55 +3320,72 @@ bool ScenarioResourceResume() {
 	const std::string tag = RunTag();
 	const std::string blob = MakeBlob(100000);
 	const std::string hash = llfc::Sha256Hex(blob);
-	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
-		"imtest-resume-" + tag, MSG_TYPE_FILE, "resume_" + tag + ".bin",
-		(long long)blob.size(), hash, "application/octet-stream", nullptr);
-	Check(mid > 0, "resource-resume: create resource msg", ("mid=" + std::to_string(mid)).c_str());
-	if (mid <= 0) { cS.Close(); stack.StopAll(); return false; }
-
-	//上传前 2 片（65536 字节）
-	auto res = ResLogin(li.token, SENDER_UID, "resource-resume");
-	if (!res) { cS.Close(); stack.StopAll(); return false; }
-	{
+	struct ResumeCase { const char* name; std::size_t length; long long offset; bool query_first; };
+	const ResumeCase cases[] = {
+		{ "aligned", 65536, 32768, true },
+		{ "partial", 81920, 65536, true },
+		{ "damaged-aligned", 98304, 65536, true },
+		{ "full-pending", 100000, 98304, true },
+		{ "direct-retry", 81920, 65536, false }
+	};
+	for (const auto& test : cases) {
+		const std::string label = std::string("resource-resume: ") + test.name;
+		const auto mid = CreateResource(cS, RECEIVER_UID,
+			"imtest-resume-" + tag + "-" + test.name, MSG_TYPE_FILE,
+			"resume_" + tag + "_" + test.name + ".bin",
+			(long long)blob.size(), hash, "application/octet-stream", nullptr);
+		if (!Check(mid > 0, label + " create", "mid=" + std::to_string(mid))) {
+			cS.Close(); stack.StopAll(); return false;
+		}
+		auto res = ResLogin(li.token, SENDER_UID, "resource-resume");
+		if (!res) { cS.Close(); stack.StopAll(); return false; }
 		int rs = -1;
-		const int err = UploadChunks(*res, mid, blob.substr(0, 65536), 0, &rs);
-		Check(err == ERR_SUCCESS, "resource-resume: first 2 chunks uploaded",
-			("err=" + std::to_string(err)).c_str());
-		if (err != ERR_SUCCESS) all_ok = false;
+		if (!Check(UploadChunks(*res, mid, blob.substr(0, 65536), 0, &rs) == ERR_SUCCESS,
+			label + " upload first two chunks", "")) all_ok = false;
+		res->Close();
+		if (!stack.pm.StopOne("ResourceServer")) {
+			Fail(label + " stop server", "failed");
+			cS.Close(); stack.StopAll(); return false;
+		}
+
+		const auto part_path = boost::filesystem::path(stack.pm.base_dir()) / "ResourceServer"
+			/ "bin" / "resource" / std::to_string(SENDER_UID) / (std::to_string(mid) + ".part");
+		// Reproduce crash residues deterministically, including a full-length dirty tail.
+		std::string residue = blob.substr(0, static_cast<std::size_t>(test.offset));
+		residue.resize(test.length, '?');
+		{
+			std::ofstream part(part_path.string(), std::ios::binary | std::ios::trunc);
+			part.write(residue.data(), static_cast<std::streamsize>(residue.size()));
+			part.close();
+			if (!Check(static_cast<bool>(part), label + " seed interrupted write", "")) {
+				cS.Close(); stack.StopAll(); return false;
+			}
+		}
+		if (!stack.pm.Start({ "ResourceServer", { "ResourceServer", "ResourceServer.exe" },
+			MakeResourceIni(), RESOURCE_HTTP_PORT }, 15000)) {
+			Fail(label + " restart", "timeout");
+			cS.Close(); stack.StopAll(); return false;
+		}
+		auto resumed = ResLogin(li.token, SENDER_UID, "resource-resume");
+		if (!resumed) { cS.Close(); stack.StopAll(); return false; }
+		if (test.query_first) {
+			const long long offset = QueryServerOffset(*resumed, mid, nullptr);
+			if (!Check(offset == test.offset, label + " query returns chunk start",
+				"offset=" + std::to_string(offset))) all_ok = false;
+			if (!Check(QueryServerOffset(*resumed, mid, nullptr) == test.offset,
+				label + " repeated query does not rewind another chunk", "")) all_ok = false;
+			if (!Check(boost::filesystem::file_size(part_path) == static_cast<unsigned long long>(test.offset),
+				label + " disk tail truncated to reported offset", "")) all_ok = false;
+		}
+		const int err = UploadChunks(*resumed, mid, blob, test.offset, &rs);
+		if (!Check(err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED,
+			label + " resume publishes successfully", "err=" + std::to_string(err))) all_ok = false;
+		const auto got = DownloadWhole(*resumed, mid, (long long)blob.size());
+		if (!Check(got == blob, label + " downloaded file matches original", "")) all_ok = false;
+		if (!Check(QueryServerOffset(*resumed, mid, nullptr) == (long long)blob.size(),
+			label + " published upload keeps its full length", "")) all_ok = false;
+		resumed->Close();
 	}
-	res->Close();
-
-	//杀掉 ResourceServer 再拉起（同一持久化输出目录：harness 固定 cwd 复用）
-	stack.pm.StopOne("ResourceServer");
-	if (!stack.pm.Start({ "ResourceServer", { "ResourceServer", "ResourceServer.exe" },
-		MakeResourceIni(), RESOURCE_HTTP_PORT }, 15000)) {
-		Fail("resource-resume: restart ResourceServer", "timeout");
-		cS.Close(); stack.StopAll(); return false;
-	}
-
-	//1507：重启后服务端按 .part 实际长度回 65536
-	auto res2 = ResLogin(li.token, SENDER_UID, "resource-resume");
-	if (!res2) { cS.Close(); stack.StopAll(); return false; }
-	const long long offset = QueryServerOffset(*res2, mid, nullptr);
-	Check(offset == 65536, "resource-resume: 1507 after restart reports 65536",
-		("offset=" + std::to_string(offset)).c_str());
-	if (offset != 65536) all_ok = false;
-
-	//从服务端偏移续传剩余分片（不重传前 2 片）
-	int rs = -1;
-	const int err = UploadChunks(*res2, mid, blob, offset > 0 ? offset : 0, &rs);
-	Check(err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED,
-		"resource-resume: resume from server offset completes",
-		("err=" + std::to_string(err) + " rs=" + std::to_string(rs)).c_str());
-	if (rs != MESSAGE_PUBLISHED) all_ok = false;
-
-	//整文件内容一致性（1511 全量下载比对）
-	const std::string got = DownloadWhole(*res2, mid, (long long)blob.size());
-	Check(got == blob, "resource-resume: resumed upload is byte-identical",
-		("got=" + std::to_string(got.size())).c_str());
-	if (got != blob) all_ok = false;
-
-	res2->Close();
 	cS.Close();
 	stack.StopAll();
 	return all_ok;

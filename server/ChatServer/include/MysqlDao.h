@@ -79,6 +79,8 @@ public:
 	std::shared_ptr<FriendRequest> GetFriendRequestById(std::int64_t friend_request_id);
 
 private:
+	SaveMessageResult AddChatMsgTransaction(sql::Connection* connection,
+		const std::shared_ptr<ChatMessage>& message);
 	bool AllocateEventSeq(sql::Connection* connection, int recipient_user_id,
 		std::uint64_t& event_seq);
 	bool InsertMessageEvent(sql::Connection* connection, int recipient_user_id,
@@ -92,4 +94,5 @@ private:
 	std::shared_ptr<UserInfo> ReadUser(sql::ResultSet* result);
 
 	std::unique_ptr<MySqlPool> pool_;
+	int deadlock_retries_ = 2;
 };

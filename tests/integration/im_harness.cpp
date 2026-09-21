@@ -100,8 +100,9 @@ bool ProcessManager::Start(const ServiceSpec& spec, int ready_timeout_ms) {
 	const std::string log_path = work + "\\run.log";
 	const std::string exe_path = spec.exe.AbsPath();
 
+	SECURITY_ATTRIBUTES log_security{ sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
 	HANDLE hLog = CreateFileA(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-		nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		&log_security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (hLog == INVALID_HANDLE_VALUE) {
 		std::printf("[harness] cannot open log %s\n", log_path.c_str());
 		return false;

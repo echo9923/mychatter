@@ -93,13 +93,12 @@ struct ResourceChunkDownTask {
 };
 
 /// FileWorker 内存中的上传会话：仅固定 worker 线程访问，无锁。
-/// received 的权威真值是 .part 文件长度 + chat_messages/message_resources 行；本结构只是缓存，
-/// 重启/逐出后按 .part 长度与 MySQL 重建。
+/// 重启/逐出后按 MySQL 和 .part 重建，先回退末尾一片，再恢复已确认进度。
 struct UploadSession {
 	long long message_id = 0;
 	long long file_size_bytes = 0;
 	std::string sha256;  ///< 整文件 SHA-256（来自 message_resources.sha256）
-	unsigned long long received = 0;  ///< 已确认字节数（== .part 文件长度）
+	unsigned long long received = 0;  ///< 已确认字节数；失败写入的尾巴不计入进度
 	int sender_user_id = 0;          ///< 会话持有者（权限校验：上传者必须是消息 sender）
 	int recipient_user_id = 0;
 	std::chrono::steady_clock::time_point last_active;
@@ -116,11 +115,11 @@ public:
 	/// 资源分片上传（1505）：必须在 ResourceWorkerIndex 选定的 worker 上执行
 	void PostChunkTask(std::shared_ptr<ResourceChunkTask> task);
 	/// 任意闭包（1507 进度查询等需访问 _upload_sessions 的操作，同 worker 串行化）
-	void PostClosure(std::function<void()> fn);
+	void PostClosure(std::function<void(FileWorker&)> fn);
 
 	/// 上传会话缓存（仅本 worker 线程内调用）：未命中返回 nullptr
 	std::shared_ptr<UploadSession> FindUploadSession(long long message_id);
-	/// 从 MySQL 行 + .part 实际长度重建会话（仅本 worker 线程内调用）
+	/// 从 MySQL 行 + .part 重建会话并回退末尾一片（仅本 worker 线程内调用）
 	std::shared_ptr<UploadSession> LoadUploadSession(long long message_id,
 		const std::shared_ptr<ChatMessage>& msg);
 

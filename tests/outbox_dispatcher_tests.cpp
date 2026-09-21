@@ -106,6 +106,7 @@ bool FindOutbox(int userId, const QString& clientMessageId,
 
 struct SendSpy {
     QHash<int, int> counts;
+    QHash<int, QByteArray> payloads;
     int count(int messageId) const { return counts.value(messageId, 0); }
 };
 
@@ -271,6 +272,23 @@ void TestResourceStateMachine(const SendSpy& spy) {
     Check(spy.count(ID_RESOURCE_UPLOAD_PROGRESS_REQ) == progressBefore + 1,
         "authenticated resource connection queries upload progress");
 
+    const int chunksBefore = spy.count(ID_RESOURCE_CHUNK_UPLOAD_REQ);
+    emit FileTcpMgr::GetInstance()->sig_upload_progress_rsp(
+        9100000001LL, ErrorCodes::SUCCESS, resource.file_size_bytes,
+        static_cast<int>(MessageStatus::Pending));
+    Pump(50);
+    Check(FindOutbox(userId, clientMessageId, nullptr)
+        && ReadMessage(userId, clientMessageId, &stored)
+        && stored.send_status == LOCAL_SEND_SENDING,
+        "full-length pending upload stays in outbox until published");
+    const QJsonObject retried = QJsonDocument::fromJson(
+        spy.payloads.value(ID_RESOURCE_CHUNK_UPLOAD_REQ)).object();
+    Check(spy.count(ID_RESOURCE_CHUNK_UPLOAD_REQ) == chunksBefore + 1
+        && retried.value(QStringLiteral("offset")).toString() == QStringLiteral("0")
+        && QByteArray::fromBase64(retried.value(QStringLiteral("data")).toString().toLatin1())
+            == QByteArray("resource-data"),
+        "full-length pending upload resends the final chunk from its start");
+
     const QString archivePath = sourceDirectory.filePath(QStringLiteral("9100000001"));
     QFile::copy(sourcePath, archivePath);
     emit FileTcpMgr::GetInstance()->sig_resource_upload_done(
@@ -356,8 +374,9 @@ int main(int argc, char* argv[]) {
             spy.counts[static_cast<int>(id)] += 1;
         });
     QObject::connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_send_data,
-        [&spy](ReqId id, const QByteArray&) {
+        [&spy](ReqId id, const QByteArray& data) {
             spy.counts[static_cast<int>(id)] += 1;
+            spy.payloads[static_cast<int>(id)] = data;
         });
 
     TestOfflineRestoreAndTextConfirm(spy);

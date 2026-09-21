@@ -99,6 +99,23 @@ llfc_apply_msvc_defaults(sha256_tests)
 
 add_test(NAME sha256_tests COMMAND sha256_tests)
 
+# Exercise the production upload recovery/writer against real temporary files.
+find_package(Boost CONFIG REQUIRED COMPONENTS filesystem)
+add_executable(resource_upload_tests
+  resource_upload_tests.cpp
+  ../server/ResourceServer/src/ResourceUploadFile.cpp
+  ../server/common/src/Sha256.cpp
+)
+target_include_directories(resource_upload_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../server/ResourceServer/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../server/common/include"
+  "${LLFC_REPO_ROOT}/proto"
+)
+target_link_libraries(resource_upload_tests PRIVATE Boost::filesystem OpenSSL::Crypto)
+target_compile_features(resource_upload_tests PRIVATE cxx_std_17)
+llfc_apply_msvc_defaults(resource_upload_tests)
+add_test(NAME resource_upload_tests COMMAND resource_upload_tests)
+
 # --- Client local store (SQLite) tests ---------------------------------------
 # Compiles the client's production LocalChatDb sources directly (mirrors
 # worker_pool_tests). localchatdb.cpp includes the client's global.h, which

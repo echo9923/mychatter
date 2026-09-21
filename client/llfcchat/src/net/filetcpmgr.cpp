@@ -9,11 +9,11 @@
 #include <QFileInfo>
 #include <QCryptographicHash>
 
-//offset(字节) 对应的已确认分片序号：非末片 server_offset 恒为 32K 整数倍
+//未发布时即使字节已收齐，也要重试末片以再次触发校验和发布。
 static qint64 OffsetToChunkIndex(qint64 server_offset, qint64 total_size, qint64 max_seq)
 {
     if (server_offset >= total_size) {
-        return max_seq;
+        return qMax<qint64>(0, max_seq - 1);
     }
     return server_offset / MAX_FILE_LEN;
 }
@@ -541,8 +541,7 @@ void FileTcpMgr::handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data
         file_info->_seq = file_info->_last_confirmed_seq + 1;
         file_info->_rsp_size = qMin(server_offset, file_info->_total_size);
 
-        if (status == static_cast<int>(MessageStatus::Published)
-            || file_info->_rsp_size >= file_info->_total_size) {
+        if (status == static_cast<int>(MessageStatus::Published)) {
             //上传收全：发送方本地归档一份到资源目录，通知 UI/Outbox
             auto uid = UserMgr::GetInstance()->GetUid();
             QString storageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);

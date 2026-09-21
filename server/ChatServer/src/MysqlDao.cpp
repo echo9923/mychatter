@@ -5,9 +5,22 @@
 #include "PasswordHash.h"
 
 #include <algorithm>
+#include <chrono>
 #include <iostream>
+#include <thread>
 
 namespace {
+
+int ReadConcurrencySetting(const char* key, int fallback, int minimum, int maximum) {
+	try {
+		const auto value = ConfigMgr::Inst().GetValue("Concurrency", key);
+		std::size_t consumed = 0;
+		const int parsed = std::stoi(value, &consumed);
+		if (consumed == value.size() && parsed >= minimum && parsed <= maximum) return parsed;
+	} catch (const std::exception&) {
+	}
+	return fallback;
+}
 
 const char* kMessageProjection =
 	"m.message_id, m.thread_id, m.sender_user_id, "
@@ -34,8 +47,12 @@ std::int64_t LastInsertId(sql::Connection* connection) {
 
 MysqlDao::MysqlDao() {
 	auto& cfg = ConfigMgr::Inst();
+	const int pool_size = ReadConcurrencySetting("MysqlPoolSize", 5, 1, 64);
+	deadlock_retries_ = ReadConcurrencySetting("MysqlDeadlockRetries", 2, 0, 5);
 	pool_.reset(new MySqlPool(cfg["Mysql"]["Host"] + ":" + cfg["Mysql"]["Port"],
-		cfg["Mysql"]["User"], cfg["Mysql"]["Passwd"], cfg["Mysql"]["Schema"], 5));
+		cfg["Mysql"]["User"], cfg["Mysql"]["Passwd"], cfg["Mysql"]["Schema"], pool_size));
+	std::cout << "MysqlDao pool_size=" << pool_size
+		<< " deadlock_retries=" << deadlock_retries_ << std::endl;
 }
 
 MysqlDao::~MysqlDao() {
@@ -610,7 +627,29 @@ SaveMessageResult MysqlDao::AddChatMsg(const std::shared_ptr<ChatMessage>& messa
 	if (!connection) return SaveMessageResult::Failed;
 	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
 	auto* sql_connection = connection->_con.get();
-	try {
+	for (int attempt = 0; ; ++attempt) {
+		try {
+			return AddChatMsgTransaction(sql_connection, message);
+		} catch (const sql::SQLException& error) {
+			std::cerr << "AddChatMsg SQLException code=" << error.getErrorCode()
+				<< " attempt=" << attempt + 1 << ": " << error.what() << std::endl;
+			try {
+				sql_connection->rollback();
+			} catch (const sql::SQLException&) {
+				return SaveMessageResult::Failed;
+			}
+			// InnoDB 1213 rolls back the whole transaction. Never retry an
+			// ambiguous connection/commit failure as though rollback were known.
+			if (error.getErrorCode() != 1213 || attempt >= deadlock_retries_) {
+				return SaveMessageResult::Failed;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1 << attempt));
+		}
+	}
+}
+
+SaveMessageResult MysqlDao::AddChatMsgTransaction(sql::Connection* sql_connection,
+	const std::shared_ptr<ChatMessage>& message) {
 		sql_connection->setAutoCommit(false);
 		int lower = 0;
 		int higher = 0;
@@ -710,11 +749,6 @@ SaveMessageResult MysqlDao::AddChatMsg(const std::shared_ptr<ChatMessage>& messa
 		}
 		sql_connection->commit();
 		return SaveMessageResult::Stored;
-	} catch (const sql::SQLException& error) {
-		std::cerr << "AddChatMsg SQLException: " << error.what() << std::endl;
-		sql_connection->rollback();
-		return SaveMessageResult::Failed;
-	}
 }
 
 std::shared_ptr<PageResult> MysqlDao::LoadChatMsg(int requester_user_id,

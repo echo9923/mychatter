@@ -49,6 +49,7 @@ add_executable(ResourceServer
   src/MysqlMgr.cpp
   src/RedisMgr.cpp
   src/ResourceServer.cpp
+  src/ResourceUploadFile.cpp
   src/UserMgr.cpp
   include/base64.h
   include/ChatServerGrpcClient.h
@@ -66,6 +67,7 @@ add_executable(ResourceServer
   include/MysqlDao.h
   include/MysqlMgr.h
   include/RedisMgr.h
+  include/ResourceUploadFile.h
   include/UserMgr.h
 )
 
