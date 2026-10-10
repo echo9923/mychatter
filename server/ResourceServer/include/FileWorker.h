@@ -9,7 +9,8 @@ using json = nlohmann::json;
 #include <chrono>
 #include <unordered_map>
 #include "const.h"
-
+#include "Sha256.h"
+#include "LogicWorker.h"  // server/common 执行器
 class CSession;
 struct ChatMessage;
 
@@ -102,6 +103,14 @@ struct UploadSession {
 	int sender_user_id = 0;          ///< 会话持有者（权限校验：上传者必须是消息 sender）
 	int recipient_user_id = 0;
 	std::chrono::steady_clock::time_point last_active;
+
+	// 流式哈希（P1a-2）：hash_valid 为真当且仅当 hasher 恰好覆盖 [0, received)
+	// 且未 finalize。只有从 0 连续追加才成立；会话重建 received>0、重复片
+	// 校验失败截断、任何写失败都会置为无效，完成点回退 Sha256FileHex 整文件
+	// 重算。final_hex 缓存完成点结果，重试完成不重复 finalize。
+	llfc::Sha256Stream hasher;  ///< 只可移动 => UploadSession 亦只可移动
+	bool hash_valid = false;
+	std::string final_hex;
 };
 
 class FileWorker
@@ -110,6 +119,8 @@ public:
 	FileWorker();
 	~FileWorker();
 	void RegisterHandlers();
+	/// 幂等停机：拒绝新任务并排空既有任务（透传 common 执行器语义）
+	void Stop();
 	/// 头像通道（1601）：按调用方给定的 index 投递
 	void PostTask(std::shared_ptr<FileTask> task);
 	/// 资源分片上传（1505）：必须在 ResourceWorkerIndex 选定的 worker 上执行
@@ -136,11 +147,9 @@ private:
 	std::unordered_map<MSG_TYPES, std::function<void(std::shared_ptr<FileTask>)> > _handlers;
 	///< 上传会话表：key=message_id，仅 worker 线程访问（固定路由保证单线程访问）
 	std::unordered_map<long long, std::shared_ptr<UploadSession>> _upload_sessions;
-	std::thread _work_thread;
-	std::queue<std::function<void()>> _task_que;
-	std::atomic<bool> _b_stop;
-	std::mutex  _mtx;
-	std::condition_variable _cv;
+	/// 执行器（common ::LogicWorker）。必须声明为最后一个成员：其析构会排空
+	/// 队列并执行仍引用本对象其余成员的任务，届时其余成员必须仍存活。
+	::LogicWorker _executor;
 };
 
 
@@ -148,15 +157,15 @@ class DownloadWorker {
 public:
 	DownloadWorker();
 	~DownloadWorker();
+	/// 幂等停机：拒绝新任务并排空既有任务（透传 common 执行器语义）
+	void Stop();
 	void PostTask(std::shared_ptr<DownloadTask> task);
 	/// 资源分片下载（1511）：必须在 ResourceWorkerIndex 选定的 worker 上执行
 	void PostChunkTask(std::shared_ptr<ResourceChunkDownTask> task);
 private:
 	void task_callback(std::shared_ptr<DownloadTask>);
 	void HandleResourceChunkDown(std::shared_ptr<ResourceChunkDownTask> task);
-	std::thread _work_thread;
-	std::queue<std::function<void()>> _task_que;
-	std::atomic<bool> _b_stop;
-	std::mutex  _mtx;
-	std::condition_variable _cv;
+	/// 执行器（common ::LogicWorker）。必须声明为最后一个成员：其析构会排空
+	/// 队列并执行仍引用本对象其余成员的任务，届时其余成员必须仍存活。
+	::LogicWorker _executor;
 };

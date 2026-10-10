@@ -43,7 +43,7 @@ add_executable(ResourceServer
   src/FileSystem.cpp
   src/FileWorker.cpp
   src/LogicSystem.cpp
-  src/LogicWorker.cpp
+  src/ResourceLogicWorker.cpp
   src/MsgNode.cpp
   src/MysqlDao.cpp
   src/MysqlMgr.cpp
@@ -62,7 +62,7 @@ add_executable(ResourceServer
   include/FileSystem.h
   include/FileWorker.h
   include/LogicSystem.h
-  include/LogicWorker.h
+  include/ResourceLogicWorker.h
   include/MsgNode.h
   include/MysqlDao.h
   include/MysqlMgr.h

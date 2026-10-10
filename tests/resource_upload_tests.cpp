@@ -60,9 +60,10 @@ std::string Read(const boost::filesystem::path& path) {
 int SendChunk(const boost::filesystem::path& path, const std::string& blob,
     unsigned long long offset, unsigned long long& received) {
     const std::string chunk = blob.substr(static_cast<std::size_t>(offset), MAX_FILE_LEN);
-    return llfc::WriteUploadChunk(path, blob.size(), offset, chunk,
+    return llfc::WriteUploadChunk(path, blob.size(), MAX_FILE_LEN, offset, chunk,
         llfc::Sha256Hex(chunk), received);
 }
+
 
 void Finish(const boost::filesystem::path& path, const std::string& blob,
     unsigned long long& received, const std::string& name) {
@@ -104,7 +105,7 @@ void TestRecovery(const boost::filesystem::path& root) {
         residue.resize(test.length, '?');
         Seed(path, residue);
         unsigned long long received = 999999;
-        const bool recovered = llfc::RecoverUploadFile(path, blob.size(), received);
+        const bool recovered = llfc::RecoverUploadFile(path, blob.size(), MAX_FILE_LEN, received);
         Check(recovered && received == test.resume,
             std::string(test.name) + ": recovery returns the last chunk start");
         Check(boost::filesystem::file_size(path) == test.resume
@@ -114,11 +115,11 @@ void TestRecovery(const boost::filesystem::path& root) {
     }
     unsigned long long received = 123;
     const auto absent = root / "absent.part";
-    Check(llfc::RecoverUploadFile(absent, 100000, received) && received == 0
+    Check(llfc::RecoverUploadFile(absent, 100000, MAX_FILE_LEN, received) && received == 0
         && !boost::filesystem::exists(absent), "missing upload starts at zero");
     const auto fresh = root / "new-sender" / "first-upload.part";
     received = 123;
-    Check(llfc::RecoverUploadFile(fresh, 100000, received) && received == 0,
+    Check(llfc::RecoverUploadFile(fresh, 100000, MAX_FILE_LEN, received) && received == 0,
         "first upload recovers when its parent directory does not exist yet");
     if (received == 0) Finish(fresh, Blob(100000), received, "first upload");
 }
@@ -134,7 +135,7 @@ void TestDuplicateRepair(const boost::filesystem::path& root) {
 
     const auto chunk = blob.substr(32768, 32768);
     const auto bad_data = std::string(chunk.size(), '?');
-    Check(llfc::WriteUploadChunk(path, blob.size(), 32768, bad_data,
+    Check(llfc::WriteUploadChunk(path, blob.size(), MAX_FILE_LEN, 32768, bad_data,
         llfc::Sha256Hex(chunk), received) == ErrorCodes::FileHashMismatch
         && received == 98304 && Read(path) == blob.substr(0, 98304),
         "bad incoming duplicate hash cannot discard a valid prefix");
@@ -158,10 +159,10 @@ void TestInvalidChunks(const boost::filesystem::path& root) {
     Check(SendChunk(path, blob, 1, received) == ErrorCodes::FileOffsetInvalid,
         "non-boundary upload offset rejected");
     const auto short_chunk = blob.substr(32768, 16384);
-    Check(llfc::WriteUploadChunk(path, blob.size(), 32768, short_chunk,
+    Check(llfc::WriteUploadChunk(path, blob.size(), MAX_FILE_LEN, 32768, short_chunk,
         llfc::Sha256Hex(short_chunk), received) == ErrorCodes::FileSizeExceeded,
         "short non-final request cannot create a partial confirmed chunk");
-    Check(llfc::WriteUploadChunk(path, blob.size(),
+    Check(llfc::WriteUploadChunk(path, blob.size(), MAX_FILE_LEN,
         (std::numeric_limits<unsigned long long>::max)() - 32767,
         short_chunk, llfc::Sha256Hex(short_chunk), received) == ErrorCodes::FileOffsetInvalid,
         "overflowing offset rejected without writing");
@@ -177,7 +178,7 @@ void TestIoFailures(const boost::filesystem::path& root) {
     const auto dir = root / "directory.part";
     boost::filesystem::create_directory(dir);
     unsigned long long received = 65536;
-    Check(!llfc::RecoverUploadFile(dir, blob.size(), received) && received == 65536,
+    Check(!llfc::RecoverUploadFile(dir, blob.size(), MAX_FILE_LEN, received) && received == 65536,
         "recovery I/O failure does not report a successful offset reset");
     Check(SendChunk(dir, blob, 65536, received) == ErrorCodes::FileWritePermissionFailed
         && received == 65536, "failed write keeps the retry at the original chunk start");
@@ -189,7 +190,7 @@ void TestIoFailures(const boost::filesystem::path& root) {
         FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     Check(locked != INVALID_HANDLE_VALUE, "lock upload file to force write/truncate errors");
     if (locked != INVALID_HANDLE_VALUE) {
-        Check(!llfc::RecoverUploadFile(path, blob.size(), received)
+        Check(!llfc::RecoverUploadFile(path, blob.size(), MAX_FILE_LEN, received)
             && received == 65536 && boost::filesystem::file_size(path) == 81920,
             "failed truncation retains the old confirmed progress");
         Check(SendChunk(path, blob, 65536, received) == ErrorCodes::FileWritePermissionFailed

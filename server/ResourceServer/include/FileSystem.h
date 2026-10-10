@@ -9,6 +9,9 @@ class FileSystem :public Singleton<FileSystem>
 	friend class Singleton<FileSystem>;
 public:
 	~FileSystem();
+	/// 幂等停机：拒绝新任务并先排空 FileWorker、再排空 DownloadWorker
+	///（透传各执行器的排空语义；静态析构重复调用安全）
+	void Stop();
 	void PostMsgToQue(shared_ptr <FileTask> msg, int index);
 	void PostDownloadTaskToQue(std::shared_ptr<DownloadTask> msg, int index);
 	/// 资源分片上传（1505）：index 必须由 ResourceWorkerIndex(message_id, FILE_WORKER_COUNT) 计算

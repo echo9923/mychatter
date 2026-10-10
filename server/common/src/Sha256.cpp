@@ -83,4 +83,83 @@ bool IsValidSha256Hex(const std::string& hex) {
     return true;
 }
 
+// --- Sha256Stream：只可移动的流式上下文 ----------------------------------------
+
+Sha256Stream::Sha256Stream() {
+    Init();
+}
+
+Sha256Stream::~Sha256Stream() {
+    Destroy();
+}
+
+Sha256Stream::Sha256Stream(Sha256Stream&& other) noexcept
+    : _ctx(other._ctx), _final(std::move(other._final)) {
+    other._ctx = nullptr;
+    other._final.clear();
+}
+
+Sha256Stream& Sha256Stream::operator=(Sha256Stream&& other) noexcept {
+    if (this != &other) {
+        Destroy();
+        _ctx = other._ctx;
+        _final = std::move(other._final);
+        other._ctx = nullptr;
+        other._final.clear();
+    }
+    return *this;
+}
+
+bool Sha256Stream::Init() {
+    if (_ctx != nullptr) {
+        return true; // 已初始化（Reset 复用）
+    }
+    _ctx = EVP_MD_CTX_new();
+    if (_ctx == nullptr) {
+        return false;
+    }
+    if (EVP_DigestInit_ex(_ctx, EVP_sha256(), nullptr) != 1) {
+        Destroy();
+        return false;
+    }
+    return true;
+}
+
+void Sha256Stream::Destroy() noexcept {
+    if (_ctx != nullptr) {
+        EVP_MD_CTX_free(_ctx);
+        _ctx = nullptr;
+    }
+    _final.clear();
+}
+
+bool Sha256Stream::Update(const void* data, std::size_t len) {
+    if (_ctx == nullptr || !_final.empty()) {
+        // 未初始化（构造失败后）或已 finalize：不接受追加
+        return false;
+    }
+    return EVP_DigestUpdate(_ctx, data, len) == 1;
+}
+
+std::string Sha256Stream::FinalHex() {
+    if (!_final.empty()) {
+        return _final; // 幂等：Reset 前重复 finalize 返回同一结果
+    }
+    if (_ctx == nullptr) {
+        return std::string();
+    }
+    std::array<unsigned char, EVP_MAX_MD_SIZE> md{};
+    unsigned int md_len = 0;
+    if (EVP_DigestFinal_ex(_ctx, md.data(), &md_len) != 1) {
+        return std::string();
+    }
+    _final = ToLowerHex(md.data(), md_len);
+    return _final;
+}
+
+void Sha256Stream::Reset() {
+    Destroy();
+    Init();
+}
+
 } // namespace llfc

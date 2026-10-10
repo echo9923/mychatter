@@ -10,7 +10,7 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 #include <unordered_map>
-#include "LogicWorker.h"
+#include "ResourceLogicWorker.h"
 #include "FileInfo.h"
 
 
@@ -21,8 +21,10 @@ class LogicSystem:public Singleton<LogicSystem>
 public:
 	~LogicSystem();
 	void PostMsgToQue(shared_ptr < LogicNode> msg, int index);
+	/// 幂等停机：拒绝新投递并排空全部 ResourceLogicWorker
+	///（透传各执行器的排空语义；静态析构重复调用安全）
+	void Stop();
 private:
 	LogicSystem();
-	std::vector<std::shared_ptr<LogicWorker> > _workers;
+	std::vector<std::shared_ptr<ResourceLogicWorker> > _workers;
 };
-

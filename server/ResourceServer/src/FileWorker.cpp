@@ -16,6 +16,23 @@ namespace {
 	constexpr int kAppRecipientOffline = llfc_proto::ERR_RECIPIENT_OFFLINE;
 /// UploadSession 空闲逐出阈值
 constexpr auto kSessionIdleTimeout = std::chrono::minutes(30);
+/// 上传分片大小（字节）：与线协议 v1 的 MAX_FILE_LEN 一致（32KiB Base64 JSON）。
+/// P1c 线协议 v2 将换用 proto/resource_wire.h 的 256KiB 常量。
+constexpr unsigned long long kUploadChunkSize = MAX_FILE_LEN;
+
+/// 单任务异常边界：异常绝不能逃逸到 common 执行器线程（否则 terminate）。
+/// 吞掉并记录，队列中的后续任务继续执行。
+void RunGuarded(const char* what, const std::function<void()>& fn) {
+	try {
+		fn();
+	}
+	catch (const std::exception& e) {
+		std::cerr << "ResourceServer: " << what << " threw: " << e.what() << std::endl;
+	}
+	catch (...) {
+		std::cerr << "ResourceServer: " << what << " threw unknown exception" << std::endl;
+	}
+}
 
 /// 资源文件路径：resource/<sender_uid>/<message_id>（进行中为 .part 后缀）
 boost::filesystem::path ResourceFilePath(long long sender_id, long long message_id) {
@@ -25,41 +42,20 @@ boost::filesystem::path ResourceFilePath(long long sender_id, long long message_
 
 } // namespace
 
-FileWorker::FileWorker() :_b_stop(false)
+FileWorker::FileWorker()
 {
 	RegisterHandlers();
-	_work_thread = std::thread([this]() {
-		while (!_b_stop) {
-			std::unique_lock<std::mutex> lock(_mtx);
-			_cv.wait(lock, [this]() {
-				if (_b_stop) {
-					return true;
-				}
-
-				if (_task_que.empty()) {
-					return false;
-				}
-
-				return true;
-				});
-
-			if (_b_stop) {
-				break;
-			}
-
-			auto task_call = _task_que.front();
-			_task_que.pop();
-			task_call();
-		}
-
-		});
 }
 
 FileWorker::~FileWorker()
 {
-	_b_stop = true;
-	_cv.notify_one();
-	_work_thread.join();
+	// _executor（最后声明的成员）析构时排空队列并 join 工作线程，
+	// 排空期间其余成员仍存活，任务可安全访问。
+}
+
+void FileWorker::Stop()
+{
+	_executor.Stop();
 }
 
 void FileWorker::RegisterHandlers()
@@ -149,37 +145,23 @@ void FileWorker::RegisterHandlers()
 
 void FileWorker::PostTask(std::shared_ptr<FileTask> task)
 {
-	{
-		std::lock_guard<std::mutex> lock(_mtx);
-		//借鉴python万物皆对象思想，构造伪闭包将函数对象扔到队列中
-		_task_que.push([task, this]() {
-			task_callback(task);
-			});
-	}
-
-	_cv.notify_one();
+	_executor.Post([this, task]() {
+		RunGuarded("file task", [this, task]() { task_callback(task); });
+		});
 }
 
 void FileWorker::PostChunkTask(std::shared_ptr<ResourceChunkTask> task)
 {
-	{
-		std::lock_guard<std::mutex> lock(_mtx);
-		_task_que.push([task, this]() {
-			HandleResourceChunk(task);
-			});
-	}
-
-	_cv.notify_one();
+	_executor.Post([this, task]() {
+		RunGuarded("resource chunk upload", [this, task]() { HandleResourceChunk(task); });
+		});
 }
 
 void FileWorker::PostClosure(std::function<void(FileWorker&)> fn)
 {
-	{
-		std::lock_guard<std::mutex> lock(_mtx);
-		_task_que.push([this, fn = std::move(fn)]() { fn(*this); });
-	}
-
-	_cv.notify_one();
+	_executor.Post([this, fn = std::move(fn)]() {
+		RunGuarded("file worker closure", [this, &fn]() { fn(*this); });
+		});
 }
 
 void FileWorker::task_callback(std::shared_ptr<FileTask> task)
@@ -212,10 +194,15 @@ std::shared_ptr<UploadSession> FileWorker::LoadUploadSession(long long message_i
 	session->recipient_user_id = msg->recipient_user_id;
 	//长度不能证明最后一片写完；仅在会话重建时回退，后续查询复用缓存。
 	const auto part_path = ResourceFilePath(msg->sender_user_id, message_id).string() + ".part";
-	if (!llfc::RecoverUploadFile(part_path, msg->resource->file_size_bytes, session->received)) {
+	if (!llfc::RecoverUploadFile(part_path, msg->resource->file_size_bytes,
+		kUploadChunkSize, session->received)) {
 		std::cerr << "ResourceServer: upload recovery failed msg=" << message_id << std::endl;
 		return nullptr;
 	}
+	//会话重建：received>0 时磁盘前缀未经过流式累计，增量哈希无效（完成点
+	//回退整文件重算）；received==0 时 hasher（新对象）天然覆盖 [0,0)。
+	session->hash_valid = (session->received == 0);
+	session->final_hex.clear();
 	session->last_active = std::chrono::steady_clock::now();
 	_upload_sessions[message_id] = session;
 	return session;
@@ -295,14 +282,28 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 
 	const auto base_path = ResourceFilePath(session->sender_user_id, task->_message_id);
 	const auto part_path = base_path.string() + ".part";
+	const unsigned long long offset = static_cast<unsigned long long>(task->_offset);
+	const unsigned long long received_before = session->received;
+	const std::string decoded = base64_decode(task->_file_data);
 	const int error = llfc::WriteUploadChunk(part_path, session->file_size_bytes,
-		static_cast<unsigned long long>(task->_offset), base64_decode(task->_file_data),
-		task->_chunk_sha256, session->received);
+		kUploadChunkSize, offset, decoded, task->_chunk_sha256, session->received);
 	if (error != ErrorCodes::Success) {
+		//失败路径可能已回退/截断 received（重复片损坏回退、写失败回滚），
+		//增量哈希与完成点缓存一律失效。
+		session->hash_valid = false;
+		session->final_hex.clear();
 		std::cerr << "ResourceServer: upload chunk failed msg=" << task->_message_id
 			<< " offset=" << task->_offset << " error=" << error << std::endl;
 		respond(error, session->received, -1);
 		return;
+	}
+
+	if (offset == received_before) {
+		//连续追加（含新会话从 0 开始）：哈希同步推进，保持覆盖 [0, received)。
+		//重复片命中路径（offset < received_before）不改变任何状态。
+		if (session->hash_valid && !session->hasher.Update(decoded)) {
+			session->hash_valid = false;  //EVP 失败：完成点回退整文件重算
+		}
 	}
 
 	//完成判定（服务端按 total_size 判定，不信任客户端 last 字段）
@@ -331,9 +332,24 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 		}
 	};
 
-	//整文件 SHA-256 校验（内存增量上下文在重启后丢失，此处整文件重算，100MB 约数百 ms）
-	const std::string full_hash = llfc::Sha256FileHex(part_path);
+	//整文件 SHA-256：会话内连续追加时直接用流式哈希（不重读文件）；
+	//重建/截断后增量失效则回退整文件重算（100MB 约数百 ms）。
+	//结果缓存于 final_hex，重试完成不重复 finalize/重算。
+	std::string full_hash;
+	if (!session->final_hex.empty()) {
+		full_hash = session->final_hex;
+	}
+	else {
+		if (session->hash_valid) {
+			session->final_hex = session->hasher.FinalHex();
+		}
+		if (session->final_hex.empty()) {
+			session->final_hex = llfc::Sha256FileHex(part_path);
+		}
+		full_hash = session->final_hex;
+	}
 	if (full_hash.empty()) {
+		session->final_hex.clear();
 		respond_error(ErrorCodes::FileReadFailed, session->received);
 		return;
 	}
@@ -348,6 +364,10 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 			return;
 		}
 		session->received = 0;
+		//从 0 重开：重置流式上下文，后续连续追加重新有效
+		session->hasher.Reset();
+		session->hash_valid = true;
+		session->final_hex.clear();
 		respond_error(ErrorCodes::FileHashMismatch, 0);
 		return;
 	}
@@ -441,63 +461,33 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 	}
 }
 
-DownloadWorker::DownloadWorker() :_b_stop(false)
+DownloadWorker::DownloadWorker()
 {
-	_work_thread = std::thread([this]() {
-		while (!_b_stop) {
-			std::unique_lock<std::mutex> lock(_mtx);
-			_cv.wait(lock, [this]() {
-				if (_b_stop) {
-					return true;
-				}
-
-				if (_task_que.empty()) {
-					return false;
-				}
-
-				return true;
-				});
-
-			if (_b_stop) {
-				break;
-			}
-
-			auto task_call = _task_que.front();
-			_task_que.pop();
-			task_call();
-		}
-		});
 }
 
 DownloadWorker::~DownloadWorker()
 {
-	_b_stop = true;
-	_cv.notify_one();
-	_work_thread.join();
+	// _executor（最后声明的成员）析构时排空队列并 join 工作线程，
+	// 排空期间其余成员仍存活，任务可安全访问。
+}
+
+void DownloadWorker::Stop()
+{
+	_executor.Stop();
 }
 
 void DownloadWorker::PostTask(std::shared_ptr<DownloadTask> task)
 {
-	{
-		std::lock_guard<std::mutex> lock(_mtx);
-		_task_que.push([task, this]() {
-			task_callback(task);
-			});
-	}
-
-	_cv.notify_one();
+	_executor.Post([this, task]() {
+		RunGuarded("download task", [this, task]() { task_callback(task); });
+		});
 }
 
 void DownloadWorker::PostChunkTask(std::shared_ptr<ResourceChunkDownTask> task)
 {
-	{
-		std::lock_guard<std::mutex> lock(_mtx);
-		_task_que.push([task, this]() {
-			HandleResourceChunkDown(task);
-			});
-	}
-
-	_cv.notify_one();
+	_executor.Post([this, task]() {
+		RunGuarded("resource chunk down", [this, task]() { HandleResourceChunkDown(task); });
+		});
 }
 
 void DownloadWorker::task_callback(std::shared_ptr<DownloadTask> task)

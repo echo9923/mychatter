@@ -3,7 +3,19 @@
 
 FileSystem::~FileSystem()
 {
+	Stop();
+}
 
+void FileSystem::Stop()
+{
+	//FileWorker 先排空：ResourceLogicWorker 的排空过程仍会向其投递任务；
+	//DownloadWorker 最后。各 Stop 幂等，重复调用安全。
+	for (auto& worker : _file_workers) {
+		if (worker) worker->Stop();
+	}
+	for (auto& worker : _down_load_worker) {
+		if (worker) worker->Stop();
+	}
 }
 
 void FileSystem::PostMsgToQue(shared_ptr<FileTask> msg, int index)

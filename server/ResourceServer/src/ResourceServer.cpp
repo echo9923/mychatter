@@ -12,6 +12,8 @@
 #include "ConfigMgr.h"
 #include "MysqlMgr.h"
 #include "const.h"
+#include "FileSystem.h"
+#include "LogicSystem.h"
 
 namespace {
 /// 本地时间格式化为 MySQL timestamp 字符串（与 chat_messages.created_at 同构）
@@ -148,12 +150,17 @@ int main()
 			});
 
 		CServer s(io_context, atoi(port_str.c_str()), pool);
+		//优雅停机顺序：停 accept/关闭会话 → 停 io → 排空入口 logic workers
+		//（排空期间仍可向 FileWorker 投递）→ 排空 FileWorker/DownloadWorker
+		//→ 停 IO 池。各 Stop 幂等，静态析构重复调用安全。
 		signals.async_wait([&io_context, pool, &s](auto, auto) {
 			s.Stop();
-			pool->Drain();
 			io_context.stop();
+			LogicSystem::GetInstance()->Stop();
+			FileSystem::GetInstance()->Stop();
+			pool->Drain();
 			pool->Stop();
-			});
+		});
 		io_context.run();
 	}
 	catch (std::exception& e) {

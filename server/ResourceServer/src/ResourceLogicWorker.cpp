@@ -1,4 +1,4 @@
-#include "LogicWorker.h"
+#include "ResourceLogicWorker.h"
 #include "FileSystem.h"
 #include "CSession.h"
 #include "LogicSystem.h"
@@ -10,10 +10,27 @@
 #include <algorithm>
 #include <boost/filesystem.hpp>
 #include <cctype>
+#include <iostream>
 #include <limits>
 
+namespace {
+
+/// 单任务异常边界：异常绝不能逃逸到 common 执行器线程（否则 terminate）。
+/// 吞掉并记录，队列中的后续任务继续执行。
+void RunGuarded(const char* what, const std::function<void()>& fn) {
+	try {
+		fn();
+	}
+	catch (const std::exception& e) {
+		std::cerr << "ResourceServer: " << what << " threw: " << e.what() << std::endl;
+	}
+	catch (...) {
+		std::cerr << "ResourceServer: " << what << " threw unknown exception" << std::endl;
+	}
+}
+
 //将请求消息类型映射为对应的回复消息类型；无对应回复（通知类）或未知类型返回0
-static short ReqToRspId(short msg_type)
+short ReqToRspId(short msg_type)
 {
 	switch (msg_type) {
 	case ID_UPLOAD_HEAD_ICON_REQ:             return ID_UPLOAD_HEAD_ICON_RSP;
@@ -26,7 +43,6 @@ static short ReqToRspId(short msg_type)
 	}
 }
 
-namespace {
 /// 从 JSON 值解析 64 位无符号整数：破坏性协议只接受十进制字符串。
 bool ParseJsonUInt64(const json& v, unsigned long long& out) {
 	if (v.is_string()) {
@@ -58,72 +74,49 @@ boost::filesystem::path ResourceFilePath(long long sender_id, long long message_
 }
 } // namespace
 
-LogicWorker::LogicWorker():_b_stop(false)
+ResourceLogicWorker::ResourceLogicWorker()
 {
 	RegisterCallBacks();
+}
 
-	_work_thread = std::thread([this]() {
-		while (!_b_stop) {
-			std::unique_lock<std::mutex> lock(_mtx);
-			_cv.wait(lock, [this]() {
-				if(_b_stop) {
-					return true;
-				}
+ResourceLogicWorker::~ResourceLogicWorker()
+{
+	// _executor（最后声明的成员）析构时排空队列并 join 工作线程，
+	// 排空期间其余成员仍存活，任务可安全访问。
+}
 
-				if (_task_que.empty()) {
-					return false;
-				}
-
-				return true;
-
-			});
-
-			if (_b_stop) {
-				return;
-			}
-
-			auto task = _task_que.front();
-			task_callback(task);
-			_task_que.pop();
-		}
+bool ResourceLogicWorker::PostTask(std::shared_ptr<LogicNode> task)
+{
+	return _executor.Post([this, task]() {
+		RunGuarded("logic task", [this, &task]() { task_callback(task); });
 	});
-
 }
 
-LogicWorker::~LogicWorker()
+void ResourceLogicWorker::Stop()
 {
-	_b_stop = true;
-	_cv.notify_one();
-	_work_thread.join();
+	_executor.Stop();
 }
 
-void LogicWorker::PostTask(std::shared_ptr<LogicNode> task)
+void ResourceLogicWorker::RegisterCallBacks()
 {
-	std::lock_guard<std::mutex> lock(_mtx);
-	_task_que.push(task);
-	_cv.notify_one();
-}
-
-void LogicWorker::RegisterCallBacks()
-{
-	_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = &LogicWorker::handleUploadHeadIcon;
-	_fun_callbacks[ID_DOWN_LOAD_FILE_REQ] = &LogicWorker::handleDownloadFile;
+	_fun_callbacks[ID_UPLOAD_HEAD_ICON_REQ] = &ResourceLogicWorker::handleUploadHeadIcon;
+	_fun_callbacks[ID_DOWN_LOAD_FILE_REQ] = &ResourceLogicWorker::handleDownloadFile;
 	//1505 上传资源分片：{message_id:"<str>", offset:"<str>", chunk_sha256, data:"<base64>"}
 	//固定路由 message_id % FILE_WORKER_COUNT：同一 .part 只被一个线程写
-	_fun_callbacks[ID_RESOURCE_CHUNK_UPLOAD_REQ] = &LogicWorker::handleResourceChunkUpload;
+	_fun_callbacks[ID_RESOURCE_CHUNK_UPLOAD_REQ] = &ResourceLogicWorker::handleResourceChunkUpload;
 	//1507 查询上传进度：{message_id:"<str>"} -> {error, message_id, server_offset, total_size,
 	//status, sha256}。与 1505 共用会话；首次恢复回退尾片，查询不重复回退
-	_fun_callbacks[ID_RESOURCE_UPLOAD_PROGRESS_REQ] = &LogicWorker::handleResourceUploadProgress;
+	_fun_callbacks[ID_RESOURCE_UPLOAD_PROGRESS_REQ] = &ResourceLogicWorker::handleResourceUploadProgress;
 	//1509 查询资源下载信息：{message_id:"<str>"} -> {error, message_id, file_name, total_size,
 	//sha256, mime_type, message_type, status}。权限：请求者必须是私聊成员
-	_fun_callbacks[ID_RESOURCE_DOWN_INFO_REQ] = &LogicWorker::handleResourceDownInfo;
+	_fun_callbacks[ID_RESOURCE_DOWN_INFO_REQ] = &ResourceLogicWorker::handleResourceDownInfo;
 	//1511 按偏移量下载资源分片：{message_id:"<str>", offset:"<str>"} ->
 	//{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
-	_fun_callbacks[ID_RESOURCE_CHUNK_DOWN_REQ] = &LogicWorker::handleResourceChunkDown;
-	_fun_callbacks[ID_RESOURCE_LOGIN_REQ] = &LogicWorker::handleResourceLogin;
+	_fun_callbacks[ID_RESOURCE_CHUNK_DOWN_REQ] = &ResourceLogicWorker::handleResourceChunkDown;
+	_fun_callbacks[ID_RESOURCE_LOGIN_REQ] = &ResourceLogicWorker::handleResourceLogin;
 }
 
-void LogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, const short& msg_type,
+void ResourceLogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, const short& msg_type,
 	const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
@@ -209,7 +202,7 @@ void LogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, const short
 
 }
 
-void LogicWorker::handleDownloadFile(shared_ptr<CSession> session, const short& msg_type,
+void ResourceLogicWorker::handleDownloadFile(shared_ptr<CSession> session, const short& msg_type,
 	const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
@@ -248,7 +241,7 @@ void LogicWorker::handleDownloadFile(shared_ptr<CSession> session, const short& 
 
 }
 
-void LogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session, const short& msg_type,
+void ResourceLogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session, const short& msg_type,
 	const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
@@ -272,6 +265,7 @@ void LogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session, const 
 		session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_UPLOAD_RSP);
 		return;
 	}
+
 	auto chunk_sha256 = root["chunk_sha256"].get<std::string>();
 	auto file_data = root["data"].get<std::string>();
 
@@ -297,7 +291,7 @@ void LogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session, const 
 	);
 }
 
-void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, const short& msg_type,
+void ResourceLogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, const short& msg_type,
 	const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
@@ -368,7 +362,7 @@ void LogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, con
 	FileSystem::GetInstance()->PostClosureToQue(callback, index);
 }
 
-void LogicWorker::handleResourceDownInfo(shared_ptr<CSession> session, const short& msg_type,
+void ResourceLogicWorker::handleResourceDownInfo(shared_ptr<CSession> session, const short& msg_type,
 	const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
@@ -436,7 +430,7 @@ void LogicWorker::handleResourceDownInfo(shared_ptr<CSession> session, const sho
 	session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
 }
 
-void LogicWorker::handleResourceChunkDown(shared_ptr<CSession> session, const short& msg_type,
+void ResourceLogicWorker::handleResourceChunkDown(shared_ptr<CSession> session, const short& msg_type,
 	const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
@@ -496,7 +490,7 @@ void LogicWorker::handleResourceChunkDown(shared_ptr<CSession> session, const sh
 	);
 }
 
-void LogicWorker::handleResourceLogin(shared_ptr<CSession> session, const short& msg_type,
+void ResourceLogicWorker::handleResourceLogin(shared_ptr<CSession> session, const short& msg_type,
 	const string& msg_data)
 {
 	auto root = json::parse(msg_data, nullptr, false);
@@ -539,7 +533,7 @@ void LogicWorker::handleResourceLogin(shared_ptr<CSession> session, const short&
 	session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
 }
 
-void LogicWorker::task_callback(std::shared_ptr<LogicNode> task)
+void ResourceLogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 {
 	auto session = task->_session;
 	if (!session->IsOpen()) {

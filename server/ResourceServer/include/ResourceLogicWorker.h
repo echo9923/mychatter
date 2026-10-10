@@ -1,11 +1,9 @@
 #pragma once
-#include <thread>
-#include <mutex>
-#include <queue>
-#include <condition_variable>
+#include <functional>
 #include <memory>
-#include "MsgNode.h"
 #include <unordered_map>
+#include "MsgNode.h"
+#include "LogicWorker.h"  // server/common 执行器（重命名后不再与本头文件同名遮蔽）
 
 class CSession;
 class LogicNode {
@@ -15,19 +13,26 @@ public:
 	shared_ptr<RecvNode> _recvnode;
 };
 
-class LogicWorker;
+class ResourceLogicWorker;
 
-/// 消息处理回调：LogicWorker 的具名成员函数，注册处一行直达实现
-typedef void (LogicWorker::*MsgHandler)(shared_ptr<CSession>,
+/// 消息处理回调：ResourceLogicWorker 的具名成员函数，注册处一行直达实现
+typedef void (ResourceLogicWorker::*MsgHandler)(shared_ptr<CSession>,
 	const short& msg_type, const string& msg_data);
 
-class LogicWorker
+/// ResourceServer 协议入口 worker（原 LogicWorker，因与 server/common 的
+/// ::LogicWorker 同名遮蔽而重命名）。自身不再持有线程/队列，
+/// 组合 common ::LogicWorker：任务在队列锁外执行，停机时排空全部任务，
+/// 每个任务有独立异常边界（异常不逃逸出工作线程）。
+class ResourceLogicWorker
 {
 public:
-	LogicWorker();
-	~LogicWorker();
-	void PostTask(std::shared_ptr<LogicNode> task);
+	ResourceLogicWorker();
+	~ResourceLogicWorker();
+	/// 投递一个待处理消息；执行器停机（拒绝新任务）时返回 false
+	bool PostTask(std::shared_ptr<LogicNode> task);
 	void RegisterCallBacks();
+	/// 幂等停机：拒绝新任务并排空既有任务（透传 common 执行器语义）
+	void Stop();
 private:
 	// 1601 头像分片上传
 	void handleUploadHeadIcon(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
@@ -44,10 +49,8 @@ private:
 	// 1501 Resource 登录鉴权
 	void handleResourceLogin(shared_ptr<CSession> session, const short& msg_type, const string& msg_data);
 	void task_callback(std::shared_ptr<LogicNode>);
-	std::thread _work_thread;
-	std::queue<std::shared_ptr<LogicNode>> _task_que;
-	std::atomic<bool> _b_stop;
-	std::mutex  _mtx;
-	std::condition_variable _cv;
 	std::unordered_map<short, MsgHandler> _fun_callbacks;
+	/// 执行器（common ::LogicWorker）。必须声明为最后一个成员：
+	/// 其析构会排空队列并执行仍引用本对象其余成员的任务，届时其余成员必须仍存活。
+	::LogicWorker _executor;
 };
