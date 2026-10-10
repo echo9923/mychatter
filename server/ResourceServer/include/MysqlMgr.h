@@ -28,6 +28,11 @@ public:
 		int limit, std::vector<ExpiredResource>& out);
 	/// 清理任务：status PENDING→FAILED；未发布资源不进入接收者事件流。
 	bool MarkResourceExpired(const std::vector<ExpiredResource>& items);
+	/// P2：发送者范围秒传判定（sha256+大小）/ 孤儿 blob 引用判定（只按
+	/// sha256）；两者 Transient 一律当保留处理，不得当"不存在"。
+	MysqlDao::TriState SenderHasPublishedContent(int sender_user_id,
+		const std::string& sha256, unsigned long long file_size_bytes);
+	MysqlDao::TriState BlobHasPublishedReference(const std::string& sha256);
 private:
 	MysqlMgr();
 	MysqlDao  _dao;

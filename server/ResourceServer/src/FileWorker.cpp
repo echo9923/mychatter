@@ -14,6 +14,8 @@
 namespace {
 /// UploadSession 空闲逐出阈值
 constexpr auto kSessionIdleTimeout = std::chrono::minutes(30);
+/// P2 秒传挑战有效期：超时即失效（客户端 2118 后经 1507 重取新挑战）
+constexpr long long kInstantProofChallengeTtlSeconds = 120;
 /// 上传分片大小：线协议 v1 固定 32KiB（与客户端 MAX_FILE_LEN 一致），
 /// .part 恢复按该单位回退末片；P1c 线协议 v2 换用新常量。
 constexpr unsigned long long kUploadChunkSize = kResourceUploadChunkSize;
@@ -32,10 +34,27 @@ void RunGuarded(const char* what, const std::function<void()>& fn) {
 	}
 }
 
-/// 资源文件路径：resource/<sender_uid>/<message_id>（进行中为 .part 后缀）
-boost::filesystem::path ResourceFilePath(long long sender_id, long long message_id) {
-	return ConfigMgr::Inst().GetResourceRootPath()
-		/ std::to_string(sender_id) / std::to_string(message_id);
+/// P2 内容寻址存储布局（根路径来自 ConfigMgr `[Storage]/[Output] ResourceRoot`，
+/// 缺省 `<Output.Path>/resource`）：
+///   uploading/<message_id>.part   进行中上传（不再按发送者分目录）
+///   blobs/<sha[0:2]>/<sha256>     已发布内容寻址 blob
+/// blob 只会在 哈希校验通过 → flush → no-replace 持久化重命名 之后出现，
+/// 不新建 resource_blobs 表。但**"同名文件存在"不等于"内容可信"**（磁盘损坏/
+/// 外部改动/上一轮发布半途失败都可能留下坏 blob）：去重命中必须复核
+/// 长度 + 整文件哈希 + 耐久性，任一不符就保留 .part 与既有 blob 并让客户端
+/// 重试（2104），绝不覆盖已发布的 blob。
+/// 旧 resource/<sender_uid>/<message_id> 布局已废弃（部署约定清空重建，
+/// 清理任务不自动删除旧布局文件）。
+/// 路径推导唯一真值：llfc::ResourceUploadingPartPath / llfc::ResourceBlobPath
+///（ResourceUploadFile.h），本文件与 1507 判定、清理任务共用。
+boost::filesystem::path UploadingPartPath(long long message_id) {
+	return llfc::ResourceUploadingPartPath(
+		ConfigMgr::Inst().GetResourceRootPath(), message_id);
+}
+
+boost::filesystem::path BlobPathOf(const std::string& sha256_hex) {
+	return llfc::ResourceBlobPath(
+		ConfigMgr::Inst().GetResourceRootPath(), sha256_hex);
 }
 
 /// 读取文件磁盘实际长度：不存在视为 0；元数据/权限错误返回 false。
@@ -52,6 +71,21 @@ bool DiskFileLength(const boost::filesystem::path& path, unsigned long long& siz
 	if (ec) return false;
 	size = static_cast<unsigned long long>(length);
 	return true;
+}
+
+/// 秒传（1513/1514）成功路径清理：秒传不写字节，正常情况下
+/// uploading/<message_id>.part 从未创建；但同一 message_id 的历史尝试可能
+/// 留下残缺 .part（恢复规则会把 ≤1 片的残留回退为 0 长度）。blob 已是唯一
+/// 内容真值，直接删除这份中间产物，不必等 7 天保留期的清理任务；删除失败
+/// （被占用等）交清理任务兜底，不影响成功回包。
+void RemoveStubPart(long long message_id) {
+	const auto stub_part = UploadingPartPath(message_id);
+	boost::system::error_code rm_ec;
+	boost::filesystem::remove(stub_part, rm_ec);
+	if (rm_ec) {
+		std::cerr << "ResourceServer: stub part remove deferred msg="
+			<< message_id << " ec=" << rm_ec.message() << std::endl;
+	}
 }
 
 } // namespace
@@ -207,7 +241,7 @@ std::shared_ptr<UploadSession> FileWorker::LoadUploadSession(long long message_i
 	session->sender_user_id = msg->sender_user_id;
 	session->recipient_user_id = msg->recipient_user_id;
 	//长度不能证明最后一片写完；仅在会话重建时回退，后续查询复用缓存。
-	const auto part_path = ResourceFilePath(msg->sender_user_id, message_id).string() + ".part";
+	const auto part_path = UploadingPartPath(message_id).string();
 	if (!llfc::RecoverUploadFile(part_path, msg->resource->file_size_bytes,
 		kUploadChunkSize, session->received)) {
 		std::cerr << "ResourceServer: upload recovery failed msg=" << message_id << std::endl;
@@ -310,8 +344,14 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 		return;
 	}
 
-	const auto base_path = ResourceFilePath(session->sender_user_id, task->_message_id);
-	const auto part_path = base_path.string() + ".part";
+	//P2：收到普通分片（1505）= 本消息已选择字节上传通道：立即作废未使用的
+	//挑战并抑制后续下发。否则一条迟到/交错的 1513 可能在普通上传进行中用旧
+	//挑战完成一次"秒传切换"（挑战与 .part 双轨状态），也让"2118 → 1507"永不
+	//再次拿到挑战（双端防无限挑战闭环的服务端一侧）。
+	session->challenge_active = false;
+	session->challenge_suppressed = true;
+
+	const auto part_path = UploadingPartPath(task->_message_id).string();
 	const unsigned long long offset = static_cast<unsigned long long>(task->_offset);
 	const unsigned long long received_before = session->received;
 	const std::string& decoded = task->_file_data; //P1c：1505 raw 直传，不再 Base64
@@ -351,8 +391,11 @@ void FileWorker::EvictUploadSession(long long message_id) {
 
 void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 	std::shared_ptr<UploadSession> session) {
-	const auto base_path = ResourceFilePath(session->sender_user_id, task->_message_id);
-	const auto part_path = base_path.string() + ".part";
+	//P2：最终文件即内容寻址 blob blobs/<sha[:2]>/<sha256>；.part 在
+	//uploading/ 下。no-replace 重命名，目标已存在 = 去重命中（可信内容）。
+	const auto blob_path = BlobPathOf(session->sha256);
+	const auto part_path = UploadingPartPath(task->_message_id).string();
+	const auto base_path = blob_path; //下方慢路径恢复逻辑沿用该命名
 
 	//完成点失败且未终态化时消息仍为 PENDING，客户端重发末片可再触发。
 	auto respond_error = [task](int error, unsigned long long server_offset, int status) {
@@ -483,22 +526,71 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 		return disk_received;
 	};
 
-	//同目录持久化改名：.part -> 最终文件（replace=true 兼容重试完成路径的
-	//历史残留，.part 内容同样经过整文件哈希门禁）；rename 后下载侧才可见。
-	//返回 false 不代表未生效（如目录 fsync 失败时移动已完成），按结果不确定
-	//处理：保留 base_path、恢复 .part 后回可重试错误。
-	if (!llfc::DurableRename(part_path, base_path, true)) {
+	//跨目录持久化改名（no-replace）：.part -> blobs/<sha[:2]>/<sha>。
+	//目标已存在（并发同内容上传/重试完成或遗留）= 去重命中：不能直接当成功
+	//——必须复核目标长度 + 整文件哈希 + 耐久性（见下面的可信度判定），不可信
+	//则保留 .part 与公开 blob 并回显式可重试错误。其余失败按结果不确定处理：
+	//保留 blob、恢复 .part 后回可重试错误。
+	//CAS/GC 互斥：从 rename 到发布事务提交持 BlobInstallGcMutex——清理
+	//任务持同一锁做"孤儿判定查询 + unlink"，本临界区保证 GC 不会在
+	//blob 已安装但发布未提交的空窗删掉它（取舍见 ResourceUploadFile.h）。
+	unsigned long long event_seq = 0;
+	std::shared_ptr<ChatMessage> canonical_msg;
+	{
+	std::lock_guard<std::mutex> cas_gc_lock(llfc::BlobInstallGcMutex());
+	//blobs/<sha[:2]>/ 目录先行就绪（幂等）；POSIX 下整条祖先条目链都要 fsync
+	//（不仅本次新建的层级：根/blobs 由 ConfigMgr 启动时建好，其条目可能尚未
+	//落盘，重试时目录已存在也不会出现在"新建"集合里）。该调用在 CAS/GC 互斥
+	//临界区内，代价是若干次目录 fsync（与路径深度成正比，实测吞吐影响未测）。
+	if (!llfc::EnsureDirectoryDurable(base_path.parent_path())) {
+		std::cerr << "ResourceServer: blob dir not durable msg=" << task->_message_id
+			<< " dir=" << base_path.parent_path().string() << std::endl;
+		respond_pending(ErrorCodes::FileWritePermissionFailed,
+			restore_part_after_publish_failure());
+		return;
+	}
+	bool dedup_hit = false;
+	if (!llfc::DurableRename(part_path, base_path, false, &dedup_hit)) {
 		std::cerr << "ResourceServer: durable rename failed (outcome unconfirmed) msg="
 			<< task->_message_id << std::endl;
 		respond_pending(ErrorCodes::FileWritePermissionFailed,
 			restore_part_after_publish_failure());
 		return;
 	}
+	if (dedup_hit) {
+		//去重命中：目标 blob 已存在，但"存在"不等于"可信"——必须复核精确
+		//长度 + 整文件 SHA-256，并确认数据可持久化（FlushFileToDisk 返回真），
+		//全部通过才复用（回收本地 .part）。任一不通过/无法取证：保留本次
+		//已校验的 .part 与已存在的公开 blob 原样不动，回显式可重试错误
+		//（FileWritePermissionFailed）交重试/运维收敛。
+		//绝不覆盖已有 blob（它可能正被其他已发布消息引用，覆盖等于静默损坏
+		//已发布内容；同名内容与 sha 不符属运维异常，需要人工/部署处置），
+		//也绝不把不可信的 blob 复制回 .part（那会毁掉唯一可信副本）。
+		unsigned long long existing_len = 0;
+		const bool len_ok = DiskFileLength(base_path, existing_len)
+			&& existing_len == static_cast<unsigned long long>(
+				session->file_size_bytes);
+		const bool hex_ok = len_ok
+			&& llfc::Sha256FileHex(base_path.string()) == session->sha256;
+		if (!len_ok || !hex_ok || !llfc::FlushFileToDisk(base_path)) {
+			std::cerr << "ResourceServer: dedup target not trusted (part and public"
+				" blob kept, retryable) msg=" << task->_message_id
+				<< " len_ok=" << len_ok << " hex_ok=" << hex_ok << std::endl;
+			respond_pending(ErrorCodes::FileWritePermissionFailed,
+				restore_part_after_publish_failure());
+			return;
+		}
+		boost::system::error_code rm_ec;
+		boost::filesystem::remove(part_path, rm_ec); //残留 .part 交清理兜底
+		if (rm_ec) {
+			std::cerr << "ResourceServer: dedup .part remove deferred msg="
+				<< task->_message_id << " ec=" << rm_ec.message() << std::endl;
+		}
+	}
 
 	//MySQL 是真值：按 message_id 读 canonical ChatMessage 取发送者和接收者，
 	//不信任会话字段（可能与 canonical 分叉，污染错误用户的同步流）。
 	//Transient 时按磁盘真值非破坏恢复 .part 供重试（2002），绝不误标永久失败。
-	std::shared_ptr<ChatMessage> canonical_msg;
 	switch (MysqlMgr::GetInstance()->GetChatMsgById(task->_message_id, canonical_msg)) {
 	case MysqlDao::ChatMsgLookup::Found:
 		break;
@@ -518,7 +610,6 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 
 	//只有 DB 发布和 event_seq 分配（单事务）成功才回包和投递通知；
 	//死锁（1213/40001）已在 DAO 内有界重试。
-	unsigned long long event_seq = 0;
 	const auto publish_rc = MysqlMgr::GetInstance()->CompleteResourceUpload(
 		task->_message_id, canonical_msg->sender_user_id, event_seq);
 	switch (publish_rc) {
@@ -550,6 +641,7 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 		respond_pending(ErrorCodes::RPCFailed, restore_part_after_publish_failure());
 		return;
 	}
+	} // BlobInstallGcMutex 临界区结束：blob 已安装且发布事务结果已定
 
 	//上传完成，移除会话缓存
 	_upload_sessions.erase(task->_message_id);
@@ -570,6 +662,188 @@ void FileWorker::CompleteResourceUpload(std::shared_ptr<ResourceChunkTask> task,
 	//不再占用 FileWorker；队列满/离线/失败均由接收者增量同步兜底。
 	UserMessageNotifier::GetInstance()->Post(task->_message_id,
 		canonical_msg->message_type, canonical_msg->recipient_user_id);
+}
+
+void FileWorker::HandleInstantProof(std::shared_ptr<CSession> req_session,
+	int req_uid, long long message_id, const std::string& proof_hex,
+	const std::function<void(const json&)>& respond) {
+	//P2 秒传证明（1513，仅本 worker 线程）。判定顺序：
+	//1) DB 真值（typed：Transient→2002 保留挑战；NotFound→2111 逐出会话）；
+	//2) 请求 uid 必须是本消息 sender（proof 只能证明本人 Pending 资源）；
+	//3) 已 Published → 直接成功回 1514 携带原 event_seq（不产生新事件、
+	//   不投递 Notifier）——重试/迟到 1513 即使挑战已失效也幂等收敛；
+	//4) 非 Pending → 2116；
+	//5) 会话挑战：存在、未消费、未抑制、TTL 内、且 req_session 即下发时
+	//   那条连接，否则 2118（客户端回退普通上传并重发 1507 重新同步）；
+	//   只有合法持有者才消费挑战，"别人的连接/已过期"不作废挑战；
+	//6) 合法持有者先消费挑战（一次性，防用同一挑战反复试探碰撞），再做
+	//   proof 格式校验（64 hex）与常量时间比对 SHA256(nonce_raw16 ||
+	//   blob[off, off+len))；摘要长度不为 64 视为不可信、绝不进入比对；
+	//   不符/异常均抑制本会话（服务端防无限挑战闸门）后回 2118；
+	//7) blob 区段读取 + 发布事务在 BlobInstallGcMutex 临界区内（与清理
+	//   任务的"孤儿判定 + unlink"互斥），成功回包与 1701 通知在锁外；
+	//8) 与普通上传共用发布事务（幂等），成功回 1514 并清理 .part 残留。
+	auto fail_proof = [&](int error, int status) {
+		json rtvalue;
+		rtvalue["error"] = error;
+		rtvalue["message_id"] = std::to_string(message_id);
+		rtvalue["status"] = status;
+		respond(rtvalue);
+	};
+
+	//1) DB 真值复核
+	std::shared_ptr<ChatMessage> msg;
+	switch (MysqlMgr::GetInstance()->GetChatMsgById(message_id, msg)) {
+	case MysqlDao::ChatMsgLookup::Found:
+		break;
+	case MysqlDao::ChatMsgLookup::NotFound:
+		_upload_sessions.erase(message_id);
+		fail_proof(ErrorCodes::MsgIdErr, static_cast<int>(MessageStatus::Failed));
+		return;
+	case MysqlDao::ChatMsgLookup::Transient:
+	default:
+		//瞬时故障不作废挑战：客户端原样重试 1513 或 1507 重同步
+		fail_proof(ErrorCodes::RPCFailed, static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+	//2) proof 请求只能由本消息 sender 发起
+	if (req_uid == 0 || !msg->resource
+		|| req_uid != msg->sender_user_id) {
+		fail_proof(ErrorCodes::ResourceForbidden,
+			static_cast<int>(msg->status));
+		return;
+	}
+	//3) 已 Published：幂等重放成功（原 event_seq，无新事件、无 Notifier）
+	if (msg->status == MessageStatus::Published) {
+		_upload_sessions.erase(message_id);
+		RemoveStubPart(message_id);
+		json rtvalue;
+		rtvalue["error"] = ErrorCodes::Success;
+		rtvalue["message_id"] = std::to_string(message_id);
+		rtvalue["status"] = static_cast<int>(MessageStatus::Published);
+		rtvalue["server_offset"] = std::to_string(msg->resource->file_size_bytes);
+		rtvalue["event_seq"] = std::to_string(msg->event_seq);
+		respond(rtvalue);
+		return;
+	}
+	//4) 其他终态（Failed 等）：非法操作
+	if (msg->status != MessageStatus::Pending) {
+		_upload_sessions.erase(message_id);
+		fail_proof(ErrorCodes::ResourceStateInvalid, static_cast<int>(msg->status));
+		return;
+	}
+
+	//5) 会话挑战校验：一次性 + TTL + 绑定下发连接
+	auto it = _upload_sessions.find(message_id);
+	if (it == _upload_sessions.end()) {
+		//挑战随会话逐出/重启丢失 → 2118，客户端 1507 重同步获取新挑战
+		fail_proof(ErrorCodes::InstantProofInvalid,
+			static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+	auto session = it->second;
+	const bool challenge_expired = session->challenge_active
+		&& std::chrono::steady_clock::now() - session->challenge_issued_at
+			> std::chrono::seconds(kInstantProofChallengeTtlSeconds);
+	//不属于本挑战的持有者（无活跃挑战/已过期/来自别的连接）一律不动挑战：
+	//只有"该挑战的合法请求方"才能消费它，别人不能替它作废。
+	if (!session->challenge_active || challenge_expired
+		|| session->challenge_session.lock() != req_session) {
+		fail_proof(ErrorCodes::InstantProofInvalid,
+			static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+	//到达这里 = 挑战有效（一次性 + TTL 内 + 绑定下发连接）：先作废再校验
+	//proof 格式。格式非法也必须消费挑战并抑制本会话——否则同一挑战可被
+	//反复拿去试探碰撞，也绕开"单次使用"约束。
+	session->challenge_active = false;
+	if (!llfc::IsValidSha256Hex(proof_hex)) {
+		session->challenge_suppressed = true;
+		fail_proof(ErrorCodes::InstantProofInvalid,
+			static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+
+	//6)+7) blob 区段读取、常量时间比对与发布事务同处 BlobInstallGcMutex
+	//临界区：与清理任务"孤儿判定查询 + unlink"互斥（与普通上传完成点同一
+	//锁）。失败回包留在临界区里发送是可以的——CSession::Send 只向 socket
+	//所属 IO 线程 post 一段闭包，不阻塞、不重入 FileWorker/清理代码；成功
+	//回包与 1701 通知（含 Redis 投递，可能阻塞）移到锁外。
+	unsigned long long event_seq = 0;
+	{
+	std::lock_guard<std::mutex> cas_gc_lock(llfc::BlobInstallGcMutex());
+	const auto blob_path = BlobPathOf(msg->resource->sha256);
+	std::ifstream in(blob_path.string(), std::ios::binary);
+	if (!in.is_open()) {
+		//blob 被清理/缺失：挑战失效，客户端 2118 回退普通上传
+		session->challenge_suppressed = true;
+		fail_proof(ErrorCodes::InstantProofInvalid,
+			static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+	std::string section(session->challenge_length, '\0');
+	in.seekg(static_cast<std::streamoff>(session->challenge_offset));
+	in.read(&section[0], static_cast<std::streamsize>(section.size()));
+	if (static_cast<unsigned long long>(in.gcount()) != session->challenge_length) {
+		session->challenge_suppressed = true;
+		fail_proof(ErrorCodes::FileReadFailed,
+			static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+	const std::string expect = llfc::Sha256Hex(session->challenge_nonce_raw + section);
+	if (expect.size() != 64) {
+		//摘要异常（随机源/摘要上下文失败）：绝不能在长度不符时进入比对——
+		//ConstantTimeEquals 对长度为 0 的输入返回"相等"，零长度摘要会直接把
+		//任何请求放行。此处按可重试错误（2002）返回，挑战已消费。
+		std::cerr << "ResourceServer: proof digest unavailable msg="
+			<< message_id << std::endl;
+		session->challenge_suppressed = true;
+		fail_proof(ErrorCodes::RPCFailed, static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+	if (!llfc::ConstantTimeEquals(expect.data(), proof_hex.data(), expect.size())) {
+		std::cerr << "ResourceServer: instant proof mismatch msg=" << message_id << std::endl;
+		//证明不符：抑制本会话再次下发挑战（破无限挑战循环的服务端闸门；
+		//客户端 2118 后本传输内同样禁用 proof，双端闭环）
+		session->challenge_suppressed = true;
+		fail_proof(ErrorCodes::InstantProofInvalid,
+			static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+
+	switch (MysqlMgr::GetInstance()->CompleteResourceUpload(
+		message_id, msg->sender_user_id, event_seq)) {
+	case MysqlDao::PublishResult::Published:
+	case MysqlDao::PublishResult::AlreadyPublished:
+		break;
+	case MysqlDao::PublishResult::NotPending:
+		_upload_sessions.erase(message_id);
+		fail_proof(ErrorCodes::ResourceStateInvalid, static_cast<int>(MessageStatus::Failed));
+		return;
+	case MysqlDao::PublishResult::NotFound:
+		_upload_sessions.erase(message_id);
+		fail_proof(ErrorCodes::MsgIdErr, static_cast<int>(MessageStatus::Failed));
+		return;
+	case MysqlDao::PublishResult::Transient:
+	default:
+		//提交结果未确认：挑战已消费。客户端重试 1513 → 若事务实际已提交
+		//走上面 Published 幂等重放；若未提交 → 2118 → 1507 重同步拿新挑战
+		//或回退普通上传，最终一致
+		fail_proof(ErrorCodes::RPCFailed, static_cast<int>(MessageStatus::Pending));
+		return;
+	}
+	} // BlobInstallGcMutex 释放：成功回包与 Notifier 不在临界区
+	_upload_sessions.erase(message_id);
+	RemoveStubPart(message_id);
+	json rtvalue;
+	rtvalue["error"] = ErrorCodes::Success;
+	rtvalue["message_id"] = std::to_string(message_id);
+	rtvalue["status"] = static_cast<int>(MessageStatus::Published);
+	rtvalue["server_offset"] = std::to_string(msg->resource->file_size_bytes);
+	rtvalue["event_seq"] = std::to_string(event_seq);
+	respond(rtvalue);
+	UserMessageNotifier::GetInstance()->Post(message_id,
+		msg->message_type, msg->recipient_user_id);
 }
 
 DownloadWorker::DownloadWorker()
@@ -841,7 +1115,8 @@ DownloadWorker::ResolveStatus DownloadWorker::ResolvePublished(
 	entry.sender_user_id = msg->sender_user_id;
 	entry.recipient_user_id = msg->recipient_user_id;
 	entry.message_type = msg->message_type;
-	entry.file_path = ResourceFilePath(msg->sender_user_id, message_id).string();
+	//P2：下载路径由 message_resources.sha256 推出（内容寻址 blob）
+	entry.file_path = BlobPathOf(msg->resource->sha256).string();
 	entry.file_size_bytes = msg->resource->file_size_bytes;
 	entry.sha256 = msg->resource->sha256;
 	entry.original_file_name = msg->resource->original_file_name;

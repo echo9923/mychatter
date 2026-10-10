@@ -105,6 +105,16 @@ struct ResourceTransferRuntime {
                               //仅在 ResumeTransfer 清除。暂停期间一切发片
                               //与 1507/1509 控制补发都被抑制，迟到回包仍
                               //可保存元数据或按 Published 完成。
+    //P2 秒传：1514 回 2118（证明不符/挑战丢失/TTL 过期）后置真——本传输
+    //内忽略后续 mode=proof 挑战，直接普通上传（客户端防无限挑战闸门，
+    //与服务端 challenge_suppressed 双端闭环）。重连/暂停不重置；
+    //Reset/终态重启（新运行时登记）自然清零，保持用户会话隔离。
+    bool proof_disabled;
+    //P2 秒传：1513 已发出、正在等 1514（匹配的控制帧）。置真期间到达的 1508
+    //一律视为上一轮 1507 的迟到回包而丢弃，1514 也只在置真时才被采纳——
+    //否则一条陈旧应答会清掉当前控制定时器或回退正在进行的普通上传窗口。
+    //新控制帧（BeginQuery/1507、超时、暂停、断连）一律清零。
+    bool proof_pending;
 
     std::deque<InflightChunk> inflight; //FIFO 在途窗口
     std::deque<qint64> stale_offsets;   //回退后等待排空的迟到回包（升序）
@@ -312,6 +322,8 @@ static void InitRuntime(ResourceTransferRuntime* t, int direction,
     t->query_sent_ms = 0;
     t->reconnect_requested = false;
     t->user_paused = false;
+    t->proof_disabled = false;
+    t->proof_pending = false;
     t->source = 0;
     t->part = 0;
     t->hasher = 0;
@@ -409,6 +421,12 @@ void TransferEngine::PauseTransfer(int direction, qint64 message_id)
         return;
     }
     t->user_paused = true;
+    //P2：暂停只抑制"新请求"（不发片、不补发 1507/1509）
+    //——**不动在途控制帧状态**（query_sent_ms/proof_pending 保留）：
+    //已在途的 1513 如果服务端已发布，那条严格校验通过的 Published 1514
+    //仍能收敛本传输（暂停不该把"确实已发布"的内容丢弃，否则只能等 Resume
+    //重查）。隔离旧阶段由 Resume/Resync/重连统一完成（BeginQuery 清标记），
+    //BeginQuery 在 user_paused 下不发帧，故暂停期不会产生新请求。
     EmitUpdate(t); //快照投影为 PAUSED
 }
 
@@ -480,6 +498,7 @@ void TransferEngine::OnConnectionDown()
             t->stale_offsets.clear();
             t->wire_bytes = t->acked_bytes;
             t->query_sent_ms = 0;
+            t->proof_pending = false; //旧连接的在途 1513/1507 全部作废
             t->reconnect_requested = false;
         }
     }
@@ -533,6 +552,9 @@ void TransferEngine::OnFrame(quint16 msg_id, const QByteArray& payload)
     case llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP: //1512
         HandleChunkDownRsp(payload);
         break;
+    case llfc_proto::MSG_RESOURCE_INSTANT_PROOF_RSP: //1514（P2 秒传）
+        HandleInstantProofRsp(payload);
+        break;
     default:
         break; //非引擎协议（1502 等由传输层处理）
     }
@@ -540,6 +562,9 @@ void TransferEngine::OnFrame(quint16 msg_id, const QByteArray& payload)
 
 void TransferEngine::BeginQuery(ResourceTransferRuntime* t)
 {
+    //新控制帧（1507/1509）取代任何在途 1513：迟到的 1514 不再匹配本阶段
+    //（重连/重同步/暂停恢复都经此处，保证挑战状态与用户会话隔离）。
+    t->proof_pending = false;
     if (!_conn_up || t->user_paused) {
         //连接未就绪或用户暂停：不发控制帧，等鉴权成功/Resume 统一发起。
         t->phase = TRANSFER_QUERYING;
@@ -662,6 +687,14 @@ void TransferEngine::HandleTimeout(ResourceTransferRuntime* t)
     t->stale_offsets.clear();
     t->wire_bytes = t->acked_bytes;
     t->query_sent_ms = 0;
+    if (t->user_paused) {
+        //暂停期不判连接死亡、不请求重连（用户意图优先；恢复统一经
+        //ResumeTransfer → 1507 重同步）。在途 proof 标记保留：严格校验
+        //通过的 Published 1514 仍可在恢复前收敛本传输；已超时的控制帧
+        //自然作废（query_sent_ms=0 后不再触发超时）。
+        return;
+    }
+    t->proof_pending = false; //在途 1513 随连接死亡作废（迟到 1514 不再匹配）
     t->reconnect_requested = true;
     if (!_awaiting_reconnect) {
         _awaiting_reconnect = true;
@@ -997,14 +1030,19 @@ void TransferEngine::HandleProgressRsp(const QByteArray& payload)
     if (!t) {
         return;
     }
+    if (t->proof_pending) {
+        //本传输正在等 1514（1513 已发出）：此刻到达的 1508 只可能是上一轮
+        //1507 的迟到/重复回包，按陈旧帧整帧丢弃——既不更新状态也不动 1513
+        //的控制计时器（清掉它会让 1513 永远不会超时重连）。真值最终由该
+        //1514（Published 幂等/2118）或 1513 超时后的 1507 重同步收敛。
+        return;
+    }
     t->query_sent_ms = 0;
     if (!rsp.ok || rsp.error != 0) {
         HandleUploadError(t, rsp.ok ? rsp.error : llfc_proto::ERR_JSON,
             rsp.server_offset);
         return;
     }
-    t->json_error_count = 0;
-    t->publish_retry_count = 0;
     if (rsp.status == kStatusPublished) {
         //服务端已发布（含本地源文件已删/改名的恢复场景）：直接完成，
         //不得因源文件问题误标 Failed。
@@ -1034,6 +1072,9 @@ void TransferEngine::HandleProgressRsp(const QByteArray& payload)
         EmitUpdate(t);
         return;
     }
+    //全部成功字段与（proof 模式下）挑战参数都校验通过后才清零错误计数：
+    //此前清零会让反复坏挑战永远到不了 json_error_limit（0→1→0→1 震荡），
+    //客户端只会无限退避。普通上传路径（无挑战）在下面立即清零。
     qint64 so = rsp.server_offset >= 0 ? rsp.server_offset : 0;
     if (so > t->total_bytes) {
         so = t->total_bytes;
@@ -1042,14 +1083,31 @@ void TransferEngine::HandleProgressRsp(const QByteArray& payload)
     t->wire_bytes = so;
     t->phase = TRANSFER_ACTIVE;
     if (t->user_paused) {
+        //暂停期间不推进上传；字段合法但未清零连续错误计数（下一条匹配的
+        //成功回包仍会清零，退避计数不在暂停期被无声抹除）。
         EmitUpdate(t);
         return;
     }
-    //Pending：此刻才需要发字节——检查/打开源文件（延迟打开的统一入口），
+    //Pending：此刻才需要源文件字节——检查/打开源文件（延迟打开的统一入口），
     //缺失/大小不符在此失败。
     if (!EnsureSourceOpen(t)) {
         return; //EnsureSourceOpen 内部已 FailTransfer
     }
+    //P2 秒传：服务端下发一次性挑战（同 sender Published 历史 + blob 存在
+    // + 大小一致才下发）。2118 过的传输（proof_disabled）忽略挑战直接
+    //普通上传——与服务端 challenge_suppressed 双端闭环，绝不无限挑战。
+    if (rsp.mode == QStringLiteral("proof") && !t->proof_disabled) {
+        //SendInstantProof 内部不再清零坏回包计数（合法挑战只是"新一次证明
+        //尝试"，清零会让非法 1514 永远到不了 json_error_limit）；计数由普通
+        //上传分支（下面）在字段全部通过后清零。本调用返回后 t 可能已被同步
+        //回调释放，故立即 return，绝不在此函数内再触碰 t。
+        SendInstantProof(t, rsp.challenge_nonce, rsp.challenge_offset,
+            rsp.challenge_length);
+        return;
+    }
+    //普通上传路径：1508 字段已全部校验通过（含 1513 前的挑战分支）
+    t->json_error_count = 0;
+    t->publish_retry_count = 0;
     if (so >= t->total_bytes) {
         //Pending 且收齐：不宣告完成也不停在空窗口，重发末片触发发布事务。
         MaybeResendLastChunk(t);
@@ -1057,6 +1115,178 @@ void TransferEngine::HandleProgressRsp(const QByteArray& payload)
     }
     Pump();
     EmitUpdate(t);
+}
+
+void TransferEngine::SendInstantProof(ResourceTransferRuntime* t,
+    const QString& nonce_hex, qint64 offset, qint64 length)
+{
+    //注意：调用方在返回后不得再触碰 t——内部 _send/EmitUpdate 可能同步
+    //触发回调（Reset/替换传输表）释放 t；失败与终态都在本函数内处理完。
+    //P2 秒传证明（File 线程，源文件只读）。严格校验挑战参数：nonce 必须是
+    //**恰好 32 个 ASCII hex 字符**（0-9/a-f/A-F，大小写均可，解码后 16 原字节）；
+    //区段必须在文件范围内（0<length≤64KiB，offset+length≤total）。非法挑战按
+    //坏回包计。
+    //逐字符校验必须在 fromHex **之前**：QByteArray::fromHex 会跳过非法字符，
+    //并把奇数个有效 nibble 中"多出来的那一个"当作一个整字节写出（最左字节
+    //只占低 nibble、高 nibble 为 0），返回长度仍是 (size+1)/2。因此
+    //31 个有效 hex + 1 个非法字符照样解出 16 字节，"字符数 32 + 解码后 16 字节"
+    //并不能证明输入严格是 32 hex。只有逐字符确认才能保证解码语义与声明一致。
+    bool nonce_chars_ok = (nonce_hex.size() == 32);
+    for (int i = 0; nonce_chars_ok && i < nonce_hex.size(); ++i) {
+        const QChar c = nonce_hex.at(i);
+        nonce_chars_ok = (c >= QLatin1Char('0') && c <= QLatin1Char('9'))
+            || (c >= QLatin1Char('a') && c <= QLatin1Char('f'))
+            || (c >= QLatin1Char('A') && c <= QLatin1Char('F'));
+    }
+    const QByteArray nonce_raw = QByteArray::fromHex(nonce_hex.toLatin1());
+    if (!nonce_chars_ok || nonce_raw.size() != 16
+        || offset < 0 || length <= 0 || length > 64 * 1024
+        || offset > t->total_bytes - length) {
+        t->json_error_count += 1;
+        if (t->json_error_count >= _cfg.json_error_limit) {
+            FailTransfer(t, llfc_proto::ERR_JSON,
+                QString::fromLatin1("malformed proof challenge"));
+            return;
+        }
+        ScheduleBackoff(t); //退避后 1507 重同步
+        EmitUpdate(t);
+        return;
+    }
+    if (!t->source || !t->source->seek(offset)) {
+        FailTransfer(t, 0, QString::fromLatin1("local source seek failed"));
+        return;
+    }
+    const QByteArray section = t->source->read(length);
+    if (section.size() != length) {
+        FailTransfer(t, 0, QString::fromLatin1("local source read failed"));
+        return;
+    }
+    //proof = hex(SHA256(nonce_raw16 || file[off, off+len)))——nonce 必须
+    //hex 解码成 16 原字节再拼 raw 区段，绝不能拼 hex 字符串。
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    h.addData(nonce_raw);
+    h.addData(section);
+    const QString proof = QString::fromLatin1(h.result().toHex());
+    //进入证明状态前收敛窗口：QUERYING 的不变量是"无在途发送窗口"（Pump 只在
+    //ACTIVE 发片）。正常流 1508 由 1507 触发、BeginQuery 已排空窗口；迟到的
+    //重复 1508 可能带残留在途，统一转入过期队列（迟到 1506 只排空不推进），
+    //与 1507 重同步走同一条处理。
+    RollbackUploadTo(t, t->acked_bytes);
+    if (!_send) {
+        //引擎未接线属编程错误：直接终态（此时尚未改动在途状态，安全）。
+        FailTransfer(t, llfc_proto::ERR_JSON,
+            QString::fromLatin1("no send callback"));
+        return;
+    }
+    //连续坏回包计数（json_error_count）**不在此清零**：本函数每次调用只是
+    //"一次新的证明尝试"，一次合法的挑战 metadata 与一次合法 1514 都不代表
+    //上一轮坏 1514 已经过去。此前在这里清零会让 STATUS/OFFSET/EVENT_SEQ 非法的
+    //1514 形成 0→1→0→1 震荡：bad1514 → HandleUploadError(ERR_JSON) 计数+1 →
+    //退避 → 1507/1508(合法 proof) → 本函数清零 → 再 bad1514，永远到不了
+    //json_error_limit。清零只发生在真正进入普通上传之后（HandleProgressRsp 的
+    //非 proof 分支：普通有效 1508 且字段全部通过），2118 回退后走的就是那条路。
+    //publish_retry_count 保持原语义（合法 1508/挑战不代表发布重试仍在恶化）。
+    //本函数后续对 t 的任何写入都必须在 _send 之前完成：_send 可能同步触发
+    //回调（Reset/替换传输表）从而释放 t，调用方返回后不得再写 t。
+    t->publish_retry_count = 0;
+    //1513 是控制帧：保持 QUERYING 并挂 query 超时（与 1507/1509 一致）——
+    //超时判连接死亡→重连→1507 重同步（挑战丢失/重启即在此恢复）。
+    t->phase = TRANSFER_QUERYING;
+    t->proof_pending = true; //只认匹配的 1514；陈旧应答一律丢弃
+    t->query_sent_ms = NowMs();
+    //_send 是同步回调：一次合法的 Published 1514 会在 _send 内部就被派发到
+    //HandleInstantProofRsp → CompleteTransfer → sig_transfer_finished，监听者可
+    //能 Reset()（_uploads.clear()）或 StartUpload 同 message_id（erase + 插入新
+    //实例），前者释放 t、后者让 t 变成被替换的旧实例。因此发送前先在运行时表里
+    //按 message_id 取出**同一个实例**的 shared_ptr 握住（确认 get() == t），
+    //并缓存 mid；_send 返回后只经由这个 shared_ptr 回看状态，绝不直接用裸 t。
+    const qint64 mid = t->message_id;
+    RuntimeMap& uploads = MapFor(TRANSFER_UPLOAD);
+    std::shared_ptr<ResourceTransferRuntime> hold;
+    {
+        RuntimeMap::iterator it = uploads.find(mid);
+        if (it != uploads.end() && it.value().get() == t) {
+            hold = it.value();
+        }
+    }
+    _send(llfc_proto::MSG_RESOURCE_INSTANT_PROOF_REQ,
+        rc::EncodeInstantProofReq(mid, proof));
+    //只在"表里仍是同一实例、且仍在等证明"时才发进度：完成/回滚会清掉
+    //proof_pending（1514 或 1507 重同步），Reset/同 mid 重启则会清空或替换表项，
+    //两种情况下都不允许再发旧进度，也不允许触碰已释放的旧实例。
+    if (!hold) {
+        return; //表里已无 t（无法安全回看实例）：只发送，不发进度
+    }
+    RuntimeMap::iterator after = uploads.find(mid);
+    if (after == uploads.end() || after.value().get() != hold.get()
+        || !hold->proof_pending) {
+        return; //已完成/已回滚/已被 Reset 或同 mid 替换：绝不发旧进度
+    }
+    EmitUpdate(hold.get());
+}
+
+void TransferEngine::HandleInstantProofRsp(const QByteArray& payload)
+{
+    rc::InstantProofRsp rsp;
+    if (!rc::DecodeInstantProofRsp(payload, &rsp)) {
+        return; //连 message_id 都不可读，无法定位传输
+    }
+    ResourceTransferRuntime* t = FindActive(TRANSFER_UPLOAD, rsp.message_id);
+    if (!t) {
+        return;
+    }
+    if (!t->proof_pending) {
+        //没有在途 1513（已被 1507 重同步/暂停/重连取代，或本传输已完成）：
+        //整帧丢弃。清 query_sent_ms 会抹掉当前 1507 的控制定时器，继续按
+        //2118 回退则会把在线上的普通上传窗口回滚——陈旧应答绝不允许影响
+        //当前阶段。
+        return;
+    }
+    t->proof_pending = false; //匹配的应答：本阶段控制帧到期
+    t->query_sent_ms = 0;
+    if (!rsp.ok) {
+        HandleUploadError(t, llfc_proto::ERR_JSON, -1);
+        return;
+    }
+    if (rsp.error == llfc_proto::RS_INSTANT_PROOF_INVALID) { //2118
+        //证明不符/挑战丢失/TTL 过期：本传输内禁用 proof（客户端防无限
+        //挑战闸门），1507 重同步后按普通上传继续——服务端可能再发
+        //mode=proof（新会话未抑制），HandleProgressRsp 据此忽略。
+        t->proof_disabled = true;
+        ResyncUpload(t);
+        EmitUpdate(t);
+        return;
+    }
+    if (rsp.error != 0) {
+        //其余错误复用上传错误分类：2002 退避后 1507 重同步（服务端
+        //Transient 保留了挑战，新 1507 会再发挑战）；2111/2115/2116 永久。
+        HandleUploadError(t, rsp.error, rsp.server_offset);
+        return;
+    }
+    if (rsp.status != kStatusPublished) {
+        //成功但非 Published：无效成功包按坏回包计数（json_error_count 累计
+        //→ 退避后 1507 重同步 → 达 json_error_limit 转永久失败），绝不当作
+        //"正常状态切换"去无界立即重同步：反复 {error:0,status:Pending} 会在
+        //这里被有界收敛（服务端真值由随后的 1507 探明）。
+        HandleUploadError(t, llfc_proto::ERR_JSON, -1);
+        return;
+    }
+    //严格成功字段：Published 秒传必为全量发布——server_offset 必须等于
+    //本传输总长（不能靠服务端回包"看起来成功"就强行置满进度），且服务端
+    //已为接收者分配事件序号（event_seq 为十进制字符串且 >0；缺失/JSON 数字/
+    //0 已在解码器判为坏包走 !rsp.ok，这里再防一层）。任一不符按坏回包
+    //处理（连续计数 + 退避后 1507 重同步，达到 json_error_limit 转永久
+    //失败）；不用该回包的 server_offset 回退窗口（它已被判定不可信），
+    //回退到已确认位。
+    if (rsp.server_offset != t->total_bytes || rsp.event_seq <= 0) {
+        HandleUploadError(t, llfc_proto::ERR_JSON, -1);
+        return;
+    }
+    //秒传命中：与普通上传完成走同一条完成路径（snapshot → 终态信号 →
+    //Outbox 确认 → 异步归档，由上层统一处理）。
+    t->acked_bytes = t->total_bytes;
+    t->wire_bytes = t->total_bytes;
+    CompleteTransfer(t, rsp.event_seq);
 }
 
 void TransferEngine::HandleDownInfoRsp(const QByteArray& payload)
@@ -1315,8 +1545,12 @@ void TransferEngine::CompleteTransfer(ResourceTransferRuntime* t,
     t->error_text.clear();
     CloseFiles(t);
     const TransferSnapshot s = MakeSnapshot(t);
+    //方向先取出：sig_transfer_finished 的槽可能与引擎同线程同步执行
+    //（Reset/重新 StartUpload 同一 message_id 会 erase 本对象），emit 之后
+    //再读 t->方向是 use-after-free。
+    const int direction = t->direction;
     emit sig_transfer_finished(s);
-    PromoteWaiting(t->direction);
+    PromoteWaiting(direction);
 }
 
 void TransferEngine::FailTransfer(ResourceTransferRuntime* t, int error_code,
@@ -1327,8 +1561,10 @@ void TransferEngine::FailTransfer(ResourceTransferRuntime* t, int error_code,
     t->error_text = text;
     CloseFiles(t);
     const TransferSnapshot s = MakeSnapshot(t);
+    //同上：emit 后不再解引用 t（同步槽可能已 Reset/重启同一 message_id）。
+    const int direction = t->direction;
     emit sig_transfer_finished(s);
-    PromoteWaiting(t->direction);
+    PromoteWaiting(direction);
 }
 
 TransferSnapshot TransferEngine::MakeSnapshot(

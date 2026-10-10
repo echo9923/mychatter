@@ -71,6 +71,8 @@ enum MsgId {
 	MSG_RESOURCE_DOWN_INFO_RSP        = 1510, ///< 查询资源下载信息响应
 	MSG_RESOURCE_CHUNK_DOWN_REQ       = 1511, ///< 按偏移量下载资源分片请求
 	MSG_RESOURCE_CHUNK_DOWN_RSP       = 1512, ///< 按偏移量下载资源分片响应（随片下发 SHA-256）
+	MSG_RESOURCE_INSTANT_PROOF_REQ    = 1513, ///< 秒传持有性证明请求（proof=hex(SHA256(nonce_raw16||file[off,off+len)))）
+	MSG_RESOURCE_INSTANT_PROOF_RSP    = 1514, ///< 秒传持有性证明响应（Published 与 event_seq；证明错误 2118）
 
 	// --- 16xx 头像域（ResourceServer TCP，旧 seq+MD5 协议保留，与资源新协议隔离）
 	MSG_UPLOAD_HEAD_ICON_REQ = 1601, ///< 上传头像请求
@@ -139,6 +141,7 @@ enum ResourceErrCode {
 	RS_RESOURCE_FORBIDDEN      = 2115, ///< 请求者不是消息发送者或接收者（permanent）
 	RS_RESOURCE_STATE_INVALID  = 2116, ///< 对已失败/已就绪资源的非法上传操作（permanent）
 	RS_FILE_CONTENT_MISMATCH   = 2117, ///< 整文件 SHA-256 不符（非分片错误；重传整文件，同一会话第 3 次转 2116）
+	RS_INSTANT_PROOF_INVALID   = 2118, ///< 秒传持有性证明不符/挑战丢失（客户端回退普通上传，1507 重新同步）
 };
 
 } // namespace llfc_proto

@@ -251,6 +251,60 @@ bool MysqlDao::MarkResourceFailed(long long message_id) {
 }
 
 
+MysqlDao::TriState MysqlDao::SenderHasPublishedContent(int sender_user_id,
+	const std::string& sha256, unsigned long long file_size_bytes) {
+	auto connection = pool_->getConnection();
+	if (!connection) return TriState::Transient;
+	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
+	try {
+		//只看发送者本人的 Published 历史（发送者范围秒传，不泄露他人内容）；
+		//EXISTS 走 idx_message_resources_sha (sha256, file_size_bytes) 前缀命中
+		std::string sql =
+			"SELECT EXISTS(SELECT 1 FROM message_resources r "
+			"JOIN chat_messages m ON m.message_id=r.message_id "
+			"WHERE r.sha256=? AND r.file_size_bytes=? "
+			"AND m.sender_user_id=? AND m.status=1) AS hit";
+		auto query = std::unique_ptr<sql::PreparedStatement>(
+			connection->_con->prepareStatement(sql));
+		query->setString(1, sha256);
+		query->setUInt64(2, file_size_bytes);
+		query->setInt(3, sender_user_id);
+		auto row = std::unique_ptr<sql::ResultSet>(query->executeQuery());
+		if (!row->next()) return TriState::Transient;
+		return row->getInt("hit") == 1 ? TriState::Yes : TriState::No;
+	}
+	catch (const sql::SQLException& e) {
+		std::cerr << "MysqlDao: SenderHasPublishedContent SQLException: "
+			<< e.what() << std::endl;
+		return TriState::Transient;
+	}
+}
+
+MysqlDao::TriState MysqlDao::BlobHasPublishedReference(const std::string& sha256) {
+	auto connection = pool_->getConnection();
+	if (!connection) return TriState::Transient;
+	Defer defer([this, &connection]() { pool_->returnConnection(std::move(connection)); });
+	try {
+		//孤儿判定：任何 Published 消息引用即保留；Transient 保留待下轮。
+		//只按 sha256（内容身份）联表，不带 file_size_bytes 条件。
+		std::string sql =
+			"SELECT EXISTS(SELECT 1 FROM message_resources r "
+			"JOIN chat_messages m ON m.message_id=r.message_id "
+			"WHERE r.sha256=? AND m.status=1) AS hit";
+		auto query = std::unique_ptr<sql::PreparedStatement>(
+			connection->_con->prepareStatement(sql));
+		query->setString(1, sha256);
+		auto row = std::unique_ptr<sql::ResultSet>(query->executeQuery());
+		if (!row->next()) return TriState::Transient;
+		return row->getInt("hit") == 1 ? TriState::Yes : TriState::No;
+	}
+	catch (const sql::SQLException& e) {
+		std::cerr << "MysqlDao: BlobHasPublishedReference SQLException: "
+			<< e.what() << std::endl;
+		return TriState::Transient;
+	}
+}
+
 MysqlDao::ChatMsgLookup MysqlDao::GetChatMsgById(long long message_id,
 	std::shared_ptr<ChatMessage>& out) {
 	out.reset();

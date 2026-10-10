@@ -57,6 +57,12 @@ class QCryptographicHash;
 // - 下载：持久打开的 QFile 写 "<dest>.part"，续传前截断到分片边界；从 0 连续
 //   落盘时增量哈希，否则完成时回退整文件哈希；.part 已达总长直接校验收尾；
 //   完成后 rename 到目标路径。
+// - 秒传（P2）：1508 携带 mode="proof" + {nonce(32hex), offset, length} 时，
+//   在 File 线程只读源文件计算 proof=hex(SHA256(nonce_raw16||区段)) 发
+//   1513（QUERYING 阶段，受 query 超时约束）；1514 Published 与上传完成
+//   走同一条完成路径。2118（证明不符/挑战丢失/TTL 过期）→ 本传输内禁用
+//   proof 并回退普通上传（1507 重同步，服务端后续挑战直接忽略）——与
+//   服务端 challenge_suppressed 构成双端闭环，绝不无限挑战。
 // - 调度：按在途字节数公平补片（在途字节最少的活跃传输先补）。
 class TransferEngine : public QObject {
     Q_OBJECT
@@ -117,7 +123,7 @@ public:
     //等待队列/在途窗口，不发任何信号。自动网络断开请用 OnConnectionDown。
     void Reset();
 
-    //回包入口：1506/1508/1510/1512，其余 id 忽略。
+    //回包入口：1506/1508/1510/1512/1514，其余 id 忽略。
     void OnFrame(quint16 msg_id, const QByteArray& payload);
 
 signals:
@@ -146,6 +152,21 @@ private:
     void HandleProgressRsp(const QByteArray& payload);
     void HandleDownInfoRsp(const QByteArray& payload);
     void HandleChunkDownRsp(const QByteArray& payload);
+    //P2 秒传：1508 mode=proof → 计算证明发 1513；1514 回包处理
+    //（Published 走统一完成路径；2118 禁用 proof 回退普通上传）
+    //nonce 参数契约：必须**恰好 32 个 ASCII hex 字符**（0-9/a-f/A-F），
+    //函数内逐字符校验通过后才 fromHex——QByteArray::fromHex 会跳过非法字符并把
+    //奇数 nibble 中多余的一个当整字节写出，仅靠"字符数 32 + 解码 16 字节"证明不了严格格式。
+    //无返回值：失败/终态都在函数内处理。**坏回包计数不在此清零**：一次合法
+    //挑战只是"新一次证明尝试"，清零会让非法 1514（status/offset/event_seq）
+    //在 0↔1 震荡中永远到不了 json_error_limit；只由普通上传分支在普通有效
+    //1508 字段全部通过后清零（2118 回退后走的就是该分支）。_send 之后不再用
+    //裸 t——发送前握住运行时表里同一实例的 shared_ptr，只在"表里仍是同一实例
+    //且仍 proof_pending"时 EmitUpdate。**调用方返回后不得再触碰 t**——内部
+    //_send 可能同步触发回调（完成 / Reset / 同 message_id 重启）释放或替换该实例。
+    void SendInstantProof(ResourceTransferRuntime* t,
+        const QString& nonce_hex, qint64 offset, qint64 length);
+    void HandleInstantProofRsp(const QByteArray& payload);
     void HandleUploadError(ResourceTransferRuntime* t, int error,
         qint64 server_offset);
     void RollbackUploadTo(ResourceTransferRuntime* t, qint64 server_offset);

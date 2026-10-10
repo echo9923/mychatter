@@ -54,6 +54,9 @@ private:
 	// 1507 上传进度查询
 	void handleResourceUploadProgress(shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data, shared_ptr<SessionTaskQuota> quota);
+	// P2 1513 秒传证明（quota 随闭包转入 FileWorker；回 1514/2118）
+	void handleInstantProof(shared_ptr<CSession> session, const short& msg_type,
+		const string& msg_data, shared_ptr<SessionTaskQuota> quota);
 	// 1509 资源下载元数据（quota 转入 ResourceDownInfoTask）
 	void handleResourceDownInfo(shared_ptr<CSession> session, const short& msg_type,
 		const string& msg_data, shared_ptr<SessionTaskQuota> quota);

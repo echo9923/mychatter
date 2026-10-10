@@ -185,12 +185,26 @@ bool DecodeProgressRsp(const QByteArray& payload, ProgressRsp* out)
     out->sha256 = ReadString(obj, "sha256");
     out->chunk_size = OptU64(obj, "chunk_size", -1);
     out->event_seq = OptU64(obj, "event_seq", 0);
+    //P2 秒传挑战（可选；普通上传无 mode/challenge）
+    out->mode = ReadString(obj, "mode");
+    const QJsonValue challenge = obj.value(QLatin1String("challenge"));
+    if (challenge.isObject()) {
+        const QJsonObject ch = challenge.toObject();
+        out->challenge_nonce = ReadString(ch, "nonce");
+        out->challenge_offset = OptU64(ch, "offset", -1);
+        out->challenge_length = OptU64(ch, "length", -1);
+    }
     if (out->error != 0) {
         ok = true;
     } else {
-        //成功回包：server_offset/file_size_bytes/status/sha256 必需。
+        //成功回包：server_offset/file_size_bytes/status/sha256 必需；
+        //proof 模式额外要求 nonce/offset/length 齐备（严格 32 hex nonce）
         ok = out->server_offset >= 0 && out->file_size_bytes >= 0
             && out->status >= 0 && IsValidSha256Hex(out->sha256);
+        if (ok && out->mode == QStringLiteral("proof")) {
+            ok = out->challenge_nonce.size() == 32
+                && out->challenge_offset >= 0 && out->challenge_length > 0;
+        }
     }
     out->ok = ok;
     return true;
@@ -273,6 +287,42 @@ bool DecodeChunkDownRsp(const QByteArray& payload, ChunkDownRsp* out)
         //（哈希须为合法 64 位小写 hex）。
         ok = out->offset >= 0 && out->bytes > 0 && !out->data.isEmpty()
             && out->total_size >= 0 && IsValidSha256Hex(out->chunk_sha256);
+    }
+    out->ok = ok;
+    return true;
+}
+
+QByteArray EncodeInstantProofReq(qint64 message_id, const QString& proof_hex)
+{
+    QJsonObject req;
+    req["message_id"] = QString::number(message_id);
+    req["proof"] = proof_hex;
+    return QJsonDocument(req).toJson(QJsonDocument::Compact);
+}
+
+bool DecodeInstantProofRsp(const QByteArray& payload, InstantProofRsp* out)
+{
+    QJsonObject obj;
+    bool ok = false;
+    if (!ParseObject(payload, &out->message_id, &obj, &ok)) {
+        return false;
+    }
+    if (!ReadError(obj, &out->error)) {
+        return true; //ok=false：可定位但不可用
+    }
+    out->status = OptI32(obj, "status", -1);
+    out->server_offset = OptU64(obj, "server_offset", -1);
+    out->event_seq = OptU64(obj, "event_seq", 0);
+    if (out->error != 0) {
+        ok = true; //错误回包（2118/2002 等）允许业务字段缺失
+    } else {
+        //成功回包：status/server_offset 必需，且 **event_seq 必须 > 0**
+        //——1514 成功必为已发布，服务端发布事务一定分配 event_seq；缺失、
+        //非十进制字符串或被写成 0 都是坏包，ok=false 让 engine 按 ERR_JSON
+        //计数（连续坏包达上限转永久失败），绝不当作正常状态切换。
+        //status 是否 == Published 由 engine 判定（本层只管字段存在性）。
+        ok = out->status >= 0 && out->server_offset >= 0
+            && out->event_seq > 0;
     }
     out->ok = ok;
     return true;

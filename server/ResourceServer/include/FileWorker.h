@@ -143,6 +143,22 @@ struct UploadSession {
 	llfc::Sha256Stream hasher;  ///< 只可移动 => UploadSession 亦只可移动
 	bool hash_valid = false;
 	std::string final_hex;
+
+	//P2 秒传挑战（绑定本会话 + 确切请求连接，单次使用 + 有限时效）：
+	//1507 命中"发送者 Published 历史 + blob 存在 + 大小一致"时生成；
+	//1513 消费（证明不符同时抑制本会话再次下发，破无限挑战循环）、
+	//TTL 过期、会话逐出/服务重启即失效。客户端按 2118 回退普通上传
+	//并重发 1507 重新获取（新会话不受旧抑制影响，但客户端 2118 后
+	//本传输内禁用 proof，闭环兜底）。
+	std::string challenge_nonce_raw;       ///< 16 字节原始 nonce（下发 hex）
+	unsigned long long challenge_offset = 0;
+	unsigned long long challenge_length = 0;
+	bool challenge_active = false;
+	/// 挑战只认下发时那条 CSession：其他连接（即便同 uid 重连）重放 1513 无效
+	std::weak_ptr<CSession> challenge_session;
+	std::chrono::steady_clock::time_point challenge_issued_at; ///< TTL 起点
+	/// 证明不符后置真：本会话不再下发新挑战（无限挑战循环的服务端闸门）
+	bool challenge_suppressed = false;
 };
 
 class FileWorker
@@ -167,6 +183,15 @@ public:
 		const std::shared_ptr<ChatMessage>& msg);
 	/// 逐出上传会话缓存（仅本 worker 线程内调用；1507 复核到终态时同步清理）
 	void EvictUploadSession(long long message_id);
+
+	//P2 秒传证明（1513，仅本 worker 线程）：DB 真值复核（uid 必须为本消息
+	//sender；已 Published 直接回成功携带原 event_seq，不产生新事件）→
+	//会话挑战（一次性、TTL、绑定下发时的 req_session）→ 常量时间校验 →
+	//与普通上传共用发布事务与 Notifier → 回 1514（证明不符/挑战丢失回
+	//2118，客户端回退普通上传）。
+	void HandleInstantProof(std::shared_ptr<CSession> req_session, int req_uid,
+		long long message_id, const std::string& proof_hex,
+		const std::function<void(const json&)>& respond);
 
 private:
 	void task_callback(std::shared_ptr<FileTask>);

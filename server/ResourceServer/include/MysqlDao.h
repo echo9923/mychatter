@@ -53,6 +53,20 @@ public:
 	/// 清理任务：事务内 status PENDING→FAILED；未发布资源不创建用户事件。
 	bool MarkResourceExpired(const std::vector<ExpiredResource>& items);
 
+	/// 三值查询基类式结果：Yes/No/Transient（Transient 必须按可重试处理，
+	/// 不得当 No 误删/误判）。
+	enum class TriState { Yes, No, Transient };
+	/// P2 秒传判定：该发送者是否有一条 Published 的消息 sha256 与大小都
+	/// 相同（联表 chat_messages 过滤 sender_user_id 与 status=1；只看本人
+	/// 历史，不向他人泄露"有人传过相同内容"）。走 idx_message_resources_sha。
+	TriState SenderHasPublishedContent(int sender_user_id, const std::string& sha256,
+		unsigned long long file_size_bytes);
+	/// P2 孤儿 blob 判定：是否存在任一 Published 消息引用该 sha256。
+	/// 只按内容身份（sha256）判定，不用磁盘 stat 大小做条件——大小不符
+	/// 不是"无引用"的证据（同名文件即同一内容，长度异常属另一类问题）。
+	/// 清理任务据此决定 blob 是否可回收；Transient 一律保留待下轮。
+	TriState BlobHasPublishedReference(const std::string& sha256);
+
 private:
 	/// 单次发布事务尝试；死锁（1213/40001）时 deadlock 置真由外层重试
 	PublishResult CompleteResourceUploadOnce(long long message_id, int sender_user_id,

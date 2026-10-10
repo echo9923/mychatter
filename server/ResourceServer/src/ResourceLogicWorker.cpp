@@ -6,10 +6,13 @@
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
 #include "Sha256.h"
+#include "ResourceUploadFile.h" //llfc::ResourceBlobPath（P2 秒传 blob 判定）
 
 #include <algorithm>
 #include <boost/filesystem.hpp>
 #include <cctype>
+#include <chrono>
+#include <cstdio>
 #include <iostream>
 #include <limits>
 
@@ -39,6 +42,7 @@ short ReqToRspId(short msg_type)
 	case ID_RESOURCE_UPLOAD_PROGRESS_REQ:     return ID_RESOURCE_UPLOAD_PROGRESS_RSP;
 	case ID_RESOURCE_DOWN_INFO_REQ:           return ID_RESOURCE_DOWN_INFO_RSP;
 	case ID_RESOURCE_CHUNK_DOWN_REQ:          return ID_RESOURCE_CHUNK_DOWN_RSP;
+	case ID_RESOURCE_INSTANT_PROOF_REQ:      return ID_RESOURCE_INSTANT_PROOF_RSP;
 	default:                                  return 0;
 	}
 }
@@ -82,12 +86,6 @@ bool IsValidAvatarName(const std::string& name) {
 		}
 	}
 	return true;
-}
-
-/// 资源文件路径（磁盘真值）：resource/<sender_uid>/<message_id>
-boost::filesystem::path ResourceFilePath(long long sender_id, long long message_id) {
-	return ConfigMgr::Inst().GetResourceRootPath()
-		/ std::to_string(sender_id) / std::to_string(message_id);
 }
 } // namespace
 
@@ -156,6 +154,11 @@ void ResourceLogicWorker::RegisterCallBacks()
 	//1507 查询上传进度：{message_id:"<str>"} -> {error, message_id, server_offset, total_size,
 	//status, sha256}。与 1505 共用会话；首次恢复回退尾片，查询不重复回退
 	_fun_callbacks[ID_RESOURCE_UPLOAD_PROGRESS_REQ] = &ResourceLogicWorker::handleResourceUploadProgress;
+	//P2 1513 秒传证明：{message_id:"<str>", proof:"<64hex>"} -> 1514
+	//{error, message_id, status, server_offset, event_seq}；证明不符/挑战
+	//丢失回 2118（客户端回退普通上传）。固定路由到上传 worker（挑战在
+	//UploadSession 内，仅该线程可访问）。
+	_fun_callbacks[ID_RESOURCE_INSTANT_PROOF_REQ] = &ResourceLogicWorker::handleInstantProof;
 	//1509 查询资源下载信息：{message_id:"<str>"} -> {error, message_id, file_name, total_size,
 	//sha256, mime_type, message_type, status}。权限：请求者必须是私聊成员
 	_fun_callbacks[ID_RESOURCE_DOWN_INFO_REQ] = &ResourceLogicWorker::handleResourceDownInfo;
@@ -437,6 +440,81 @@ void ResourceLogicWorker::handleResourceUploadProgress(shared_ptr<CSession> sess
 				session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 				return;
 			}
+			//P2 秒传判定（仅 PENDING 且 server_offset==0 的全新上传）：同时
+			//满足三点才发一次性挑战——①该发送者有一条 Published 消息 sha256
+			//与大小都相同（只看本人历史，不泄露他人内容）；②对应 blob 存在
+			//（blob 存在即为可信内容）；③文件大小一致（DB 行真值）。
+			//判定查询 Transient（DB 瞬时故障）→ 2002 让客户端稍后重试，
+			//绝不把"查不到"当"无历史"静默降级（typed 结果不得折叠）。
+			//challenge_suppressed（本会话证明曾不符）→ 不再下发新挑战，
+			//客户端按普通上传继续（服务端防无限挑战闸门）。
+			if (upload->received == 0 && !upload->challenge_suppressed
+				&& chat_msg->resource->file_size_bytes > 0) {
+				const auto sha = chat_msg->resource->sha256;
+				const auto size = chat_msg->resource->file_size_bytes;
+				bool instant_hit = false;
+				const auto published = MysqlMgr::GetInstance()
+					->SenderHasPublishedContent(uid, sha, size);
+				if (published == MysqlDao::TriState::Transient) {
+					rtvalue["error"] = ErrorCodes::RPCFailed;
+					rtvalue["status"] = static_cast<int>(MessageStatus::Pending);
+					session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+					return;
+				}
+				if (published == MysqlDao::TriState::Yes) {
+					boost::system::error_code blob_ec;
+					const auto blob_path = llfc::ResourceBlobPath(
+						ConfigMgr::Inst().GetResourceRootPath(), sha);
+					const auto blob_size = boost::filesystem::file_size(blob_path, blob_ec);
+					instant_hit = !blob_ec
+						&& blob_size == static_cast<boost::uintmax_t>(size);
+				}
+				if (instant_hit) {
+					//挑战参数：nonce=16 字节安全随机（hex 下发）；区段 offset
+					//随机，length=min(size, 64KiB)；绑定本会话 + 本连接，
+					//一次性使用 + TTL（FileWorker 侧校验）
+					unsigned char nonce_raw[16] = {0};
+					const unsigned long long length = size < 64u * 1024u
+						? size : 64u * 1024u;
+					unsigned char off_raw[8] = {0};
+					if (llfc::RandomBytes(nonce_raw, sizeof(nonce_raw))
+						&& llfc::RandomBytes(off_raw, sizeof(off_raw))) {
+						unsigned long long rand64 = 0;
+						for (int i = 0; i < 8; ++i) {
+							rand64 = (rand64 << 8) | off_raw[i];
+						}
+						const unsigned long long offset =
+							length >= size ? 0 : rand64 % (size - length + 1);
+						char nonce_hex[33] = {0};
+						for (int i = 0; i < 16; ++i) {
+							std::snprintf(nonce_hex + i * 2, 3, "%02x", nonce_raw[i]);
+						}
+						upload->challenge_nonce_raw.assign(
+							reinterpret_cast<const char*>(nonce_raw), sizeof(nonce_raw));
+						upload->challenge_offset = offset;
+						upload->challenge_length = length;
+						upload->challenge_active = true;
+						upload->challenge_session = session;
+						upload->challenge_issued_at =
+							std::chrono::steady_clock::now();
+						rtvalue["error"] = ErrorCodes::Success;
+						rtvalue["mode"] = "proof";
+						rtvalue["server_offset"] = std::to_string(0);
+						rtvalue["file_size_bytes"] = std::to_string(size);
+						rtvalue["status"] = static_cast<int>(MessageStatus::Pending);
+						rtvalue["sha256"] = sha;
+						rtvalue["chunk_size"] = std::to_string(kResourceUploadChunkSize);
+						json challenge;
+						challenge["nonce"] = std::string(nonce_hex);
+						challenge["offset"] = std::to_string(offset);
+						challenge["length"] = std::to_string(length);
+						rtvalue["challenge"] = challenge;
+						session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+						return;
+					}
+					//随机源失败：不降级伪随机，按普通上传继续
+				}
+			}
 			server_offset = upload->received;
 		}
 		else {
@@ -462,6 +540,36 @@ void ResourceLogicWorker::handleResourceUploadProgress(shared_ptr<CSession> sess
 	};
 
 	int index = ResourceWorkerIndex(static_cast<long long>(message_id), FILE_WORKER_COUNT);
+	FileSystem::GetInstance()->PostClosureToQue(callback, index);
+}
+
+void ResourceLogicWorker::handleInstantProof(shared_ptr<CSession> session, const short& msg_type,
+	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
+{
+	//msg_type 与既有 handler 一致留空不使用
+	auto root = json::parse(msg_data, nullptr, false);
+	unsigned long long message_id = 0;
+	if (root.is_discarded() || !root.is_object()
+		|| !root.contains("message_id") || !root.contains("proof")
+		|| !ParseJsonUInt64(root["message_id"], message_id) || message_id == 0
+		|| !root["proof"].is_string()) {
+		json rtvalue;
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		SendRspFrame(session, ID_RESOURCE_INSTANT_PROOF_RSP, rtvalue);
+		return;
+	}
+	const std::string proof = root["proof"].get<std::string>();
+	const long long mid = static_cast<long long>(message_id);
+	const int uid = session->GetUserId();
+	//在途字节配额令牌随闭包转入 FileWorker（与 1507 一致）；req_session/uid
+	//一并传入：挑战绑定下发时的确切连接，proof 只能由本消息 sender 发起。
+	auto callback = [session, uid, mid, proof, quota = std::move(quota)](FileWorker& worker) {
+		auto respond = [session](const json& result) {
+			session->Send(result.dump(), ID_RESOURCE_INSTANT_PROOF_RSP);
+		};
+		worker.HandleInstantProof(session, uid, mid, proof, respond);
+	};
+	const int index = ResourceWorkerIndex(mid, FILE_WORKER_COUNT);
 	FileSystem::GetInstance()->PostClosureToQue(callback, index);
 }
 

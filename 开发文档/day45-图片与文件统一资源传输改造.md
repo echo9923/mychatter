@@ -22,8 +22,8 @@
 
 - 1503 在一个事务中创建 `chat_messages(status=PENDING)` 和对应 `message_resources`，不创建 `user_events`。
 - 资源元数据字段为 `original_file_name/file_size_bytes/sha256/mime_type`，不混入聊天消息正文。
-- 分片只写 `bin/resource/<sender_user_id>/<message_id>.part`；上传进度真值是磁盘长度，不进 Redis 或 MySQL 字段。
-- 收齐后校验整文件 SHA-256，并原子改名为最终文件。
+- 分片只写 `bin/resource/<sender_user_id>/<message_id>.part`（P2 起改为 `bin/resource/uploading/<message_id>.part`，发布后内容落 `bin/resource/blobs/<sha[:2]>/<sha256>`，见文末 P2 章节）；上传进度真值是磁盘长度，不进 Redis 或 MySQL 字段。
+- 收齐后校验整文件 SHA-256，并原子改名为最终文件（P2 起为 no-replace 改名到内容寻址 blob，目标已存在即去重命中）。
 - ResourceServer 在一个事务中把消息置为 `PUBLISHED`，递增接收者 `users.last_event_seq` 并插入 `user_events`。
 - 重复完成返回原 `event_seq`，不再次分配序号。
 - 上传失败或过期把消息置为 `FAILED` 并清理文件，不分配事件，也不通知接收者。
@@ -35,7 +35,7 @@ ChatServer 创建资源时校验认证用户、私聊成员、消息类型、大
 
 ResourceServer 以 `message_id % worker_count` 固定路由，保证同一 `.part` 只由一个工作线程写。重复分片先校验已经落盘的内容；偏移超前返回 `server_offset` 让客户端重新对齐。发布后使用通用 `NotifyUserEvent` gRPC 通知目标 ChatServer。
 
-启动时和每小时清理超过配置期限的未完成资源，只扫描 `bin/resource/`，不影响头像目录 `bin/static/`。头像 1601 至 1604 协议保持独立。
+启动时和每小时清理超过配置期限的未完成资源，只扫描 `bin/resource/`，不影响头像目录 `bin/static/`（P2 起同时回收无 Published 引用的孤儿 blob）。头像 1601 至 1604 协议保持独立。
 
 ## 客户端
 
@@ -64,3 +64,14 @@ ResourceServer 以 `message_id % worker_count` 固定路由，保证同一 `.par
 - 测试：`tests/integration/im_frame.h` 新增 `BuildChunkUploadReqBody/ParseChunkDownRspBody`；`im_common.h` 共享 `kTestChunkSize`（替换全部 32768 硬编码）；新增 `resource-pipeline` 场景（4 片在途、回包有序、offset 一一对应）；`tests/resource_wire_tests.cpp` 编解码往返/边界单元测试。
 - 基准：`bench_run/bench_resource.py` 为真实全链路工具——ChatServer 4B 帧 1101 鉴权 + 1503/1504 创建 Pending、ResourceServer 6B 帧 1501 鉴权 + 1507 元数据/fresh 校验、二进制 1505 逐片上传（校验回显 offset/server_offset 前进/末片 Published+event_seq）、可选 `--download` 1510/1511/1512 逐片 hash/bytes/offset/total 与整文件 SHA 校验（0 字节分片立即报错）；输出 MB/s、每片 p99、帧数；`--message-id` 可复用既有 Pending，`--file` 指定源文件。
 - **升级注意**：v2 与 v1 不兼容，ResourceServer、ChatServer（1503 校验不变但需同批）、客户端必须同批发布；旧客户端对新服务端的上传/下载会在 1505/1512 解析层失败（按坏帧断连），属预期。
+
+## P2 发送者范围秒传与内容寻址存储
+
+实现与部署细节见 `开发文档/P2-秒传与内容寻址存储.md`，此处只记结论：
+
+- 磁盘改为内容寻址：进行中 `<CAS根>/uploading/<message_id>.part`，已发布 `<CAS根>/blobs/<sha[:2]>/<sha256>`（根路径可配置 `[Storage] ResourceRoot`，缺省 `bin/resource`；同一根目录只允许一个 ResourceServer 进程）；blob 只有"整文件哈希 + flush + no-replace 持久化改名（POSIX 目录项 fsync）"之后才出现，不建 `resource_blobs` 表，下载路径由 `message_resources.sha256` 推出。
+- 上传完成用 no-replace 改名安装 blob：目标已存在即去重命中，但"存在"不等于"可信"——须复核目标精确长度 + 整文件哈希 + flush 后**才**删 `.part` 并继续发布；复核不过则保留 `.part` 与已有 blob、回可重试 `2104`，**绝不覆盖已有 blob**。安装与发布事务提交在 `BlobInstallGcMutex` 临界区内，与清理任务的孤儿判定/unlink 互斥（秒传路径同样持锁）。
+- 新增 1513/1514 秒传持有性证明：1508 命中"本发送者已有相同 sha256+大小的 Published 消息且 blob 存在且大小一致"才下发一次性挑战（16 字节随机 nonce、随机区段 ≤64KiB、TTL 120 秒、绑定下发会话），客户端回 `proof=hex(SHA256(nonce_raw16‖区段))`，服务端常量时间比对，通过后走同一个发布事务与 1701。只认发送者本人历史，不泄露他人"传过相同内容"。
+- 新增错误码 `2118`：证明不符/挑战丢失或过期/服务重启 → 客户端本传输禁用 proof 并回退普通上传 + 1507 重同步；服务端在证明不符后抑制本会话后续挑战，双端闭环不成环。
+- `message_resources` 新增索引 `idx_message_resources_sha(sha256, file_size_bytes)`（重建脚本已含；注释版 ALTER 仅供已有 CAS 布局的库补索引参考，旧布局升级按 P2 部署说明全量重建）。
+- 清理任务额外回收 7 天前 `uploading/*.part` 与无 Published 引用的孤儿 blob，**引用判定只按 sha256 身份（不附加磁盘 `stat` 大小）**，`Transient` 查库失败一律保留；旧 `resource/<sender_uid>/` 布局不动，部署时清空整个 CAS 根目录。

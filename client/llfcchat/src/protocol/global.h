@@ -78,6 +78,8 @@ enum ReqId{
     ID_RESOURCE_DOWN_INFO_RSP = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP,      //1510 查询资源下载信息回复
     ID_RESOURCE_CHUNK_DOWN_REQ = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ,    //1511 按偏移量下载资源分片请求
     ID_RESOURCE_CHUNK_DOWN_RSP = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP,    //1512 按偏移量下载资源分片回复
+    ID_RESOURCE_INSTANT_PROOF_REQ = llfc_proto::MSG_RESOURCE_INSTANT_PROOF_REQ, //1513 秒传持有性证明请求
+    ID_RESOURCE_INSTANT_PROOF_RSP = llfc_proto::MSG_RESOURCE_INSTANT_PROOF_RSP, //1514 秒传持有性证明回复（2118 回退普通上传）
     ID_UPLOAD_HEAD_ICON_REQ  = llfc_proto::MSG_UPLOAD_HEAD_ICON_REQ,  //1601 上传头像请求
     ID_UPLOAD_HEAD_ICON_RSP  = llfc_proto::MSG_UPLOAD_HEAD_ICON_RSP,  //1602 上传头像回复
     ID_DOWN_LOAD_FILE_REQ = llfc_proto::MSG_DOWN_LOAD_FILE_REQ,      //1603 下载文件请求（旧头像链路）
@@ -115,7 +117,8 @@ enum ErrorCodes{
     RESOURCE_NOT_READY   = llfc_proto::RS_RESOURCE_NOT_READY,    //2114 资源未就绪（稍后重试或提示）
     RESOURCE_FORBIDDEN   = llfc_proto::RS_RESOURCE_FORBIDDEN,    //2115 无权访问该资源（permanent）
     RESOURCE_STATE_INVALID = llfc_proto::RS_RESOURCE_STATE_INVALID, //2116 资源已过期/终态（permanent，标 Expired）
-    FILE_CONTENT_MISMATCH = llfc_proto::RS_FILE_CONTENT_MISMATCH //2117 整文件哈希不符（重传整文件；第 3 次服务端标失败 2116）
+    FILE_CONTENT_MISMATCH = llfc_proto::RS_FILE_CONTENT_MISMATCH, //2117 整文件哈希不符（重传整文件；第 3 次服务端标失败 2116）
+    INSTANT_PROOF_INVALID = llfc_proto::RS_INSTANT_PROOF_INVALID  //2118 秒传证明不符/挑战丢失（回退普通上传并 1507 重同步）
 };
 
 enum Modules{

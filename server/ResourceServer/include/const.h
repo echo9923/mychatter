@@ -42,6 +42,7 @@ enum ErrorCodes {
 	ResourceForbidden = llfc_proto::RS_RESOURCE_FORBIDDEN,    //2115 请求者不是消息发送者或接收者
 	ResourceStateInvalid = llfc_proto::RS_RESOURCE_STATE_INVALID, //2116 对已失败/已就绪资源的非法上传操作
 	FileContentMismatch = llfc_proto::RS_FILE_CONTENT_MISMATCH, //2117 整文件 SHA-256 不符（重传整文件；同会话第 3 次转 2116）
+	InstantProofInvalid = llfc_proto::RS_INSTANT_PROOF_INVALID, //2118 秒传证明不符/挑战丢失（回退普通上传，1507 重新同步）
 };
 
 // Defer 已迁移至 common/include/Defer.h
@@ -98,6 +99,8 @@ enum MSG_TYPES {
 	ID_RESOURCE_DOWN_INFO_RSP = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP,     //1510 查询资源下载信息回复
 	ID_RESOURCE_CHUNK_DOWN_REQ = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ,   //1511 按偏移量下载资源分片
 	ID_RESOURCE_CHUNK_DOWN_RSP = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP,   //1512 按偏移量下载资源分片回复
+	ID_RESOURCE_INSTANT_PROOF_REQ = llfc_proto::MSG_RESOURCE_INSTANT_PROOF_REQ, //1513 秒传持有性证明请求（proof=hex(SHA256(nonce_raw16||区段))）
+	ID_RESOURCE_INSTANT_PROOF_RSP = llfc_proto::MSG_RESOURCE_INSTANT_PROOF_RSP, //1514 秒传持有性证明回复（证明错误/挑战丢失 2118）
 	ID_RESOURCE_LOGIN_REQ = llfc_proto::MSG_RESOURCE_LOGIN_REQ,    //1501 资源服务登录鉴权请求
 	ID_RESOURCE_LOGIN_RSP = llfc_proto::MSG_RESOURCE_LOGIN_RSP     //1502 资源服务登录鉴权回复
 };

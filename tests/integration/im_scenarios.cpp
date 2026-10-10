@@ -3338,8 +3338,9 @@ bool ScenarioResourceResume() {
 			cS.Close(); stack.StopAll(); return false;
 		}
 
+		//P2 内容寻址布局：进行中上传统一在 bin/resource/uploading/<mid>.part
 		const auto part_path = boost::filesystem::path(stack.pm.base_dir()) / "ResourceServer"
-			/ "bin" / "resource" / std::to_string(SENDER_UID) / (std::to_string(mid) + ".part");
+			/ "bin" / "resource" / "uploading" / (std::to_string(mid) + ".part");
 		// Reproduce crash residues deterministically, including a full-length dirty tail.
 		std::string residue = blob.substr(0, static_cast<std::size_t>(test.offset));
 		residue.resize(test.length, '?');
@@ -3840,10 +3841,11 @@ bool ScenarioResourceExpiry() {
 	}
 	res->Close();
 
-	//.part 实际路径（harness cwd = 工作目录，ConfigMgr 在其下建 bin/resource）
+	//.part 实际路径（harness cwd = 工作目录，ConfigMgr 在其下建 bin/resource；
+	//P2 内容寻址布局把进行中上传放在 uploading/ 子目录）
 	namespace fs = boost::filesystem;
 	const fs::path part_path = fs::path(stack.pm.base_dir()) / "ResourceServer"
-		/ "bin" / "resource" / std::to_string(SENDER_UID)
+		/ "bin" / "resource" / "uploading"
 		/ (std::to_string(mid) + ".part");
 	boost::system::error_code fs_ec;
 	const bool part_exists = fs::exists(part_path, fs_ec);

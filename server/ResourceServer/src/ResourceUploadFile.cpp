@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <cerrno>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -91,6 +92,21 @@ bool FsyncDirectory(const boost::filesystem::path& dir_path) {
 } // namespace
 
 namespace llfc {
+
+boost::filesystem::path ResourceUploadingPartPath(
+    const boost::filesystem::path& root, long long message_id) {
+    return root / "uploading" / (std::to_string(message_id) + ".part");
+}
+
+boost::filesystem::path ResourceBlobPath(const boost::filesystem::path& root,
+    const std::string& sha256_hex) {
+    return root / "blobs" / sha256_hex.substr(0, 2) / sha256_hex;
+}
+
+std::mutex& BlobInstallGcMutex() {
+    static std::mutex m; //进程级单一互斥（取舍见头文件注释）
+    return m;
+}
 
 bool TruncateUploadFile(const boost::filesystem::path& part_path,
     unsigned long long received) {
@@ -196,8 +212,60 @@ bool FlushFileToDisk(const boost::filesystem::path& path) {
 #endif
 }
 
+bool EnsureDirectoryDurable(const boost::filesystem::path& dir) {
+	if (dir.empty()) return true;
+#ifdef _WIN32
+	boost::system::error_code ec;
+	boost::filesystem::create_directories(dir, ec);
+	if (ec && !boost::filesystem::is_directory(dir, ec)) {
+		std::cerr << "ResourceServer: create_directories failed dir="
+			<< dir.string() << " ec=" << ec.message() << std::endl;
+		return false;
+	}
+	// Windows 无 POSIX 目录 fsync 等价物：目录条目的持久化由创建/移动 API 的
+	// 写穿语义承担（publish 侧是 MoveFileExW WRITE_THROUGH）。
+	return true;
+#else
+	// 1) 幂等创建：自底向上收集"本调用新建"的层级，逐级创建。
+	boost::system::error_code ec;
+	std::vector<boost::filesystem::path> missing;
+	boost::filesystem::path cur = dir;
+	while (!cur.empty() && !boost::filesystem::is_directory(cur, ec)) {
+		missing.push_back(cur);
+		const boost::filesystem::path parent = cur.parent_path();
+		if (parent.empty() || parent == cur) break;
+		cur = parent;
+	}
+	for (std::vector<boost::filesystem::path>::reverse_iterator it = missing.rbegin();
+		it != missing.rend(); ++it) {
+		boost::system::error_code mk_ec;
+		boost::filesystem::create_directory(*it, mk_ec);
+		if (mk_ec && !boost::filesystem::is_directory(*it, mk_ec)) {
+			std::cerr << "ResourceServer: create_directory failed dir="
+				<< it->string() << " ec=" << mk_ec.message() << std::endl;
+			return false;
+		}
+	}
+	// 2) 持久化整条祖先条目链：dir 自身的条目存在于其父目录里，父的条目又
+	// 存在于祖父里——只 fsync 叶子目录不足以让"新建的链"在崩溃后仍然可达。
+	// **必须遍历整条链而不是只 fsync 本次新建的层级**：
+	//   - 上次 create_directory 成功但父目录 fsync 失败（本函数返回 false），
+	//     重试时该目录已存在，"新建集合"为空 → 旧实现整条链一个都不 fsync；
+	//   - ConfigMgr 启动时先 create_directories(root/blobs)，运行期首次上传
+	//     再 Ensure(root/blobs/<xx>)：blobs 的条目在 root 里尚未落盘。
+	// 自底向上直到文件系统根（相对路径则到"."，即解析基准目录）。
+	for (boost::filesystem::path p = dir; ; p = p.parent_path()) {
+		if (!FsyncDirectory(p)) return false;
+		const boost::filesystem::path parent = p.parent_path();
+		if (parent.empty() || parent == p) break;
+	}
+	return true;
+#endif
+}
+
 bool DurableRename(const boost::filesystem::path& from,
-    const boost::filesystem::path& to, bool replace) {
+    const boost::filesystem::path& to, bool replace, bool* already_exists) {
+	if (already_exists != nullptr) *already_exists = false;
 #ifdef _WIN32
     // MoveFileExW(WRITE_THROUGH)：按微软文档，返回时移动操作已写入磁盘
     //（对 copy+delete 形式的移动保证先落盘再返回），Windows 未提供 POSIX
@@ -206,17 +274,35 @@ bool DurableRename(const boost::filesystem::path& from,
     const DWORD flags = MOVEFILE_WRITE_THROUGH
         | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
     if (MoveFileExW(from.wstring().c_str(), to.wstring().c_str(), flags) == 0) {
+        const DWORD gle = GetLastError();
+        //P2 no-replace 去重命中：目标 blob 已存在即视为成功路径。
+        //MoveFileExW 按目标存在/重名分别报 ERROR_ALREADY_EXISTS 与
+        //ERROR_FILE_EXISTS，两者都表示"移动未发生但目标已在位"
+        if (!replace && (gle == ERROR_ALREADY_EXISTS || gle == ERROR_FILE_EXISTS)
+            && already_exists != nullptr) {
+            *already_exists = true;
+            return true;
+        }
         std::cerr << "ResourceServer: MoveFileExW failed from=" << from.string()
             << " to=" << to.string() << " replace=" << replace
-            << " gle=" << GetLastError() << std::endl;
+            << " gle=" << gle << std::endl;
         return false;
     }
     return true;
 #else
+    // 目标目录的条目本身必须已持久化：blobs/<xx>/ 由本次上传新建时，只
+    // fsync 该目录不够（条目在 blobs/ 里），由 EnsureDirectoryDurable
+    // 逐级 fsync 父目录。目录不存在时 link/rename 必然 ENOENT。
+    if (!EnsureDirectoryDurable(to.parent_path())) return false;
     if (!replace) {
         // no-replace：link() 在目标已存在时原子失败（EEXIST）。link+unlink
         // 并非单步原子 rename：link 成功后目标立即对并发观察者可见。
         if (::link(from.string().c_str(), to.string().c_str()) != 0) {
+            if (errno == EEXIST && already_exists != nullptr) {
+                //P2 去重命中：blob 已存在（blob 存在即为可信内容）
+                *already_exists = true;
+                return true;
+            }
             std::cerr << "ResourceServer: link failed from=" << from.string()
                 << " to=" << to.string() << " errno=" << errno << std::endl;
             return false;

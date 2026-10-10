@@ -60,4 +60,12 @@ private:
 /// content_hash 字段/协议字段的格式校验：恰好 64 个小写 hex 字符。
 bool IsValidSha256Hex(const std::string& hex);
 
+/// 密码学安全随机字节（OpenSSL RAND_bytes）。失败返回 false（调用方
+/// 必须检查，不得退化为时间戳/伪随机）。P2 秒传挑战 nonce 使用。
+bool RandomBytes(unsigned char* out, std::size_t len);
+
+/// 常量时间字节比较（CRYPTO_memcmp）：相等返回 true。用于秒传证明等
+/// 秘密比对，杜绝按字节提前退出造成的时序侧信道。
+bool ConstantTimeEquals(const void* a, const void* b, std::size_t len);
+
 } // namespace llfc

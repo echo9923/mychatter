@@ -105,6 +105,10 @@ inline constexpr short ID_RESOURCE_DOWN_INFO_REQ    = llfc_proto::MSG_RESOURCE_D
 inline constexpr short ID_RESOURCE_DOWN_INFO_RSP    = llfc_proto::MSG_RESOURCE_DOWN_INFO_RSP;  // 1510
 inline constexpr short ID_RESOURCE_CHUNK_DOWN_REQ   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_REQ; // 1511
 inline constexpr short ID_RESOURCE_CHUNK_DOWN_RSP   = llfc_proto::MSG_RESOURCE_CHUNK_DOWN_RSP; // 1512
+// P2 秒传：1508 可带 mode="proof" + challenge{nonce,offset,length}；
+// 1513 回传 proof=hex(SHA256(nonce_raw16||区段))，证明不符/挑战丢失 2118
+inline constexpr short ID_RESOURCE_INSTANT_PROOF_REQ = llfc_proto::MSG_RESOURCE_INSTANT_PROOF_REQ; // 1513
+inline constexpr short ID_RESOURCE_INSTANT_PROOF_RSP = llfc_proto::MSG_RESOURCE_INSTANT_PROOF_RSP; // 1514
 // 1405/1406 增量同步（按 event_seq 游标）。
 inline constexpr short ID_SYNC_USER_MESSAGE_REQ   = llfc_proto::MSG_SYNC_USER_MESSAGE_REQ; // 1405
 inline constexpr short ID_SYNC_USER_MESSAGE_RSP   = llfc_proto::MSG_SYNC_USER_MESSAGE_RSP; // 1406
@@ -159,6 +163,7 @@ inline constexpr int ERR_RS_NOT_READY        = llfc_proto::RS_RESOURCE_NOT_READY
 inline constexpr int ERR_RS_FORBIDDEN        = llfc_proto::RS_RESOURCE_FORBIDDEN;     // 2115 非收发双方
 inline constexpr int ERR_RS_STATE_INVALID    = llfc_proto::RS_RESOURCE_STATE_INVALID; // 2116 已过期/终态
 inline constexpr int ERR_RS_CONTENT_MISMATCH = llfc_proto::RS_FILE_CONTENT_MISMATCH;  // 2117 整文件哈希不符
+inline constexpr int ERR_RS_INSTANT_PROOF_INVALID = llfc_proto::RS_INSTANT_PROOF_INVALID; // 2118 秒传证明不符/挑战丢失（回退普通上传）
 
 // ---- Process-wide failure counter ------------------------------------------
 inline std::atomic<int> g_failures{0};

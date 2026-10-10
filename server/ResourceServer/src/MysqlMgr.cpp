@@ -34,6 +34,17 @@ MysqlDao::ChatMsgLookup MysqlMgr::GetChatMsgById(long long message_id,
 	return _dao.GetChatMsgById(message_id, out);
 }
 
+MysqlDao::TriState MysqlMgr::SenderHasPublishedContent(int sender_user_id,
+	const std::string& sha256, unsigned long long file_size_bytes)
+{
+	return _dao.SenderHasPublishedContent(sender_user_id, sha256, file_size_bytes);
+}
+
+MysqlDao::TriState MysqlMgr::BlobHasPublishedReference(const std::string& sha256)
+{
+	return _dao.BlobHasPublishedReference(sha256);
+}
+
 bool MysqlMgr::GetExpiredResourceIds(const std::string& before_time,
 	const std::string& after_created_at, long long after_message_id,
 	int limit, std::vector<ExpiredResource>& out)

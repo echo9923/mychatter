@@ -76,7 +76,12 @@ public:
 
 	std::string GetValue(const std::string& section, const std::string & key);
 	boost::filesystem::path GetFileOutPath();
-	//资源消息存储根目录（与头像目录 static/ 隔离）：<bin>/resource/<sender_uid>/<message_id>
+	//资源消息存储根目录（与头像目录 static/ 隔离）。可配置：[Storage]
+	//ResourceRoot / [Output] ResourceRoot，缺省 <Output.Path>/resource。
+	//P2 内容寻址布局：
+	//  uploading/<message_id>.part   进行中上传
+	//  blobs/<sha[0:2]>/<sha256>     已发布内容寻址 blob（命中目标必须复核
+	//                                长度 + 整文件哈希 + 耐久性后才可信）
 	boost::filesystem::path GetResourceRootPath();
 	void InitPath();
 private:

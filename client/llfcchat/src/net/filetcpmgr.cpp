@@ -605,11 +605,12 @@ void FileTcpMgr::initHandlers()
 {
 	//1502 Resource 登录回复：鉴权成功后才允许发送业务帧
 	_handlers.insert(ID_RESOURCE_LOGIN_RSP, &FileTcpMgr::handleResourceLoginRsp);
-	//1506/1508/1510/1512 原样喂引擎（确认/回退/超时/退避全在引擎内闭环）
+	//1506/1508/1510/1512/1514 原样喂引擎（确认/回退/秒传/超时/退避全在引擎内闭环）
 	_handlers.insert(ID_RESOURCE_CHUNK_UPLOAD_RSP, &FileTcpMgr::handleEngineFrameRsp);
 	_handlers.insert(ID_RESOURCE_UPLOAD_PROGRESS_RSP, &FileTcpMgr::handleEngineFrameRsp);
 	_handlers.insert(ID_RESOURCE_DOWN_INFO_RSP, &FileTcpMgr::handleEngineFrameRsp);
 	_handlers.insert(ID_RESOURCE_CHUNK_DOWN_RSP, &FileTcpMgr::handleEngineFrameRsp);
+	_handlers.insert(ID_RESOURCE_INSTANT_PROOF_RSP, &FileTcpMgr::handleEngineFrameRsp);
 	// ---------- 头像通道（1601/1602/1603/1604，旧协议保持不变） ----------
 	_handlers.insert(ID_UPLOAD_HEAD_ICON_RSP, &FileTcpMgr::handleUploadHeadIconRsp);
 	_handlers.insert(ID_DOWN_LOAD_FILE_RSP, &FileTcpMgr::handleDownloadFileRsp);
@@ -653,7 +654,7 @@ void FileTcpMgr::handleResourceLoginRsp(ReqId id, int len, QByteArray data)
 
 void FileTcpMgr::handleEngineFrameRsp(ReqId id, int len, QByteArray data)
 {
-	//1506/1508/1510/1512：原样交给引擎（分片确认/回退/超时全在引擎内闭环）
+	//1506/1508/1510/1512/1514：原样交给引擎（分片确认/回退/秒传证明/超时全在引擎内闭环）
 	Q_UNUSED(len);
 	slot_internal_frame(static_cast<quint16>(id), data);
 }

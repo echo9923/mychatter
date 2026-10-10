@@ -97,6 +97,7 @@ CREATE TABLE `message_resources` (
     `sha256` CHAR(64) NOT NULL,
     `mime_type` VARCHAR(128) NOT NULL,
     PRIMARY KEY (`message_id`),
+    KEY `idx_message_resources_sha` (`sha256`, `file_size_bytes`),
     CONSTRAINT `fk_message_resources_message`
         FOREIGN KEY (`message_id`) REFERENCES `chat_messages` (`message_id`)
         ON DELETE CASCADE,
@@ -152,3 +153,10 @@ CREATE TABLE `user_events` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;
+
+-- ---------------------------------------------------------------------------
+-- P2 内容寻址存储：已采用 CAS 布局的库补索引参考（重建脚本已含该索引）。
+-- 旧布局升级按项目约定全量重建；不要在重建后重复执行下面的 ALTER。
+-- ALTER TABLE `message_resources`
+--     ADD KEY `idx_message_resources_sha` (`sha256`, `file_size_bytes`);
+-- ---------------------------------------------------------------------------

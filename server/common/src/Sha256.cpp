@@ -1,6 +1,8 @@
 #include "Sha256.h"
 
 #include <openssl/evp.h>
+#include <openssl/rand.h>  //RAND_bytes（P2 秒传 nonce）
+#include <openssl/crypto.h>  //CRYPTO_memcmp（P2 常量时间比较）
 
 #include <array>
 #include <cstddef>
@@ -81,6 +83,24 @@ bool IsValidSha256Hex(const std::string& hex) {
         }
     }
     return true;
+}
+
+bool RandomBytes(unsigned char* out, std::size_t len) {
+    if (out == nullptr || len == 0) {
+        return false;
+    }
+    //RAND_bytes 密码学安全；失败（熵源不可用等）如实返回，调用方不得降级
+    return RAND_bytes(out, static_cast<int>(len)) == 1;
+}
+
+bool ConstantTimeEquals(const void* a, const void* b, std::size_t len) {
+    if (len == 0) {
+        return true;
+    }
+    if (a == nullptr || b == nullptr) {
+        return false;
+    }
+    return CRYPTO_memcmp(a, b, len) == 0;
 }
 
 // --- Sha256Stream：只可移动的流式上下文 ----------------------------------------

@@ -38,6 +38,27 @@ struct ProgressRsp {
     QString sha256;
     qint64 chunk_size = -1;     //服务端分片对齐单位
     qint64 event_seq = 0;
+    //P2 秒传挑战（mode=="proof" 时有效；普通上传为空/-1）
+    QString mode;               //"proof" 或空（普通上传）
+    QString challenge_nonce;    //32 字符 hex（16 字节 nonce）
+    qint64 challenge_offset = -1;
+    qint64 challenge_length = -1;
+};
+
+//P2 1514 秒传证明回包：{error, message_id, status, server_offset, event_seq}
+//ok 语义（见 DecodeInstantProofRsp）：error!=0 时 ok=true（业务字段可缺失，
+//按 error 分类处理）；error==0（成功）时 status/server_offset 必须存在且
+//**event_seq 必须 >0**——1514 成功必为"已发布"，发布事务为接收者分配
+//event_seq，缺失/0/非十进制字符串都是坏包，调用方按 ERR_JSON 计数处理
+//（有界：连续坏包达 json_error_limit 转永久失败，不无限重同步）。
+//status 的语义判定（必须 == Published）在 engine 侧，与 1508 一致。
+struct InstantProofRsp {
+    bool ok = false;
+    int error = 0;
+    qint64 message_id = 0;
+    int status = -1;
+    qint64 server_offset = -1;
+    qint64 event_seq = 0;
 };
 
 //1510 下载信息回包：{error, message_id, original_file_name, file_size_bytes,
@@ -84,6 +105,10 @@ bool DecodeDownInfoRsp(const QByteArray& payload, DownInfoRsp* out);
 //1511：{message_id, offset}
 QByteArray EncodeChunkDownReq(qint64 message_id, qint64 offset);
 bool DecodeChunkDownRsp(const QByteArray& payload, ChunkDownRsp* out);
+
+//P2 1513：{message_id, proof}（proof=hex(SHA256(nonce_raw16||file[off,off+len)))）
+QByteArray EncodeInstantProofReq(qint64 message_id, const QString& proof_hex);
+bool DecodeInstantProofRsp(const QByteArray& payload, InstantProofRsp* out);
 
 } // namespace rc
 

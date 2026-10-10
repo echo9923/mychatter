@@ -25,9 +25,10 @@
 | 1501/1502 | `MSG_RESOURCE_LOGIN_REQ` / `MSG_RESOURCE_LOGIN_RSP` | ResourceServer 登录 |
 | 1503/1504 | `MSG_CREATE_RESOURCE_REQ` / `MSG_CREATE_RESOURCE_RSP` | 创建图片或文件元数据，此时消息为 `Pending` |
 | 1505/1506 | `MSG_RESOURCE_CHUNK_UPLOAD_REQ` / `MSG_RESOURCE_CHUNK_UPLOAD_RSP` | 上传资源分片；**P1c 起 1505 为二进制帧 `[u16 meta_len 大端][meta JSON][raw]`**（meta=`{message_id,offset,chunk_sha256}` 十进制字符串/hex，raw=分片原始字节≤256KiB，不再 Base64）；1506 仍为 JSON，回显请求 `offset`，完成响应可带 `event_seq` |
-| 1507/1508 | `MSG_RESOURCE_UPLOAD_PROGRESS_REQ` / `MSG_RESOURCE_UPLOAD_PROGRESS_RSP` | 查询服务端 `.part` 实际长度和消息状态；响应带 `chunk_size`（服务端分片对齐单位） |
+| 1507/1508 | `MSG_RESOURCE_UPLOAD_PROGRESS_REQ` / `MSG_RESOURCE_UPLOAD_PROGRESS_RSP` | 查询服务端 `.part` 实际长度和消息状态；响应带 `chunk_size`（服务端分片对齐单位）。**P2 起**：Pending 且 `server_offset=0` 且命中"本发送者已有相同 `sha256`+大小的 Published 消息 + 对应 blob 存在 + 大小一致"时，响应带 `mode:"proof"` 与 `challenge:{nonce(32 位 hex=16 原始字节),offset,length(≤64KiB)}` 一次性挑战 |
 | 1509/1510 | `MSG_RESOURCE_DOWN_INFO_REQ` / `MSG_RESOURCE_DOWN_INFO_RSP` | 查询下载元数据和权限 |
 | 1511/1512 | `MSG_RESOURCE_CHUNK_DOWN_REQ` / `MSG_RESOURCE_CHUNK_DOWN_RSP` | 下载资源分片；**P1c 起 1512 一律二进制帧 `[u16 meta_len 大端][meta JSON][raw]`（含错误分支与未鉴权拦截）**：meta=`{error,message_id,offset,bytes,chunk_sha256,total_size,is_last}`，raw=分片原始字节 |
+| 1513/1514 | `MSG_RESOURCE_INSTANT_PROOF_REQ` / `MSG_RESOURCE_INSTANT_PROOF_RSP` | **P2 秒传持有性证明**（JSON）：1513=`{message_id,proof}`，`proof=hex(SHA256(nonce_raw16 ‖ 服务端指定区段原始字节))`；1514 成功=`{error:0,message_id,status:1(Published),server_offset,event_seq}`（**`status` 必须存在且 `event_seq` 为十进制字符串且 >0**，缺失/JSON 数字/0 视为坏包，客户端按 `ERR_JSON` 计数，达上限转永久失败），走与普通上传同一个发布事务与 1701 通知。请求方非本消息发送者/无资源扩展 → `2115`（`ResourceForbidden`，**不是** 2118）；证明不符/挑战不存在或超 TTL/绑定连接不符（未消费挑战）/会话逐出/服务重启 → `2118`，客户端回退普通上传并重发 1507 |
 | 1601/1602 | `MSG_UPLOAD_HEAD_ICON_REQ` / `MSG_UPLOAD_HEAD_ICON_RSP` | 上传头像 |
 | 1603/1604 | `MSG_DOWN_LOAD_FILE_REQ` / `MSG_DOWN_LOAD_FILE_RSP` | 下载头像 |
 | 1701 | `MSG_NOTIFY_USER_MESSAGE` | 唯一实时用户事件通知，无回包 |
@@ -81,7 +82,14 @@
 | 2024 | `ERR_FRIEND_ACTION_INVALID` | `action` 不是 `accept/reject` |
 | 2025 | `ERR_SYNC_CURSOR_INVALID` | 客户端 `event_seq` 游标领先服务端序号头 |
 
-资源错误码保持 `2101` 至 `2117`（`2117` = 整文件 SHA-256 不符，非分片错误；同一上传会话累计第 3 次时服务端置 Failed 并改回 `2116`），定义见 `proto/protocol_ids.h`。
+资源错误码保持 `2101` 至 `2118`（`2117` = 整文件 SHA-256 不符，非分片错误；同一上传会话累计第 3 次时服务端置 Failed 并改回 `2116`；`2118` = 秒传持有性证明不符/挑战丢失或过期，客户端回退普通上传并重发 `1507`），定义见 `proto/protocol_ids.h`。
+
+## 资源存储布局（P2 内容寻址）
+
+- 进行中上传：`bin/resource/uploading/<message_id>.part`（不再按发送者分目录）；发布后 `.part` 被消费或清理。
+- 已发布内容：`bin/resource/blobs/<sha256 前 2 位>/<sha256>`，正常安装经过"整文件哈希校验通过 → flush → no-replace 持久化重命名"；去重命中已有同名文件时，必须再次确认长度、整文件 SHA-256 和 flush 成功后才可复用。不新建 `resource_blobs` 表，秒传判定与孤儿回收都走 `message_resources(sha256, file_size_bytes)` 的 `idx_message_resources_sha` 索引联表 `chat_messages`。
+- 下载路径由 `message_resources.sha256` 推出，`1509/1511` 不再依赖发送者目录。
+- 秒传只对**发送者本人**已发布过的相同内容生效（判定联表过滤 `sender_user_id`），因此不会向其他用户泄露"有人传过同一内容"。
 
 ## 传输约束
 
