@@ -14,8 +14,14 @@
 #include "const.h"
 #include "FileSystem.h"
 #include "LogicSystem.h"
+#include "UserMessageNotifier.h"
+#include <condition_variable>
+#include <mutex>
 
 namespace {
+/// 未完成资源的保留时长（秒）：Pending 行 / .part / 未发布最终文件超过
+/// 该时长即被清理任务标记 Failed 或删除
+constexpr long long kResourceRetentionSeconds = 7LL * 24 * 3600;
 /// 本地时间格式化为 MySQL timestamp 字符串（与 chat_messages.created_at 同构）
 std::string FormatDbTime(std::time_t t) {
 	std::tm tm_val{};
@@ -52,11 +58,27 @@ void RunResourceCleanup() {
 	const std::string before = FormatDbTime(now - kResourceRetentionSeconds);
 	const auto root = ConfigMgr::Inst().GetResourceRootPath();
 
-	//1) DB 侧：过期标记
-	std::vector<ExpiredResource> pending;
-	if (MysqlMgr::GetInstance()->GetExpiredResourceIds(before, 200, pending)) {
+	//1) DB 侧：过期标记。(created_at, message_id) 游标分页扫完一轮——
+	//旧行为 LIMIT 200 每轮固定取同批头部（.part 新鲜但 created_at 老的行
+	//永远占住页头），页外的行被饿死；游标推进保证每行都有机会被检查。
+	constexpr int kCleanupPageSize = 200;
+	std::string cursor_created_at;
+	long long cursor_message_id = 0;
+	int expired_total = 0;
+	while (true) {
+		std::vector<ExpiredResource> page;
+		if (!MysqlMgr::GetInstance()->GetExpiredResourceIds(before, cursor_created_at,
+			cursor_message_id, kCleanupPageSize, page)) {
+			//DB 异常：本轮放弃，下一小时从游标 0 重新扫
+			break;
+		}
+		if (page.empty()) {
+			break;
+		}
 		std::vector<ExpiredResource> to_expire;
-		for (const auto& item : pending) {
+		for (const auto& item : page) {
+			cursor_created_at = item.created_at;
+			cursor_message_id = item.message_id;
 			auto part_path = root / std::to_string(item.sender_user_id)
 				/ (std::to_string(item.message_id) + ".part");
 			const std::time_t mtime = FileMTime(part_path);
@@ -67,13 +89,20 @@ void RunResourceCleanup() {
 		}
 		if (!to_expire.empty()) {
 			if (MysqlMgr::GetInstance()->MarkResourceExpired(to_expire)) {
-				std::cout << "ResourceCleanup: expired " << to_expire.size()
-					<< " stale resource message(s)" << std::endl;
+				expired_total += static_cast<int>(to_expire.size());
 			}
 			else {
 				std::cerr << "ResourceCleanup: MarkResourceExpired failed" << std::endl;
+				break;
 			}
 		}
+		if (page.size() < static_cast<std::size_t>(kCleanupPageSize)) {
+			break;  //短页 = 本轮扫完
+		}
+	}
+	if (expired_total > 0) {
+		std::cout << "ResourceCleanup: expired " << expired_total
+			<< " stale resource message(s)" << std::endl;
 	}
 
 	//2) 磁盘侧：陈旧文件回收（只扫 resource/，与头像目录隔离）
@@ -96,12 +125,27 @@ void RunResourceCleanup() {
 			removable = true; //陈旧 .part 直接回收（DB 侧已在上面的标记流程处理）
 		}
 		else {
-			//最终文件：仅当 DB 无行或非 Ready 时回收（Ready 文件是接收方的下载源）
+			//最终文件：仅当 DB 确认无行或确认非 Ready 时才回收（Ready 文件
+			//是接收方的下载源）。Transient（DB 瞬时故障）必须跳过保留，
+			//绝不能因查库失败误删仍 Published 的资源。
 			char* parse_end = nullptr;
 			const long long mid = std::strtoll(name.c_str(), &parse_end, 10);
 			if (parse_end != nullptr && *parse_end == '\0' && mid > 0) {
-				auto msg = MysqlMgr::GetInstance()->GetChatMsgById(mid);
-				removable = !msg || msg->status != MessageStatus::Published;
+				std::shared_ptr<ChatMessage> msg;
+				switch (MysqlMgr::GetInstance()->GetChatMsgById(mid, msg)) {
+				case MysqlDao::ChatMsgLookup::Found:
+					removable = msg->status != MessageStatus::Published;
+					break;
+				case MysqlDao::ChatMsgLookup::NotFound:
+					removable = true;  //确认无行
+					break;
+				case MysqlDao::ChatMsgLookup::Transient:
+				default:
+					removable = false;  //查库失败：保留文件，下轮再判
+					std::cerr << "ResourceCleanup: transient DB error, keep file "
+						<< it->path().string() << std::endl;
+					break;
+				}
 			}
 			else {
 				removable = true; //不符合 <message_id> 命名规则的残留
@@ -116,16 +160,50 @@ void RunResourceCleanup() {
 	}
 }
 
-/// 启动即跑一次，此后每小时一次；ec 非空（io_context 停止）时终止链
-void ScheduleCleanup(boost::asio::steady_timer& timer) {
-	RunResourceCleanup();
-	timer.expires_after(std::chrono::hours(1));
-	timer.async_wait([&timer](const boost::system::error_code& ec) {
-		if (!ec) {
-			ScheduleCleanup(timer);
+/// 清理调度线程：RunResourceCleanup（DB 分页查询 + 全树磁盘扫描）不再
+/// 挂在主 io_context 上（原来会阻塞 acceptor 所在线程整轮扫描）。
+/// 启动即跑一次，此后每小时一次；Stop 可中断休眠并 join。
+class CleanupScheduler {
+public:
+	CleanupScheduler() = default;
+	~CleanupScheduler() {
+		Stop();
+	}
+	CleanupScheduler(const CleanupScheduler&) = delete;
+	CleanupScheduler& operator=(const CleanupScheduler&) = delete;
+
+	void Start() {
+		_thread = std::thread(&CleanupScheduler::Run, this);
+	}
+
+	void Stop() {
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			_stop = true;
 		}
-		});
-}
+		_cv.notify_all();
+		if (_thread.joinable()) {
+			_thread.join();
+		}
+	}
+
+private:
+	void Run() {
+		while (true) {
+			RunResourceCleanup();
+			std::unique_lock<std::mutex> lock(_mutex);
+			_cv.wait_for(lock, std::chrono::hours(1), [this]() { return _stop; });
+			if (_stop) {
+				return;
+			}
+		}
+	}
+
+	std::thread _thread;
+	std::mutex _mutex;
+	std::condition_variable _cv;
+	bool _stop = false;
+};
 } // namespace
 
 int main()
@@ -140,28 +218,30 @@ int main()
 		boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
 		auto port_str = cfg["SelfServer"]["Port"];
 
-		//资源清理定时器：启动时 + 每小时（挂主 io_context，与 acceptor 同线程串行）
-		boost::asio::steady_timer cleanup_timer(io_context);
-		cleanup_timer.expires_after(std::chrono::seconds(0));
-		cleanup_timer.async_wait([&cleanup_timer](const boost::system::error_code& ec) {
-			if (!ec) {
-				ScheduleCleanup(cleanup_timer);
-			}
-			});
+		//资源清理：独立线程（启动时 + 每小时），不占用 IO 线程
+		CleanupScheduler cleanup;
+		cleanup.Start();
 
 		CServer s(io_context, atoi(port_str.c_str()), pool);
-		//优雅停机顺序：停 accept/关闭会话 → 停 io → 排空入口 logic workers
-		//（排空期间仍可向 FileWorker 投递）→ 排空 FileWorker/DownloadWorker
-		//→ 停 IO 池。各 Stop 幂等，静态析构重复调用安全。
-		signals.async_wait([&io_context, pool, &s](auto, auto) {
+		//优雅停机顺序：停清理线程 → 停 accept/关闭会话 → 停 io →
+		//排空入口 logic workers（排空期间仍可向 FileWorker 投递）→
+		//排空 FileWorker/DownloadWorker → 显式停 Notifier（单例析构前）→
+		//停 IO 池。各 Stop 幂等，静态析构重复调用安全。
+		signals.async_wait([&io_context, pool, &s, &cleanup](auto, auto) {
+			cleanup.Stop();
 			s.Stop();
 			io_context.stop();
 			LogicSystem::GetInstance()->Stop();
 			FileSystem::GetInstance()->Stop();
+			UserMessageNotifier::GetInstance()->Stop();
 			pool->Drain();
 			pool->Stop();
 		});
 		io_context.run();
+		cleanup.Stop();
+		LogicSystem::GetInstance()->Stop();
+		FileSystem::GetInstance()->Stop();
+		UserMessageNotifier::GetInstance()->Stop();
 	}
 	catch (std::exception& e) {
 		if (pool) {

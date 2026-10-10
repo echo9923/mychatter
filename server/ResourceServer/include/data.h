@@ -45,6 +45,7 @@ struct ChatMessage {
 struct ExpiredResource {
 	std::int64_t message_id = 0;
 	int sender_user_id = 0;
+	std::string created_at;  // chat_messages.created_at，清理游标分页用
 };
 
 struct PageResult {

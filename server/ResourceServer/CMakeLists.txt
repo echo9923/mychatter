@@ -50,6 +50,7 @@ add_executable(ResourceServer
   src/RedisMgr.cpp
   src/ResourceServer.cpp
   src/ResourceUploadFile.cpp
+  src/UserMessageNotifier.cpp
   src/UserMgr.cpp
   include/base64.h
   include/ChatServerGrpcClient.h
@@ -68,6 +69,7 @@ add_executable(ResourceServer
   include/MysqlMgr.h
   include/RedisMgr.h
   include/ResourceUploadFile.h
+  include/UserMessageNotifier.h
   include/UserMgr.h
 )
 

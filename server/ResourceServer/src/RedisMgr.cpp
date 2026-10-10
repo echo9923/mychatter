@@ -2,6 +2,7 @@
 #include "const.h"
 #include "ConfigMgr.h"
 #include "DistLock.h"
+#include "Defer.h"
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 RedisMgr::RedisMgr() {

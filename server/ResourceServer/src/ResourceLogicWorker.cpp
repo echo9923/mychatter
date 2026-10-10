@@ -67,6 +67,23 @@ bool ParseJsonUInt64(const json& v, unsigned long long& out) {
 	return false;
 }
 
+/// 头像文件名校验：拒绝空名、`..`、路径分隔符与绝对路径前缀，
+/// 防止 1601/1603 的 name 字段拼出穿越路径（resource/<uid>/<name>）。
+bool IsValidAvatarName(const std::string& name) {
+	if (name.empty() || name.size() > 128 || name.front() == '.') {
+		return false;
+	}
+	if (name.find("..") != std::string::npos) {
+		return false;
+	}
+	for (const char c : name) {
+		if (c == '/' || c == '\\' || static_cast<unsigned char>(c) < 0x20) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /// 资源文件路径（磁盘真值）：resource/<sender_uid>/<message_id>
 boost::filesystem::path ResourceFilePath(long long sender_id, long long message_id) {
 	return ConfigMgr::Inst().GetResourceRootPath()
@@ -117,7 +134,7 @@ void ResourceLogicWorker::RegisterCallBacks()
 }
 
 void ResourceLogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, const short& msg_type,
-	const string& msg_data)
+	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	auto md5 = root["md5"].get<std::string>();
@@ -147,15 +164,27 @@ void ResourceLogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, con
 		rtvalue["md5"] = md5;
 		rtvalue["uid"] = uid;
 		rtvalue["last_seq"] = last_seq;
-		std::string return_str = rtvalue.dump(4);
+		std::string return_str = rtvalue.dump();
 		session->Send(return_str, ID_UPLOAD_HEAD_ICON_RSP);
 	};
+
+	//头像 name 是路径拼接成分：拒绝 `..`/分隔符等（2019，permanent）
+	if (!IsValidAvatarName(name)) {
+		std::cerr << "ResourceServer: reject avatar name \"" << name << "\"" << std::endl;
+		rtvalue["error"] = ErrorCodes::ResourceInvalid;
+		rtvalue["seq"] = seq;
+		rtvalue["name"] = name;
+		session->Send(rtvalue.dump(), ID_UPLOAD_HEAD_ICON_RSP);
+		return;
+	}
+
+	//在途字节配额令牌（quota 参数）由首层 AsyncReadBody 获取并随任务传入，
+	//这里不再二次获取：直接转入 FileTask，FileWorker 队列驻留期间持续占用。
 
 	// 使用 std::hash 对字符串进行哈希
 	std::hash<std::string> hash_fn;
 	size_t hash_value = hash_fn(name); // 生成哈希值
 	int index = hash_value % FILE_WORKER_COUNT;
-	std::cout << "Hash value: " << hash_value << std::endl;
 
 	//第一个包
 	if (seq == 1) {
@@ -169,7 +198,7 @@ void ResourceLogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, con
 		bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
 		if (!success) {
 			rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-			std::string return_str = rtvalue.dump(4);
+			std::string return_str = rtvalue.dump();
 			session->Send(return_str, ID_UPLOAD_HEAD_ICON_RSP);
 			return;
 		}
@@ -178,7 +207,7 @@ void ResourceLogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, con
 		auto file_info = RedisMgr::GetInstance()->GetFileInfo(name);
 		if (file_info == nullptr) {
 			rtvalue["error"] = ErrorCodes::FileNotExists;
-			std::string return_str = rtvalue.dump(4);
+			std::string return_str = rtvalue.dump();
 			session->Send(return_str, ID_UPLOAD_HEAD_ICON_RSP);
 			return;
 		}
@@ -187,7 +216,7 @@ void ResourceLogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, con
 		bool success = RedisMgr::GetInstance()->SetFileInfo(name, file_info);
 		if (!success) {
 			rtvalue["error"] = ErrorCodes::FileSaveRedisFailed;
-			std::string return_str = rtvalue.dump(4);
+			std::string return_str = rtvalue.dump();
 			session->Send(return_str, ID_UPLOAD_HEAD_ICON_RSP);
 			return;
 		}
@@ -196,14 +225,14 @@ void ResourceLogicWorker::handleUploadHeadIcon(shared_ptr<CSession> session, con
 
 	FileSystem::GetInstance()->PostMsgToQue(
 		std::make_shared<FileTask>(session, ID_UPLOAD_HEAD_ICON_REQ, uid, file_path_str, name, seq, total_size,
-			trans_size, last, file_data, callback),
+			trans_size, last, file_data, callback, 0, 0, 0, std::move(quota)),
 		index
 	);
 
 }
 
 void ResourceLogicWorker::handleDownloadFile(shared_ptr<CSession> session, const short& msg_type,
-	const string& msg_data)
+	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	auto seq = root["seq"].get<int>();
@@ -224,31 +253,41 @@ void ResourceLogicWorker::handleDownloadFile(shared_ptr<CSession> session, const
 		rtvalue["client_path"] = client_path;
 		rtvalue["name"] = name;
 		rtvalue["req_type"] = req_type;
-		std::string return_str = rtvalue.dump(4);
+		std::string return_str = rtvalue.dump();
 		session->Send(return_str, ID_DOWN_LOAD_FILE_RSP);
 	};
+
+	//头像 name 是路径拼接成分：与 1601 同一校验（2019，permanent）
+	if (!IsValidAvatarName(name)) {
+		std::cerr << "ResourceServer: reject avatar download name \"" << name << "\"" << std::endl;
+		rtvalue["error"] = ErrorCodes::ResourceInvalid;
+		rtvalue["seq"] = seq;
+		rtvalue["name"] = name;
+		session->Send(rtvalue.dump(), ID_DOWN_LOAD_FILE_RSP);
+		return;
+	}
 
 	// 使用 std::hash 对字符串进行哈希
 	std::hash<std::string> hash_fn;
 	size_t hash_value = hash_fn(name); // 生成哈希值
 	int index = hash_value % FILE_WORKER_COUNT;
-	std::cout << "Hash value: " << hash_value << std::endl;
 
 	FileSystem::GetInstance()->PostDownloadTaskToQue(
-		std::make_shared<DownloadTask>(session, uid, name, seq, file_path_str, callback),
+		std::make_shared<DownloadTask>(session, uid, name, seq, file_path_str, callback,
+			std::move(quota)),
 		index
 	);
 
 }
 
 void ResourceLogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session, const short& msg_type,
-	const string& msg_data)
+	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	if (root.is_discarded() || !root.is_object()) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
-		session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_UPLOAD_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_CHUNK_UPLOAD_RSP);
 		return;
 	}
 
@@ -262,7 +301,7 @@ void ResourceLogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session
 		rtvalue["error"] = ErrorCodes::Error_Json;
 		rtvalue["message_id"] = root.contains("message_id")
 			&& root["message_id"].is_string() ? root["message_id"].get<std::string>() : "0";
-		session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_UPLOAD_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_CHUNK_UPLOAD_RSP);
 		return;
 	}
 
@@ -274,25 +313,30 @@ void ResourceLogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
 		rtvalue["message_id"] = std::to_string(message_id);
-		session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_UPLOAD_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_CHUNK_UPLOAD_RSP);
 		return;
 	}
 
 	auto callback = [=](const json& result) {
-		std::string return_str = result.dump(4);
+		std::string return_str = result.dump();
 		session->Send(return_str, ID_RESOURCE_CHUNK_UPLOAD_RSP);
 	};
+
+	//在途字节配额令牌（quota 参数）由首层 AsyncReadBody 获取并随任务传入
+	//（按整帧字节计，覆盖 Base64 载荷）；转入 ResourceChunkTask，
+	//FileWorker 队列驻留期间持续占用。
 
 	int index = ResourceWorkerIndex(static_cast<long long>(message_id), FILE_WORKER_COUNT);
 	FileSystem::GetInstance()->PostChunkToQue(
 		std::make_shared<ResourceChunkTask>(session, static_cast<long long>(message_id),
-			static_cast<long long>(offset), chunk_sha256, file_data, callback),
+			static_cast<long long>(offset), chunk_sha256, file_data, callback,
+			std::move(quota)),
 		index
 	);
 }
 
 void ResourceLogicWorker::handleResourceUploadProgress(shared_ptr<CSession> session, const short& msg_type,
-	const string& msg_data)
+	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	unsigned long long message_id = 0;
@@ -301,28 +345,42 @@ void ResourceLogicWorker::handleResourceUploadProgress(shared_ptr<CSession> sess
 		!ParseJsonUInt64(root["message_id"], message_id) || message_id == 0) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
-		session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 		return;
 	}
 
 	const int uid = session->GetUserId();
-	auto callback = [session, message_id, uid](FileWorker& worker) {
-		auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(static_cast<long long>(message_id));
+	//在途字节配额令牌随闭包转入 FileWorker：队列驻留与执行期间持续占用
+	//会话预算，executor 任务（std::function）销毁时才释放，与 1505/1509/1511 一致。
+	auto callback = [session, message_id, uid, quota = std::move(quota)](FileWorker& worker) {
+		//DB 行是唯一真值：每次 1507 都复核状态——清理任务可能已把
+		//PENDING 置为 FAILED，而 worker 会话缓存仍认为在上传中。
+		//Transient 与 NotFound 分开，避免 DB 瞬时故障被误标 2111。
+		std::shared_ptr<ChatMessage> chat_msg;
 		json rtvalue;
 		rtvalue["message_id"] = std::to_string(message_id);
-		if (chat_msg == nullptr) {
+		switch (MysqlMgr::GetInstance()->GetChatMsgById(
+			static_cast<long long>(message_id), chat_msg)) {
+		case MysqlDao::ChatMsgLookup::Found:
+			break;
+		case MysqlDao::ChatMsgLookup::NotFound:
 			rtvalue["error"] = ErrorCodes::MsgIdErr;
-			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			return;
+		case MysqlDao::ChatMsgLookup::Transient:
+		default:
+			rtvalue["error"] = ErrorCodes::RPCFailed;
+			session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
 		if (uid == 0 || uid != chat_msg->sender_user_id) {
 			rtvalue["error"] = ErrorCodes::ResourceForbidden;
-			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
 		if ((chat_msg->message_type != 1 && chat_msg->message_type != 3) || !chat_msg->resource) {
 			rtvalue["error"] = ErrorCodes::ResourceStateInvalid;
-			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
 
@@ -335,15 +393,17 @@ void ResourceLogicWorker::handleResourceUploadProgress(shared_ptr<CSession> sess
 			if (!upload) upload = worker.LoadUploadSession(static_cast<long long>(message_id), chat_msg);
 			if (!upload) {
 				rtvalue["error"] = ErrorCodes::FileWritePermissionFailed;
-				session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+				session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 				return;
 			}
 			server_offset = upload->received;
 		}
 		else {
+			//终态（清理任务已置 Failed 等）：同步逐出过期会话缓存
+			worker.EvictUploadSession(static_cast<long long>(message_id));
 			rtvalue["error"] = ErrorCodes::ResourceStateInvalid;
 			rtvalue["status"] = static_cast<int>(chat_msg->status);
-			session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+			session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 			return;
 		}
 
@@ -352,10 +412,12 @@ void ResourceLogicWorker::handleResourceUploadProgress(shared_ptr<CSession> sess
 		rtvalue["file_size_bytes"] = std::to_string(chat_msg->resource->file_size_bytes);
 		rtvalue["status"] = static_cast<int>(chat_msg->status);
 		rtvalue["sha256"] = chat_msg->resource->sha256;
+		//分片对齐单位（服务端恢复/回退按此对齐），客户端据此切块
+		rtvalue["chunk_size"] = std::to_string(kResourceUploadChunkSize);
 		if (chat_msg->event_seq > 0) {
 			rtvalue["event_seq"] = std::to_string(chat_msg->event_seq);
 		}
-		session->Send(rtvalue.dump(4), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_UPLOAD_PROGRESS_RSP);
 	};
 
 	int index = ResourceWorkerIndex(static_cast<long long>(message_id), FILE_WORKER_COUNT);
@@ -363,7 +425,7 @@ void ResourceLogicWorker::handleResourceUploadProgress(shared_ptr<CSession> sess
 }
 
 void ResourceLogicWorker::handleResourceDownInfo(shared_ptr<CSession> session, const short& msg_type,
-	const string& msg_data)
+	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	unsigned long long message_id = 0;
@@ -372,66 +434,26 @@ void ResourceLogicWorker::handleResourceDownInfo(shared_ptr<CSession> session, c
 		!ParseJsonUInt64(root["message_id"], message_id) || message_id == 0) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
-		session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_DOWN_INFO_RSP);
 		return;
 	}
 
-	auto uid = session->GetUserId();
-	auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(static_cast<long long>(message_id));
-
-	auto respond_error = [session, message_id](int error) {
-		json rtvalue;
-		rtvalue["error"] = error;
-		rtvalue["message_id"] = std::to_string(message_id);
-		session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
+	auto callback = [session](const json& result) {
+		session->Send(result.dump(), ID_RESOURCE_DOWN_INFO_RSP);
 	};
 
-	if (chat_msg == nullptr) {
-		respond_error(ErrorCodes::MsgIdErr);
-		return;
-	}
-
-	//权限校验：非收发双方一律拒绝（不泄露资源存在性以外的信息）
-	if (uid != chat_msg->sender_user_id && uid != chat_msg->recipient_user_id) {
-		respond_error(ErrorCodes::ResourceForbidden);
-		return;
-	}
-
-	//就绪校验：未完成/已过期的资源不可下载
-	if (chat_msg->status != MessageStatus::Published) {
-		json rtvalue;
-		rtvalue["error"] = ErrorCodes::ResourceNotReady;
-		rtvalue["message_id"] = std::to_string(message_id);
-		rtvalue["status"] = static_cast<int>(chat_msg->status);
-		session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
-		return;
-	}
-
-	//最终文件必须存在（清理任务可能已回收）
-	boost::system::error_code fs_ec;
-	const auto file_path = ResourceFilePath(chat_msg->sender_user_id, static_cast<long long>(message_id));
-	boost::uintmax_t file_size = boost::filesystem::file_size(file_path, fs_ec);
-	if (fs_ec) {
-		std::cerr << "resource down info: file missing " << file_path.string()
-			<< " ec=" << fs_ec.message() << std::endl;
-		respond_error(ErrorCodes::FileNotExists);
-		return;
-	}
-
-	json rtvalue;
-	rtvalue["error"] = ErrorCodes::Success;
-	rtvalue["message_id"] = std::to_string(message_id);
-	rtvalue["original_file_name"] = chat_msg->resource->original_file_name;
-	rtvalue["file_size_bytes"] = std::to_string(file_size);
-	rtvalue["sha256"] = chat_msg->resource->sha256;
-	rtvalue["mime_type"] = chat_msg->resource->mime_type;
-	rtvalue["message_type"] = chat_msg->message_type;
-	rtvalue["status"] = static_cast<int>(chat_msg->status);
-	session->Send(rtvalue.dump(4), ID_RESOURCE_DOWN_INFO_RSP);
+	//1509 与 1511 一样固定路由到 DownloadWorker[mid%N]：鉴权/DB/回包同线程，
+	//同一 message_id 的 1510/1512 回包由同一线程有序发出。
+	int index = ResourceWorkerIndex(static_cast<long long>(message_id), DOWN_LOAD_WORKER_COUNT);
+	FileSystem::GetInstance()->PostDownInfoToQue(
+		std::make_shared<ResourceDownInfoTask>(session, static_cast<long long>(message_id),
+			callback, std::move(quota)),
+		index
+	);
 }
 
 void ResourceLogicWorker::handleResourceChunkDown(shared_ptr<CSession> session, const short& msg_type,
-	const string& msg_data)
+	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 	unsigned long long message_id = 0, offset = 0;
@@ -441,57 +463,26 @@ void ResourceLogicWorker::handleResourceChunkDown(shared_ptr<CSession> session, 
 		!ParseJsonUInt64(root["offset"], offset) || message_id == 0) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
-		session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_DOWN_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_CHUNK_DOWN_RSP);
 		return;
 	}
 
-	auto uid = session->GetUserId();
-	auto chat_msg = MysqlMgr::GetInstance()->GetChatMsgById(static_cast<long long>(message_id));
-
-	auto respond_error = [session, message_id](int error) {
-		json rtvalue;
-		rtvalue["error"] = error;
-		rtvalue["message_id"] = std::to_string(message_id);
-		session->Send(rtvalue.dump(4), ID_RESOURCE_CHUNK_DOWN_RSP);
+	auto callback = [session](const json& result) {
+		session->Send(result.dump(), ID_RESOURCE_CHUNK_DOWN_RSP);
 	};
 
-	if (chat_msg == nullptr) {
-		respond_error(ErrorCodes::MsgIdErr);
-		return;
-	}
-	if (uid != chat_msg->sender_user_id && uid != chat_msg->recipient_user_id) {
-		respond_error(ErrorCodes::ResourceForbidden);
-		return;
-	}
-	if (chat_msg->status != MessageStatus::Published) {
-		respond_error(ErrorCodes::ResourceNotReady);
-		return;
-	}
-
-	boost::system::error_code fs_ec;
-	const auto file_path = ResourceFilePath(chat_msg->sender_user_id, static_cast<long long>(message_id));
-	if (!boost::filesystem::exists(file_path, fs_ec) || fs_ec) {
-		respond_error(ErrorCodes::FileNotExists);
-		return;
-	}
-
-	auto callback = [=](const json& result) {
-		std::string return_str = result.dump(4);
-		session->Send(return_str, ID_RESOURCE_CHUNK_DOWN_RSP);
-	};
-
-	//下载只读最终文件（rename 后与写天然互斥）；固定路由保持同一 message_id 串行
+	//下载只读最终文件（rename 后与写天然互斥）；固定路由保持同一 message_id
+	//串行，鉴权/元数据由 DownloadWorker 内缓存解析（不再逐片查 DB）
 	int index = ResourceWorkerIndex(static_cast<long long>(message_id), DOWN_LOAD_WORKER_COUNT);
 	FileSystem::GetInstance()->PostChunkDownToQue(
 		std::make_shared<ResourceChunkDownTask>(session, static_cast<long long>(message_id),
-			static_cast<long long>(offset), file_path.string(),
-			chat_msg->resource->file_size_bytes, callback),
+			static_cast<long long>(offset), callback, std::move(quota)),
 		index
 	);
 }
 
 void ResourceLogicWorker::handleResourceLogin(shared_ptr<CSession> session, const short& msg_type,
-	const string& msg_data)
+	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
 {
 	auto root = json::parse(msg_data, nullptr, false);
 
@@ -512,7 +503,7 @@ void ResourceLogicWorker::handleResourceLogin(shared_ptr<CSession> session, cons
 	//解析失败按未授权处理(fail closed)，不暴露具体差异
 	if (!parse_ok) {
 		rtvalue["error"] = ErrorCodes::TokenInvalid;
-		session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_LOGIN_RSP);
 		return;
 	}
 
@@ -521,7 +512,7 @@ void ResourceLogicWorker::handleResourceLogin(shared_ptr<CSession> session, cons
 	bool ok = RedisMgr::GetInstance()->Get(USERTOKENPREFIX + std::to_string(uid), stored);
 	if (!ok || stored != token) {
 		rtvalue["error"] = ErrorCodes::TokenInvalid;
-		session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
+		session->Send(rtvalue.dump(), ID_RESOURCE_LOGIN_RSP);
 		return;
 	}
 
@@ -530,7 +521,7 @@ void ResourceLogicWorker::handleResourceLogin(shared_ptr<CSession> session, cons
 	}
 	rtvalue["error"] = ErrorCodes::Success;
 	rtvalue["uid"] = uid;
-	session->Send(rtvalue.dump(4), ID_RESOURCE_LOGIN_RSP);
+	session->Send(rtvalue.dump(), ID_RESOURCE_LOGIN_RSP);
 }
 
 void ResourceLogicWorker::task_callback(std::shared_ptr<LogicNode> task)
@@ -542,7 +533,6 @@ void ResourceLogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 	short msg_type = task->_recvnode->_msg_type;
 	std::string msg_data(task->_recvnode->_data, task->_recvnode->_cur_len);
 
-	cout << "recv_msg type is " << msg_type << endl;
 
 	//登录鉴权握手是唯一允许在未认证状态下处理的消息
 	if (msg_type == ID_RESOURCE_LOGIN_REQ) {
@@ -550,7 +540,7 @@ void ResourceLogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 		if (call_back_iter == _fun_callbacks.end()) {
 			return;
 		}
-		(this->*call_back_iter->second)(session, msg_type, msg_data);
+		(this->*call_back_iter->second)(session, msg_type, msg_data, task->_quota);
 		return;
 	}
 
@@ -560,7 +550,7 @@ void ResourceLogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 		if (rsp_id != 0) {
 			json rtvalue;
 			rtvalue["error"] = ErrorCodes::TokenInvalid;
-			session->SendAndClose(rtvalue.dump(4), rsp_id);
+			session->SendAndClose(rtvalue.dump(), rsp_id);
 		}
 		else {
 			session->Close();
@@ -572,5 +562,5 @@ void ResourceLogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 	if (call_back_iter == _fun_callbacks.end()) {
 		return;
 	}
-	(this->*call_back_iter->second)(session, msg_type, msg_data);
+	(this->*call_back_iter->second)(session, msg_type, msg_data, task->_quota);
 }

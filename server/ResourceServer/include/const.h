@@ -1,6 +1,6 @@
 #pragma once
+#include <cstddef>
 #include <functional>
-#include "Defer.h"
 #include "protocol_ids.h"
 
 /**
@@ -22,7 +22,9 @@ enum ErrorCodes {
 	PasswdUpFailed = llfc_proto::ERR_PASSWD_UP_FAILED,  //2008 更新密码失败
 	PasswdInvalid = llfc_proto::ERR_PASSWD_INVALID,   //2009 密码更新失败
 	TokenInvalid = llfc_proto::ERR_TOKEN_INVALID,   //2010 Token失效
-	UidInvalid = llfc_proto::ERR_UID_INVALID,  //2011 uid无效
+	UidInvalid = llfc_proto::ERR_UID_INVALID,       //2011 uid无效
+	ServerBusy = llfc_proto::ERR_SERVER_BUSY,       //2016 服务端停机/队列拒绝（transient）
+	ResourceInvalid = llfc_proto::ERR_RESOURCE_INVALID, //2019 资源元数据非法（文件名不合规等）
 	FileNotExists = llfc_proto::RS_FILE_NOT_EXISTS, //2101 文件不存在
 	FileSaveRedisFailed = llfc_proto::RS_FILE_SAVE_REDIS_FAILED, //2102 文件存储redis失败
 	CreateFilePathFailed = llfc_proto::RS_CREATE_FILE_PATH_FAILED, //2103 文件路径创建失败
@@ -34,11 +36,12 @@ enum ErrorCodes {
 	RedisReadErr = llfc_proto::RS_REDIS_READ_ERR,        //2109 redis读取失败
 	ServerIpErr = llfc_proto::RS_SERVER_IP_ERR,          //2110 server ip错误
 	MsgIdErr = llfc_proto::RS_MSG_ID_ERR,             //2111 消息id错误
-	FileHashMismatch = llfc_proto::RS_FILE_HASH_MISMATCH,     //2112 分片/整文件 SHA-256 校验失败
+	FileHashMismatch = llfc_proto::RS_FILE_HASH_MISMATCH,     //2112 分片 SHA-256 校验失败（重传该片）
 	FileSizeExceeded = llfc_proto::RS_FILE_SIZE_EXCEEDED,     //2113 资源超过类型上限
 	ResourceNotReady = llfc_proto::RS_RESOURCE_NOT_READY,     //2114 message status != PUBLISHED 时请求下载
 	ResourceForbidden = llfc_proto::RS_RESOURCE_FORBIDDEN,    //2115 请求者不是消息发送者或接收者
 	ResourceStateInvalid = llfc_proto::RS_RESOURCE_STATE_INVALID, //2116 对已失败/已就绪资源的非法上传操作
+	FileContentMismatch = llfc_proto::RS_FILE_CONTENT_MISMATCH, //2117 整文件 SHA-256 不符（重传整文件；同会话第 3 次转 2116）
 };
 
 // Defer 已迁移至 common/include/Defer.h
@@ -50,8 +53,15 @@ enum ErrorCodes {
 #define HEAD_TYPE_LEN 2
 //头部数据长度
 #define HEAD_DATA_LEN 4
-#define MAX_RECVQUE  2000000
-#define MAX_SENDQUE 2000000
+
+/// 会话发送队列上限：帧数或字节数任一超限即关闭会话（防慢客户端拖垮内存）
+constexpr std::size_t kMaxSendQueFrames = 1024;
+constexpr std::size_t kMaxSendQueBytes = 64ULL * 1024 * 1024;   // 64MiB
+/// 单个会话在途任务（已投递 worker 但未完成）占用的字节数上限；
+/// 超限时新任务被拒（2016），防单连接用大分片任务灌满 worker 队列
+constexpr std::size_t kMaxSessionInflightTaskBytes = 8ULL * 1024 * 1024;   // 8MiB
+/// 未鉴权会话（1501 之前）允许的单帧包体上限，防未认证大帧攻击
+constexpr unsigned int kUnauthedMaxBodyLen = 4096;
 
 //4个逻辑工作者
 #define LOGIC_WORKER_COUNT 4
@@ -96,12 +106,13 @@ inline int ResourceWorkerIndex(long long message_id, int worker_count) {
 		% static_cast<unsigned long long>(worker_count));
 }
 
-/// 资源大小上限默认值（字节），可被 config.ini [Resource] 段覆盖：
-/// MaxImageSize / MaxFileSize
-constexpr unsigned long long kDefaultMaxImageSize = 20ULL * 1024 * 1024;   // 20MB
-constexpr unsigned long long kDefaultMaxFileSize = 100ULL * 1024 * 1024;   // 100MB
-/// .part/未完成资源的保留时长（秒），过期由清理任务标记失败并回收磁盘
-constexpr long long kResourceRetentionSeconds = 7LL * 24 * 3600;
+//最大传输文件的大小（线协议 v1 分片上限：32KiB Base64 JSON 帧）
+#define MAX_FILE_LEN 1024*32
+
+/// 资源分片上传的分片对齐单位（字节）：与线协议 v1 的 MAX_FILE_LEN 一致
+/// （32KiB Base64 JSON 帧）；.part 恢复按该单位回退末片，1508 原样下发。
+/// P1c 线协议 v2 将换用 proto/resource_wire.h 的 256KiB 常量。
+constexpr unsigned long long kResourceUploadChunkSize = MAX_FILE_LEN;
 
 #define USERIPPREFIX  "uip_"
 #define IPCOUNTPREFIX  "ipcount_"
@@ -118,8 +129,3 @@ constexpr long long kResourceRetentionSeconds = 7LL * 24 * 3600;
 #define LOCK_TIME_OUT 10
 //分布式锁的重试时间
 #define ACQUIRE_TIME_OUT 5
-
-//最大传输文件的大小
-#define MAX_FILE_LEN 1024*32
-
-

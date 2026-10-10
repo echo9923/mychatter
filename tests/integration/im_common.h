@@ -147,11 +147,12 @@ inline constexpr int ERR_SYNC_CURSOR_INVALID = llfc_proto::ERR_SYNC_CURSOR_INVAL
 inline constexpr int ERR_RS_FILE_NOT_EXISTS  = llfc_proto::RS_FILE_NOT_EXISTS;        // 2101
 inline constexpr int ERR_RS_OFFSET_INVALID   = llfc_proto::RS_FILE_OFFSET_INVALID;    // 2107 偏移超前（响应带 server_offset）
 inline constexpr int ERR_RS_MSG_ID_ERR       = llfc_proto::RS_MSG_ID_ERR;             // 2111
-inline constexpr int ERR_RS_HASH_MISMATCH    = llfc_proto::RS_FILE_HASH_MISMATCH;     // 2112 分片/整文件 SHA-256 不符
+inline constexpr int ERR_RS_HASH_MISMATCH    = llfc_proto::RS_FILE_HASH_MISMATCH;     // 2112 分片 SHA-256 不符
 inline constexpr int ERR_RS_SIZE_EXCEEDED    = llfc_proto::RS_FILE_SIZE_EXCEEDED;     // 2113
 inline constexpr int ERR_RS_NOT_READY        = llfc_proto::RS_RESOURCE_NOT_READY;     // 2114 status != Ready
 inline constexpr int ERR_RS_FORBIDDEN        = llfc_proto::RS_RESOURCE_FORBIDDEN;     // 2115 非收发双方
 inline constexpr int ERR_RS_STATE_INVALID    = llfc_proto::RS_RESOURCE_STATE_INVALID; // 2116 已过期/终态
+inline constexpr int ERR_RS_CONTENT_MISMATCH = llfc_proto::RS_FILE_CONTENT_MISMATCH;  // 2117 整文件哈希不符
 
 // ---- Process-wide failure counter ------------------------------------------
 inline std::atomic<int> g_failures{0};

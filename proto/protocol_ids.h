@@ -82,6 +82,9 @@ enum MsgId {
 	MSG_NOTIFY_USER_MESSAGE  = 1701, ///< 服务端推送完整统一消息；客户端不回 ACK
 };
 
+/// TCP 帧头 msg_id 的全局上限（ChatServer CSession 按此校验；各端同规则）
+constexpr unsigned short kMaxMsgId = 2048;
+
 // ===== 错误码：20xx 通用表 ==================================================
 // GateServer / StatusServer / ChatServer 共用同一张语义表（Gate/Status 为子集），
 // 经 TCP/HTTP JSON 的 error 字段传输。
@@ -135,6 +138,7 @@ enum ResourceErrCode {
 	RS_RESOURCE_NOT_READY      = 2114, ///< chat_messages.status 不是 Published
 	RS_RESOURCE_FORBIDDEN      = 2115, ///< 请求者不是消息发送者或接收者（permanent）
 	RS_RESOURCE_STATE_INVALID  = 2116, ///< 对已失败/已就绪资源的非法上传操作（permanent）
+	RS_FILE_CONTENT_MISMATCH   = 2117, ///< 整文件 SHA-256 不符（非分片错误；重传整文件，同一会话第 3 次转 2116）
 };
 
 } // namespace llfc_proto

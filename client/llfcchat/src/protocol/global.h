@@ -111,10 +111,11 @@ enum ErrorCodes{
     //资源链路错误码（21xx 资源表）
     FILE_OFFSET_INVALID  = llfc_proto::RS_FILE_OFFSET_INVALID,   //2107 分片偏移超前（按响应 server_offset 对齐重发）
     MSG_ID_ERR           = llfc_proto::RS_MSG_ID_ERR,            //2111 消息不存在（permanent，标失败）
-    FILE_HASH_MISMATCH   = llfc_proto::RS_FILE_HASH_MISMATCH,    //2112 分片/整文件 SHA-256 校验失败（重传该片/整文件）
+    FILE_HASH_MISMATCH   = llfc_proto::RS_FILE_HASH_MISMATCH,    //2112 分片 SHA-256 校验失败（重传该片）
     RESOURCE_NOT_READY   = llfc_proto::RS_RESOURCE_NOT_READY,    //2114 资源未就绪（稍后重试或提示）
     RESOURCE_FORBIDDEN   = llfc_proto::RS_RESOURCE_FORBIDDEN,    //2115 无权访问该资源（permanent）
-    RESOURCE_STATE_INVALID = llfc_proto::RS_RESOURCE_STATE_INVALID //2116 资源已过期/终态（permanent，标 Expired）
+    RESOURCE_STATE_INVALID = llfc_proto::RS_RESOURCE_STATE_INVALID, //2116 资源已过期/终态（permanent，标 Expired）
+    FILE_CONTENT_MISMATCH = llfc_proto::RS_FILE_CONTENT_MISMATCH //2117 整文件哈希不符（重传整文件；第 3 次服务端标失败 2116）
 };
 
 enum Modules{

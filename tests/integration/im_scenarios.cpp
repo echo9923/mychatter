@@ -3073,10 +3073,11 @@ int UploadChunks(ResClient& res, std::int64_t msg_id, const std::string& blob,
 	return err;
 }
 
-//单片上传（供越界/篡改/重复片场景）；回包 error 与 server_offset 带出
+//单片上传（供越界/篡改/重复片场景）；回包 error 与 server_offset 带出，
+//echo_offset 带出 1506 回显的请求 offset（P1a 起服务端逐包回显）
 int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
 	const std::string& chunk, const std::string& chunk_sha, long long* server_offset,
-	std::uint64_t* event_seq_out = nullptr) {
+	std::uint64_t* event_seq_out = nullptr, long long* echo_offset = nullptr) {
 	res.Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
 		BuildChunkUploadReq(msg_id, offset, chunk_sha, Base64Encode(chunk)));
 	Frame uf;
@@ -3086,6 +3087,10 @@ int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
 		*server_offset = j.is_object()
 			? static_cast<long long>(JsonIdStr(j, "server_offset", -1)) : -1;
 	}
+	if (echo_offset) {
+		*echo_offset = j.is_object()
+			? static_cast<long long>(JsonIdStr(j, "offset", -1)) : -1;
+	}
 	if (event_seq_out) {
 		*event_seq_out = j.is_object()
 			? static_cast<std::uint64_t>(JsonIdStr(j, "event_seq", 0)) : 0;
@@ -3093,14 +3098,18 @@ int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
 	return j.is_object() ? j.value("error", -6) : -6;
 }
 
-//1507 查询服务端偏移；失败返回 -1
-long long QueryServerOffset(ResClient& res, std::int64_t msg_id, int* status_out) {
+//1507 查询服务端偏移；失败返回 -1（chunk_size_out 带出 1508 的分片对齐单位）
+long long QueryServerOffset(ResClient& res, std::int64_t msg_id, int* status_out,
+	long long* chunk_size_out = nullptr) {
 	res.Send(ID_RESOURCE_UPLOAD_PROGRESS_REQ, BuildUploadProgressReq(msg_id));
 	Frame f;
 	if (!res.Wait(ID_RESOURCE_UPLOAD_PROGRESS_RSP, 10000, &f)) return -1;
 	auto j = ParseJson(f.body);
 	if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return -1;
 	if (status_out) *status_out = j.value("status", -1);
+	if (chunk_size_out) {
+		*chunk_size_out = static_cast<long long>(JsonIdStr(j, "chunk_size", -1));
+	}
 	return static_cast<long long>(JsonIdStr(j, "server_offset", -1));
 }
 
@@ -3246,21 +3255,34 @@ bool ScenarioResourceUpload() {
 	auto res = ResLogin(li.token, SENDER_UID, "resource-upload");
 	if (!res) { cS.Close(); stack.StopAll(); return false; }
 
+	//1506 必须回显请求 offset（P1b 引擎按此比对在途分片）
+	long long echo_off = -1;
+	const int first_err = UploadOneChunk(*res, mid, 0, blob.substr(0, 32768),
+		llfc::Sha256Hex(blob.substr(0, 32768)), nullptr, nullptr, &echo_off);
+	Check(first_err == ERR_SUCCESS && echo_off == 0,
+		"resource-upload: 1506 echoes request offset",
+		("err=" + std::to_string(first_err) + " echo=" + std::to_string(echo_off)).c_str());
+	if (first_err != ERR_SUCCESS || echo_off != 0) all_ok = false;
+
 	int rs = -1;
-	const int up_err = UploadChunks(*res, mid, blob, 0, &rs);
+	const int up_err = UploadChunks(*res, mid, blob, 32768, &rs);
 	Check(up_err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED,
 		"resource-upload: all chunks uploaded -> Ready",
 		("err=" + std::to_string(up_err) + " rs=" + std::to_string(rs)).c_str());
 	if (rs != MESSAGE_PUBLISHED) all_ok = false;
 
-	//1507：就绪后 server_offset == total
+	//1507：就绪后 server_offset == total；chunk_size 为服务端分片对齐单位
 	{
 		int st = -1;
-		const long long off = QueryServerOffset(*res, mid, &st);
+		long long cs = -1;
+		const long long off = QueryServerOffset(*res, mid, &st, &cs);
 		Check(off == (long long)blob.size() && st == MESSAGE_PUBLISHED,
 			"resource-upload: 1507 reports total_size & Ready",
 			("off=" + std::to_string(off) + " st=" + std::to_string(st)).c_str());
 		if (off != (long long)blob.size()) all_ok = false;
+		Check(cs == 32768, "resource-upload: 1508 carries chunk_size",
+			("chunk_size=" + std::to_string(cs)).c_str());
+		if (cs != 32768) all_ok = false;
 	}
 
 	//1509（下载信息）：发送者与接收者都可查（接收方需先取得自己的 token，
@@ -3469,8 +3491,9 @@ bool ScenarioResourceIdempotent() {
 }
 
 // ---------------------------------------------------------------------------
-// resource-corrupt：错误分片哈希被拒（2112，偏移不前进）；整文件哈希不符时
-// 服务端删 .part 并要求从 0 重传（响应 server_offset=0）
+// resource-corrupt：错误分片哈希被拒（2112，偏移不前进）；整文件哈希不符
+// 前 2 次返回 2117 并要求从 0 重传（server_offset=0）；同一会话累计第 3 次
+// 服务端置 Failed 并返回 2116，DB status=2（终态，停止重传）
 // ---------------------------------------------------------------------------
 bool ScenarioResourceCorrupt() {
 	std::printf("\n=== scenario: resource-corrupt ===\n");
@@ -3506,16 +3529,40 @@ bool ScenarioResourceCorrupt() {
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
 	if (err != ERR_RS_HASH_MISMATCH) all_ok = false;
 
-	//2) 正确分片全部传完 → 完成点整文件 SHA-256 与 sha256 不符 →
-	//   2112 且服务端清掉 .part（server_offset=0，客户端从 0 重传）
+	//2) 整文件不符第 1、2 次 → 2117（RS_FILE_CONTENT_MISMATCH），
+	//   服务端清 .part 并回 server_offset=0（客户端从 0 重传）
+	for (int round = 1; round <= 2; ++round) {
+		err = UploadChunks(*res, mid, blob, 0, nullptr);
+		const long long after = QueryServerOffset(*res, mid, nullptr);
+		Check(err == ERR_RS_CONTENT_MISMATCH && after == 0,
+			"resource-corrupt: whole-file mismatch round <N> -> 2117, offset reset",
+			("round=" + std::to_string(round) + " err=" + std::to_string(err)
+				+ " offset=" + std::to_string(after)).c_str());
+		if (err != ERR_RS_CONTENT_MISMATCH || after != 0) all_ok = false;
+	}
+
+	//3) 同一会话第 3 次整文件不符 → 终态：2116 + DB status=2
 	err = UploadChunks(*res, mid, blob, 0, nullptr);
-	Check(err == ERR_RS_HASH_MISMATCH,
-		"resource-corrupt: whole-file mismatch -> 2112",
+	Check(err == ERR_RS_STATE_INVALID,
+		"resource-corrupt: 3rd whole-file mismatch -> 2116",
 		("err=" + std::to_string(err)).c_str());
-	const long long after = QueryServerOffset(*res, mid, nullptr);
-	Check(after == 0, "resource-corrupt: server_offset reset to 0 after whole-file mismatch",
-		("offset=" + std::to_string(after)).c_str());
-	if (err != ERR_RS_HASH_MISMATCH || after != 0) all_ok = false;
+	if (err != ERR_RS_STATE_INVALID) all_ok = false;
+
+	//DB 复核：消息已置 Failed（status=2），不再占用 PENDING
+	{
+		imt::Mysql mysql;
+		if (!mysql.Connect(MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWD, MYSQL_SCHEMA)) {
+			Fail("resource-corrupt: connect MySQL", "failed");
+			all_ok = false;
+		}
+		else {
+			const auto rows = mysql.QueryMessageById(mid);
+			const bool failed = rows.size() == 1 && rows[0].status == MESSAGE_FAILED;
+			Check(failed, "resource-corrupt: DB row marked Failed",
+				rows.empty() ? "no row" : ("status=" + std::to_string(rows[0].status)).c_str());
+			if (!failed) all_ok = false;
+		}
+	}
 
 	res->Close();
 	cS.Close();

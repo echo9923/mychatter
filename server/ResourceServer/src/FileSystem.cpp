@@ -38,6 +38,11 @@ void FileSystem::PostChunkDownToQue(std::shared_ptr<ResourceChunkDownTask> msg, 
 	_down_load_worker[index]->PostChunkTask(msg);
 }
 
+void FileSystem::PostDownInfoToQue(std::shared_ptr<ResourceDownInfoTask> msg, int index)
+{
+	_down_load_worker[index]->PostDownInfoTask(msg);
+}
+
 void FileSystem::PostClosureToQue(std::function<void(FileWorker&)> fn, int index)
 {
 	_file_workers[index]->PostClosure(std::move(fn));
