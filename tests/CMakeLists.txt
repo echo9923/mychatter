@@ -185,6 +185,9 @@ add_executable(outbox_dispatcher_tests
   ../client/llfcchat/src/store/userdata.cpp
   ../client/llfcchat/src/net/tcpmgr.cpp
   ../client/llfcchat/src/net/filetcpmgr.cpp
+  ../client/llfcchat/src/net/resourcecodec.cpp
+  ../client/llfcchat/src/net/transferengine.cpp
+  ../client/llfcchat/src/net/transferengine.h
   ../client/llfcchat/src/protocol/global.cpp
 )
 

@@ -179,21 +179,18 @@ ChatDialog::ChatDialog(QWidget* parent) :
 		this, &ChatDialog::slot_send_failed_marked);
 	connect(local_store.get(), &LocalChatStore::sig_resource_stage_updated,
 		this, &ChatDialog::slot_resource_stage_updated);
+	//上传"已发送"终态以本地库 commit 为准（P1b-02 E）：网络 Completed 只
+	//推进度，气泡 Completed 由该信号收口
+	connect(local_store.get(), &LocalChatStore::sig_resource_confirmed,
+		this, &ChatDialog::slot_resource_confirmed_ui);
 	//重置label icon
 	connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_reset_label_icon, this, &ChatDialog::slot_reset_icon);
-	//接收tcp返回的上传进度信息
-	connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_update_upload_progress, 
-		this, &ChatDialog::slot_update_upload_progress);
-	//接收tcp返回的下载进度信息
-	connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_update_download_progress,
-		this, &ChatDialog::slot_update_download_progress);
-
-	//接收tcp返回的下载完成信息
-	connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_download_finish,
-		this, &ChatDialog::slot_download_finish);
-	//下载失败/过期终态：转发 ChatPage 把气泡置为失败/已过期
-	connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_download_failed,
-		this, &ChatDialog::slot_download_failed);
+	//引擎快照驱动（File 线程 → GUI queued）：GUI 线程维护 mid→快照表，
+	//最终状态以 LocalChatStore 信号为准（快照只推进度/阶段展示）
+	connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_transfer_updated,
+		this, &ChatDialog::slot_transfer_updated);
+	connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_transfer_finished,
+		this, &ChatDialog::slot_transfer_finished);
 }
 
 ChatDialog::~ChatDialog()
@@ -453,11 +450,17 @@ void ChatDialog::slot_send_confirmed(bool ok, LocalMessageDTO dto)
 	ui->chat_page->UpdateChatStatus(msg);
 }
 
-//冲突/源文件丢失/资源终态：标记发送失败（文本/图片/文件共用）
+//冲突/源文件丢失/资源终态：标记发送失败（文本/图片/文件共用）。
+//commit 成功才离开登记簿——上传 Failed 气泡终态同样以本信号收口
 void ChatDialog::slot_send_failed_marked(bool ok, LocalMessageDTO dto)
 {
 	if (!ok) {
 		return;
+	}
+	if ((dto.message_type == static_cast<int>(ChatMsgType::PIC)
+		|| dto.message_type == static_cast<int>(ChatMsgType::FILE))
+		&& dto.message_id > 0) {
+		ui->chat_page->SetUploadTerminal(dto.message_id, false);
 	}
 	auto thread_data = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
 	if (thread_data == nullptr) {
@@ -561,12 +564,9 @@ std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(
             + "/resources/" + QString::number(dto.sender_user_id) + "/"
             + QString::number(dto.message_id);
 
-        //优先复用传输管理中的 MsgInfo（上传/下载进度共享同一对象）
-        auto file_info = dto.message_id > 0
-            ? UserMgr::GetInstance()->GetTransFileByMsgId(dto.message_id) : nullptr;
-        if (file_info == nullptr && !dto.client_message_id.isEmpty()) {
-            file_info = UserMgr::GetInstance()->GetTransFileByName(resource.original_file_name);
-        }
+        //MsgInfo 为 GUI 线程自有的展示对象（跨线程不共享可变 MsgInfo）；
+        //进度由 TransferSnapshot 按 message_id 驱动
+        auto file_info = _msg_infos.value(dto.message_id);
         if (file_info == nullptr) {
             qint64 total_size = resource.file_size_bytes;
             if (QFile::exists(cache_path)) {
@@ -609,11 +609,19 @@ std::shared_ptr<ChatDataBase> ChatDialog::buildChatData(
             auto thread = UserMgr::GetInstance()->GetChatThreadByThreadId(dto.thread_id);
             file_info->_receiver = is_self && thread ? thread->GetPeerUserId() : self_info->_uid;
             file_info->_thread_id = dto.thread_id;
-            UserMgr::GetInstance()->AddTransFile(resource.original_file_name, file_info);
+            if (dto.message_id > 0) {
+                _msg_infos.insert(dto.message_id, file_info);
+            }
 
             if (!is_self && is_pic && dto.message_id > 0) {
-                //图片自动下载（1509 元数据先行，内部经信号投递到 File 线程）
-                FileTcpMgr::GetInstance()->StartResourceDownload(file_info);
+                //图片自动下载：直接向引擎递交（1509→1511 在引擎内闭环）
+                DownloadRequest req;
+                req.message_id = dto.message_id;
+                req.dest_file_path = ChatPage::resourceCachePath(
+                    dto.message_id, resource.original_file_name);
+                req.sha256 = resource.sha256;
+                req.file_size_bytes = resource.file_size_bytes;
+                FileTcpMgr::GetInstance()->PostStartDownload(req);
 			}
 		}
 
@@ -1126,78 +1134,53 @@ void ChatDialog::slot_jump_chat_item_from_infopage(std::shared_ptr<UserInfo> use
 }
 
 
-void ChatDialog::slot_update_upload_progress(std::shared_ptr<MsgInfo> msg_info) {
-	auto chat_data = UserMgr::GetInstance()->GetChatThreadByThreadId(msg_info->_thread_id);
-	if (chat_data == nullptr) {
+void ChatDialog::slot_transfer_updated(TransferSnapshot snapshot) {
+	//代次门禁：owner_uid>0 且等于当前用户且与当前登录代次一致才放行
+	//（uid=0 的测试 mock 不获得生产投影资格；同 uid 重登的迟到快照作废）
+	if (snapshot.owner_uid <= 0
+		|| snapshot.owner_uid != UserMgr::GetInstance()->GetUid()
+		|| snapshot.login_generation
+			!= FileTcpMgr::GetInstance()->LoginGeneration()) {
 		return;
 	}
-	
-	//更新消息，其实不用更新，都是共享msg_info的一块内存，这里为了安全还是再次更新下
-
-	chat_data->UpdateProgress(msg_info);
-
-	if (_cur_chat_thread_id != msg_info->_thread_id) {
-		return;
-	}
-	
-
-	//更新聊天界面信息
-	ui->chat_page->UpdateFileProgress(msg_info);
+	//GUI 线程快照表：进度/阶段按 message_id + 方向路由到气泡
+	_transfer_snapshots[snapshot.message_id] = snapshot;
+	ui->chat_page->ApplyTransferSnapshot(snapshot);
 }
 
-
-void ChatDialog::slot_update_download_progress(std::shared_ptr<MsgInfo> msg_info) {
-	auto chat_data = UserMgr::GetInstance()->GetChatThreadByThreadId(msg_info->_thread_id);
-	if (chat_data == nullptr) {
+void ChatDialog::slot_transfer_finished(TransferSnapshot snapshot) {
+	//同 slot_transfer_updated 的代次门禁：两个快照槽一律先过滤
+	if (snapshot.owner_uid <= 0
+		|| snapshot.owner_uid != UserMgr::GetInstance()->GetUid()
+		|| snapshot.login_generation
+			!= FileTcpMgr::GetInstance()->LoginGeneration()) {
 		return;
 	}
-
-	//更新消息，其实不用更新，都是共享msg_info的一块内存，这里为了安全还是再次更新下
-
-	chat_data->UpdateProgress(msg_info);
-
-	if (_cur_chat_thread_id != msg_info->_thread_id) {
-		return;
+	_transfer_snapshots[snapshot.message_id] = snapshot;
+	//下载完成：先核验快照 owner uid（+登录代次由传输层在转发时保证为
+	//当前会话）再独立落库——不依赖当前是否可见气泡；随后才做 UI 投影
+	if (snapshot.direction == TRANSFER_DOWNLOAD
+		&& snapshot.phase == TRANSFER_COMPLETED
+		&& !snapshot.download_local_path.isEmpty()
+		&& snapshot.owner_uid == UserMgr::GetInstance()->GetUid()
+		&& snapshot.owner_uid > 0) {
+		LocalChatStore::GetInstance()->updateResourceLocalPath(
+			snapshot.message_id, snapshot.download_local_path,
+			snapshot.owner_uid);
 	}
-
-
-	//更新聊天界面信息
-	ui->chat_page->UpdateFileProgress(msg_info);
-}
-void ChatDialog::slot_download_finish(std::shared_ptr<MsgInfo> msg_info, QString file_path) {
-	LocalChatStore::GetInstance()->updateResourceLocalPath(msg_info->_msg_id, file_path);
-	auto chat_data = UserMgr::GetInstance()->GetChatThreadByThreadId(msg_info->_thread_id);
-	if (chat_data == nullptr) {
-		return;
-	}
-
-	//更新消息，其实不用更新，都是共享msg_info的一块内存，这里为了安全还是再次更新下
-
-	chat_data->UpdateProgress(msg_info);
-
-	if (_cur_chat_thread_id != msg_info->_thread_id) {
-		return;
-	}
-
-
-	//更新聊天界面信息
-	ui->chat_page->DownloadFileFinished(msg_info, file_path);
+	//上传终态不在此收口（等 sig_resource_confirmed/sig_send_failed_marked）
+	ui->chat_page->ApplyTransferSnapshot(snapshot);
 }
 
-void ChatDialog::slot_download_failed(std::shared_ptr<MsgInfo> msg_info, int error) {
-	Q_UNUSED(error);
-	auto chat_data = UserMgr::GetInstance()->GetChatThreadByThreadId(msg_info->_thread_id);
-	if (chat_data == nullptr) {
+void ChatDialog::slot_resource_confirmed_ui(bool ok, LocalMessageDTO dto)
+{
+	//上传"已发送"事务 commit 成功：此刻才允许气泡进 Completed
+	if (!ok || dto.message_id <= 0) {
 		return;
 	}
-
-	if (_cur_chat_thread_id != msg_info->_thread_id) {
-		return;
-	}
-
-	//更新聊天界面信息（气泡置为失败/已过期）
-	ui->chat_page->DownloadFileFailed(msg_info);
+	ui->chat_page->SetUploadTerminal(dto.message_id, true);
 }
+
 
 void ChatDialog::slot_reset_head()
 {

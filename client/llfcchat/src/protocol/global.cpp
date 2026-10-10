@@ -57,37 +57,6 @@ QString calculateFileSha256Only(const QString& filePath)
     return QString::fromLatin1(hash.result().toHex().toLower());
 }
 
-bool calculateFileSha256(const QString& filePath, QString& content_hash,
-    QVector<QString>& chunk_hashes)
-{
-    content_hash.clear();
-    chunk_hashes.clear();
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return false;
-    }
-
-    //一次 32KiB 遍历同时产出整文件哈希与每片哈希：
-    //整文件用一个持续 addData 的对象；每片另起临时对象，与上传分片粒度一致
-    QCryptographicHash whole(QCryptographicHash::Sha256);
-    while (!file.atEnd())
-    {
-        const QByteArray chunk = file.read(MAX_FILE_LEN);
-        if (chunk.isEmpty()) {
-            break;
-        }
-        whole.addData(chunk);
-        QCryptographicHash chunkHash(QCryptographicHash::Sha256);
-        chunkHash.addData(chunk);
-        chunk_hashes.push_back(QString::fromLatin1(chunkHash.result().toHex().toLower()));
-    }
-    file.close();
-
-    content_hash = QString::fromLatin1(whole.result().toHex().toLower());
-    return !content_hash.isEmpty();
-}
-
 QString guessMimeType(const QString& fileName)
 {
     //常见扩展名到 MIME 的映射；未命中回退 application/octet-stream

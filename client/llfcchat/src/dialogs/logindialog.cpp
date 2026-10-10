@@ -29,15 +29,13 @@ LoginDialog::LoginDialog(QWidget *parent) : QDialog(parent),
     // 连接tcp管理者发出的登陆失败信号
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_login_failed, this, &LoginDialog::slot_login_failed);
 
-    // 3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource
-    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_connect_resource,
-            FileTcpMgr::GetInstance().get(), &FileTcpMgr::slot_tcp_connect);
+    //P1b-02：sig_connect_resource → FileTcpMgr 的接线移至 TcpThread 常驻
+    //对象（LoginDialog 每次构造都连会造成跨 Singleton 重复连接）
 
-    // 连接资源管理tcp发出的连接成功信号
+    // 连接资源管理tcp发出的连接成功信号（P1b-02：1501 由 FileTcpMgr 在
+    // connected 后自行发送；不再把 sig_resource_login_success 连到
+    // TcpMgr::sig_swich_chatdlg——否则每次重新鉴权都会触发 SlotSwitchChatDlg）
     connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_con_success, this, &LoginDialog::slot_res_con_finish);
-    // 3.2 Resource 登录成功后才切 UI
-    connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_login_success,
-            TcpMgr::GetInstance().get(), &TcpMgr::sig_swich_chatdlg);
     // 3.2 Resource 登录失败提示
     connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_login_failed,
             this, [this](QString reason) {
@@ -249,18 +247,9 @@ void LoginDialog::slot_login_failed(int err) {
 }
 
 void LoginDialog::slot_res_con_finish(bool bsuccess) {
-    if (bsuccess) {
-        showTip(tr("资源服务连接成功，正在鉴权..."), true);
-        QJsonObject jsonObj;
-        jsonObj["uid"] = _si->_uid;
-        jsonObj["token"] = UserMgr::GetInstance()->GetToken();
-
-        QJsonDocument doc(jsonObj);
-        QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
-
-        FileTcpMgr::GetInstance()->SendData(ReqId::ID_RESOURCE_LOGIN_REQ, jsonData);
-
-    } else {
+    //P1b-02：1501 由 FileTcpMgr 在 socket connected 后自行发送与重发；
+    //此处只做连接失败提示（成功路径静默等待 1502 结果信号）
+    if (!bsuccess) {
         showTip(tr("网络异常"), false);
         enableBtn(true);
     }

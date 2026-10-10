@@ -124,10 +124,9 @@ void MessageTextEdit::insertImages(const QString &url)
         return;
     }
 
-    // 一次 32KiB 遍历同时产出整文件 SHA-256 与每片 SHA-256（上传分片校验用）
-    QString content_hash;
-    QVector<QString> chunk_hashes;
-    if (!calculateFileSha256(url, content_hash, chunk_hashes))
+    //只计算整文件 SHA-256（P1b-02：分片哈希由引擎发片时现算）
+    const QString content_hash = calculateFileSha256Only(url);
+    if (content_hash.isEmpty())
     {
         QMessageBox::warning(this, "错误", "无法计算文件SHA-256");
         return;
@@ -152,7 +151,7 @@ void MessageTextEdit::insertImages(const QString &url)
     //新协议 content=原始文件名（磁盘文件以 message_id 命名，无需客户端生成唯一名）
     QString unique_name = fileInfo.fileName();
     insertMsgList(_img_or_file_list, MsgType::IMG_MSG, url, QPixmap::fromImage(image), unique_name,
-        total_size, content_hash, chunk_hashes);
+        total_size, content_hash);
 }
 
 void MessageTextEdit::insertFiles(const QString& url) {
@@ -174,10 +173,9 @@ void MessageTextEdit::insertFiles(const QString& url) {
         return;
     }
 
-    // 一次 32KiB 遍历同时产出整文件 SHA-256 与每片 SHA-256
-    QString content_hash;
-    QVector<QString> chunk_hashes;
-    if (!calculateFileSha256(url, content_hash, chunk_hashes))
+    //只计算整文件 SHA-256（分片哈希由引擎发片时现算）
+    const QString content_hash = calculateFileSha256Only(url);
+    if (content_hash.isEmpty())
     {
         QMessageBox::warning(this, "错误", "无法计算文件SHA-256");
         return;
@@ -190,7 +188,7 @@ void MessageTextEdit::insertFiles(const QString& url) {
     //新协议 content=原始文件名（磁盘文件以 message_id 命名）
     QString unique_name = fileInfo.fileName();
     insertMsgList(_img_or_file_list, MsgType::FILE_MSG, url, pix, unique_name,
-        total_size, content_hash, chunk_hashes);
+        total_size, content_hash);
 }
 
 
@@ -230,12 +228,10 @@ bool MessageTextEdit::isImage(QString url)
 
 void MessageTextEdit::insertMsgList(QVector<std::shared_ptr<MsgInfo>> &list, MsgType msgtype,
     QString text_or_url, QPixmap preview_pix,
-    QString unique_name, uint64_t total_size, QString content_hash,
-    const QVector<QString>& chunk_hashes) {
+    QString unique_name, uint64_t total_size, QString content_hash) {
 
     auto msg_info = std::make_shared<MsgInfo>(msgtype, text_or_url, preview_pix, unique_name,
         total_size, content_hash);
-    msg_info->_chunk_hashes = chunk_hashes;
     list.append(msg_info);
 
 }

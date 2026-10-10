@@ -60,16 +60,8 @@ public:
     //添加资源路径到将要重置的Label集合
     void AddLabelToReset(QString path, QLabel* label);
     void ResetLabelIcon(QString path);
-    void AddTransFile(QString name, std::shared_ptr<MsgInfo> msg_info);
-    std::shared_ptr<MsgInfo> GetTransFileByName(QString name);
-    //资源通道按 message_id 查找传输上下文（1506/1510/1512 回包定位用）
-    std::shared_ptr<MsgInfo> GetTransFileByMsgId(qint64 message_id);
-    void RmvTransFileByName(QString name);
-    std::shared_ptr<MsgInfo> GetFreeUploadFile();
-    std::shared_ptr<MsgInfo> GetFreeDownloadFile();
-    void PauseTransFileByName(QString name);
-    void ResumeTransFileByName(QString name);
-    bool TransFileIsUploading(QString name);
+    //（P1b-02 删除）资源传输登记表已移除：传输状态机在 TransferEngine，
+    //以 message_id 为键；UI 直接消费 FileTcpMgr 转发的 TransferSnapshot。
 
 private:
     UserMgr();
@@ -96,10 +88,6 @@ private:
     //名字关联下载信息
     QMap<QString, std::shared_ptr<DownloadInfo> > _name_to_download_info;
     QHash<QString, QList<QLabel*>> _path_to_reset_labels;
-    //聊天传输文件映射
-    QHash<QString, std::shared_ptr<MsgInfo> > _name_to_msg_info;
-    //传输文件用的锁
-    std::mutex _trans_mtx;
 };
 
 #endif // USERMGR_H

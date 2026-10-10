@@ -191,38 +191,35 @@ enum class TransferState {
     Expired         // 资源消息已进入 Failed 终态
 };
 
+//P1b-02 精简：仅保留展示字段——传输状态机在 TransferEngine（message_id 键），
+//分片哈希/发送序号/确认位等窗口簿记全部删除；_current_size 由引擎快照推进。
 struct MsgInfo{
     MsgInfo() = default;
     MsgInfo(MsgType msgtype, QString text_or_url, QPixmap pixmap, QString unique_name,
             qint64 total_size, QString content_hash)
     :_msg_type(msgtype), _text_or_url(text_or_url), _preview_pix(pixmap),_unique_name(unique_name),_total_size(total_size),
-        _current_size(0),_seq(1),_content_hash(content_hash), _last_confirmed_seq(0),_rsp_size(0), _transfer_state(TransferState::None),
+        _current_size(0),_content_hash(content_hash),
+        _transfer_state(TransferState::None),
         _transfer_type(TransferType::None)
     {
-        _max_seq = ((total_size + MAX_FILE_LEN - 1) / MAX_FILE_LEN);
     }
 
-    MsgType _msg_type;   //消息类型, 文本，图片，文件
+    //C++11 默认成员初始化：默认构造（如 MessageTextEdit 新建待发消息）后
+    //气泡立即读取 _msg_id 等字段不再 UB；既有构造 initializer 仍可覆盖
+    MsgType _msg_type = MsgType::TEXT_MSG; //消息类型, 文本，图片，文件
     QString _text_or_url;//表示文件和图像的本地路径,文本信息
     QPixmap _preview_pix;//文件和图片的缩略图
     QString _unique_name; //展示文件名（原始文件名；磁盘缓存按 message_id 隔离）
-    qint64 _total_size; //文件总大小
-    qint64 _current_size; //传输大小（已确认偏移）
-    qint64 _seq;          //传输序号（由偏移推导，仅 UI 进度用）
-    QString _content_hash;//整文件 SHA-256（小写 hex）
-    QVector<QString> _chunk_hashes; //每 32KiB 分片的 SHA-256（后台一次遍历预计算）
-    std::set<qint64> _rsp_seqs;      //已经接受的回传序列集合
-    std::set<qint64> _flighting_seqs;  //正在发送，但是未收到服务器回复，将来用来做超时重传
-    qint64 _last_confirmed_seq;      //最后确认序列
-    qint64 _max_seq;                //最大序列号
-    qint64 _msg_id;                 //关联的消息id（资源上传/下载的主键）
-    qint64 _rsp_size;  //服务器返回实际上传或者下载的大小
-    qint64 _thread_id;             // 会话id
+    qint64 _total_size = 0; //文件总大小
+    qint64 _current_size = 0; //已确认字节（由 TransferSnapshot.acked_bytes 推进）
+    QString _content_hash;//整文件 SHA-256（小写 hex；分片哈希由引擎发片时现算）
+    qint64 _msg_id = 0;             //关联的消息id（资源上传/下载的主键）
+    qint64 _thread_id = 0;          // 会话id
     QString _local_download_path;  //下载完成后的本地最终路径（缓存目录内）
-    TransferState _transfer_state;  //上传或者下载, 暂停，传输完成
-    TransferType  _transfer_type;   //文件类型, 上传或者下载
-    int           _sender;          //发送者
-    int           _receiver;        //接收者
+    TransferState _transfer_state = TransferState::None; //UI 展示态
+    TransferType  _transfer_type = TransferType::None;   //传输方向: 上传或者下载
+    int           _sender = 0;      //发送者
+    int           _receiver = 0;    //接收者
 
 };
 //声明为元对象类型
@@ -314,11 +311,7 @@ struct DownloadInfo {
     QString _client_path;
 };
 
-//后台一次 32KiB 遍历，同时产出整文件 SHA-256 与每片 SHA-256；
-//文件不可读返回 false（out 参数保持为空）
-extern bool calculateFileSha256(const QString& filePath, QString& content_hash,
-    QVector<QString>& chunk_hashes);
-//整文件 SHA-256（校验下载结果用）
+//整文件 SHA-256（发送声明/下载校验用；分片哈希由 TransferEngine 发片时现算）
 extern QString calculateFileSha256Only(const QString& filePath);
 extern     QPixmap CreateLoadingPlaceholder(int width = 200, int height = 200);
 //根据扩展名猜测 MIME 类型（1503 创建请求的 mime_type 字段）

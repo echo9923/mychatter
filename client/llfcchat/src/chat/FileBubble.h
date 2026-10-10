@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QProgressBar>
 #include "global.h"
+#include "resourcetransfer.h"
 
 //文件消息气泡：扩展名图标 + 文件名 + 大小 + 进度条 + 按钮组
 //（下载/暂停/继续/打开/另存为）。状态机与 PictureBubble 一致：
@@ -29,9 +30,9 @@ public:
     QString fileName() const { return m_file_name; }
 
 signals:
-    void downloadRequested(QString unique_name);                       // 请求下载（1509）
-    void pauseRequested(QString unique_name, TransferType type);       // 请求暂停
-    void resumeRequested(QString unique_name, TransferType type);      // 请求继续
+    void downloadRequested(qint64 message_id);                        // 请求下载（1509→引擎）
+    void pauseRequested(qint64 message_id, int direction);             // 请求暂停（引擎意图标志）
+    void resumeRequested(qint64 message_id, int direction);            // 请求继续
     void openRequested(QString file_path);                             // 打开本地文件
     void saveAsRequested(QString src_path, QString file_name);         // 另存为
 

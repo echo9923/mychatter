@@ -45,6 +45,7 @@ public slots:
     void SlotOffline();
     void SlotExcepConOffline();
     void SlotResServerConOffline();
+    void SlotResourceTokenInvalid();
     void SlotReconnectHttpFinish(ReqId id, QString res, ErrorCodes err);
     void SlotReconnectFinished(bool success);
 

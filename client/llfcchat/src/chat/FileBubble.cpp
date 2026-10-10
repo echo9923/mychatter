@@ -69,17 +69,22 @@ FileBubble::FileBubble(const QString& file_name, qint64 total_size, ChatRole rol
 
     connect(m_downloadBtn, &QPushButton::clicked, this, [this]() {
         if (_msg_info) {
-            emit downloadRequested(_msg_info->_unique_name);
+            emit downloadRequested(_msg_info->_msg_id);
         }
     });
     connect(m_pauseBtn, &QPushButton::clicked, this, [this]() {
         if (_msg_info) {
-            emit pauseRequested(_msg_info->_unique_name, TransferType::Download);
+            //方向随气泡：上传/下载分别进引擎对应登记表
+            emit pauseRequested(_msg_info->_msg_id,
+                _msg_info->_transfer_type == TransferType::Upload
+                    ? TRANSFER_UPLOAD : TRANSFER_DOWNLOAD);
         }
     });
     connect(m_resumeBtn, &QPushButton::clicked, this, [this]() {
         if (_msg_info) {
-            emit resumeRequested(_msg_info->_unique_name, TransferType::Download);
+            emit resumeRequested(_msg_info->_msg_id,
+                _msg_info->_transfer_type == TransferType::Upload
+                    ? TRANSFER_UPLOAD : TRANSFER_DOWNLOAD);
         }
     });
     connect(m_openBtn, &QPushButton::clicked, this, &FileBubble::onOpenClicked);

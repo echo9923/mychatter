@@ -54,6 +54,9 @@ MainWindow::MainWindow(QWidget *parent) :
     //连接资源服务器断开
     connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_connection_closed,
             this, &MainWindow::SlotResServerConOffline);
+    //P1b-02：只有 1502 返回 2010（Token 失效）才登出
+    connect(FileTcpMgr::GetInstance().get(), &FileTcpMgr::sig_resource_token_invalid,
+            this, &MainWindow::SlotResourceTokenInvalid);
 }
 
 MainWindow::~MainWindow()
@@ -181,12 +184,18 @@ void MainWindow::SlotExcepConOffline()
 
 
 void MainWindow::SlotResServerConOffline(){
+    //P1b-02：资源连接断开不再登出——FileTcpMgr 内部按退避自动重连，
+    //引擎随 1502 成功恢复传输；此处仅记录（UI 可显示离线徽标）
+    qDebug() << "[MainWindow] resource connection lost, auto-reconnect in progress";
+}
+
+void MainWindow::SlotResourceTokenInvalid(){
+    //唯一登出场景：1502 返回 2010（Token 失效）
     cancelReconnect();
     if (_ui_status != CHAT_UI) {
         return;
     }
-    // 使用静态方法直接弹出一个信息框
-    QMessageBox::information(this, "下线提示", "与资源服务器断开连接！");
+    QMessageBox::information(this, "下线提示", "资源服务器鉴权失效，请重新登录！");
     TcpMgr::GetInstance()->CloseConnection();
     FileTcpMgr::GetInstance()->CloseConnection();
     offlineLogin();

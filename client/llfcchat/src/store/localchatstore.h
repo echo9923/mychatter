@@ -21,7 +21,8 @@ public slots:
 	void slot_confirm_text_sent(QString clientMessageId, qint64 messageId, qint64 createdAt);
 	void slot_update_resource_stage(QString clientMessageId, qint64 messageId, QString stage);
 	void slot_confirm_resource_sent(QString clientMessageId, QString localFilePath);
-	void slot_update_resource_local_path(qint64 messageId, QString localFilePath);
+	void slot_update_resource_local_path(qint64 messageId, QString localFilePath,
+		qint64 expectedUid);
 	void slot_mark_send_failed(QString clientMessageId);
 	void slot_get_message_by_client_id(QString clientMessageId);
 	void slot_insert_incoming(QList<LocalMessageDTO> messages,
@@ -98,7 +99,8 @@ public:
 	void updateResourceStage(const QString& clientMessageId, qint64 messageId,
 		const QString& stage);
 	void confirmResourceSent(const QString& clientMessageId, const QString& localFilePath);
-	void updateResourceLocalPath(qint64 messageId, const QString& localFilePath);
+	void updateResourceLocalPath(qint64 messageId, const QString& localFilePath,
+		qint64 expectedUid = 0);
 	void markSendFailed(const QString& clientMessageId);
 	void getMessageByClientId(const QString& clientMessageId);
 	void insertIncoming(const QList<LocalMessageDTO>& messages,
@@ -128,7 +130,8 @@ signals:
 	void sig_confirm_text_sent(QString clientMessageId, qint64 messageId, qint64 createdAt);
 	void sig_update_resource_stage(QString clientMessageId, qint64 messageId, QString stage);
 	void sig_confirm_resource_sent(QString clientMessageId, QString localFilePath);
-	void sig_update_resource_local_path(qint64 messageId, QString localFilePath);
+	void sig_update_resource_local_path(qint64 messageId, QString localFilePath,
+		qint64 expectedUid);
 	void sig_mark_send_failed(QString clientMessageId);
 	void sig_get_message_by_client_id(QString clientMessageId);
 	void sig_insert_incoming(QList<LocalMessageDTO> messages,

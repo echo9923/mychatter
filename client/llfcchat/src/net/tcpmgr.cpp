@@ -30,8 +30,9 @@ static qint64 serverTimeToEpoch(const QJsonValue& value)
     return time.toMSecsSinceEpoch();
 }
 
-TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_message_len(0),_bytes_sent(0),_pending(false),
-    _manual_close(false),_reconnecting(false),_disconnect_notified(false)
+TcpMgr::TcpMgr():QObject(nullptr),_socket(this),_host(""),_port(0),_b_recv_pending(false),_message_type(0),_message_len(0),_bytes_sent(0),_pending(false),
+    _manual_close(false),_reconnecting(false),_disconnect_notified(false),
+    _send_queue_bytes(0),_send_high_watermark(4 * 1024 * 1024)
 {
     registerMetaType();
     QObject::connect(&_socket, &QTcpSocket::connected, this, [&]() {
@@ -142,33 +143,12 @@ TcpMgr::TcpMgr():_host(""),_port(0),_b_recv_pending(false),_message_type(0),_mes
         //连接发送信号用来发送数据
         QObject::connect(this, &TcpMgr::sig_send_data, this, &TcpMgr::slot_send_data);
 
-        //连接发送信号
+        //发送轮转：write 返回值=已接受字节；部分接受只补写未接受后缀；
+        //缓冲低于高水位即继续流水入队（与 FileTcpMgr 同一语义）
         QObject::connect(&_socket, &QTcpSocket::bytesWritten, this, [this](qint64 bytes) {
-                     //更新发送数据
-                    _bytes_sent += bytes;
-                    //未发送完整
-                    if (_bytes_sent < _current_block.size()) {
-                        //继续发送
-                        auto data_to_send = _current_block.mid(_bytes_sent);
-                        _socket.write(data_to_send);
-                        return;
-                    }
-
-                    //发送完全，则查看队列是否为空
-                    if (_send_queue.isEmpty()) {
-                        //队列为空，说明已经将所有数据发送完成，将pending设置为false，这样后续要发送数据时可以继续发送
-                        _current_block.clear();
-                        _pending = false;
-                        _bytes_sent = 0;
-                        return;
-                    }
-
-                    //队列不为空，则取出队首元素
-                    _current_block = _send_queue.dequeue();
-                    _bytes_sent = 0;
-                    _pending = true;
-                    qint64 w2 = _socket.write(_current_block);
-                    qDebug() << "[TcpMgr] Dequeued and write() returned" << w2;
+                    Q_UNUSED(bytes);
+                    flushPendingSuffix();
+                    tryDequeueSend();
             });
 
 
@@ -323,7 +303,10 @@ void TcpMgr::handleChatLoginRsp(ReqId id, int len, QByteArray data)
 	//登录成功：启动 outbox 派发与增量同步
     emit sig_chat_login_ready();
 
-    //3.2 Chat 认证成功后触发 FileTcpMgr 连接 Resource（UI 切换延迟到 Resource 鉴权成功）
+    //P1b-02：首次 Chat 1102 成功即切换聊天 UI（资源连接独立就绪，不再由
+    //1502 触发；重连路径在上方 _reconnecting 分支提前 return，不重建 UI）
+    emit sig_swich_chatdlg();
+    //Chat 认证成功后触发 FileTcpMgr 连接 Resource（连接常驻对象接线）
     emit sig_connect_resource(_server_info);
 }
 
@@ -845,19 +828,88 @@ void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataBytes)
     // 添加字符串数据
     block.append(dataBytes);
 
-    //判断是否正在发送
-    if (_pending) {
-        //放入队列直接返回，因为目前有数据正在发送
-        _send_queue.enqueue(block);
+    //队列字节上界（真实有界）：溢出按连接死亡处理，交给既有断线恢复链路
+    if (_send_queue_bytes + block.size() > 64 * 1024 * 1024) {
+        qWarning() << "[TcpMgr] send queue overflow, reset connection";
+        handleWriteFailure();
         return;
     }
+    _send_queue.enqueue(block);
+    _send_queue_bytes += block.size();
+    tryDequeueSend();
+}
 
-    // 没有正在发送，把这包设为“当前块”，重置计数，并写出去
-    _current_block = block;        // ← 保存当前正在发送的 block
-    _bytes_sent = 0;            // ← 归零
-    _pending = true;         // ← 标记正在发送
+void TcpMgr::tryDequeueSend()
+{
+    while (!_pending && !_send_queue.isEmpty()
+        && _socket.bytesToWrite() < _send_high_watermark) {
+        _current_block = _send_queue.dequeue();
+        _send_queue_bytes -= _current_block.size();
+        _bytes_sent = 0;
+        const qint64 accepted = _socket.write(_current_block);
+        if (accepted < 0) {
+            qWarning() << "[TcpMgr] write failed:" << _socket.errorString();
+            //write<0：不再丢帧续发下一帧，立即按连接失败处理
+            handleWriteFailure();
+            return;
+        }
+        if (accepted < _current_block.size()) {
+            //罕见部分接受：只保留未接受后缀等待补写
+            _current_block = _current_block.mid(static_cast<int>(accepted));
+            _bytes_sent = accepted;
+            _pending = true;
+            return;
+        }
+        _current_block.clear(); //整帧已被 Qt 接受
+    }
+}
 
-    _socket.write(_current_block);
+void TcpMgr::flushPendingSuffix()
+{
+    if (!_pending) {
+        return;
+    }
+    int retries = 0;
+    while (!_current_block.isEmpty()) {
+        const qint64 accepted = _socket.write(_current_block);
+        if (accepted < 0) {
+            qWarning() << "[TcpMgr] suffix write failed:" << _socket.errorString();
+            handleWriteFailure();
+            return;
+        }
+        if (accepted == 0 && ++retries >= 3) {
+            //0 接受且有界重试仍无进展：按连接失败处理
+            qWarning() << "[TcpMgr] suffix write stalled, reset connection";
+            handleWriteFailure();
+            return;
+        }
+        if (accepted < _current_block.size()) {
+            _current_block = _current_block.mid(static_cast<int>(accepted));
+            _bytes_sent += accepted;
+            return; //仍部分接受，等下次 bytesWritten
+        }
+        _current_block.clear();
+        _pending = false;
+        _bytes_sent = 0;
+    }
+    _pending = false;
+    _bytes_sent = 0;
+}
+
+void TcpMgr::handleWriteFailure()
+{
+    //纯网络层失败语义：复位本地发送状态并走既有异常断开链路
+    //(disconnected/_disconnect_notified → sig_connection_closed → 主窗口重连)
+    _send_queue.clear();
+    _send_queue_bytes = 0;
+    _current_block.clear();
+    _bytes_sent = 0;
+    _pending = false;
+    _socket.abort();
+    if (!_manual_close && !_disconnect_notified) {
+        _disconnect_notified = true;
+        emit sig_connection_closed();
+    }
 }
 
 TcpThread::TcpThread()
@@ -867,6 +919,10 @@ TcpThread::TcpThread()
     //OutboxDispatcher/ChatSyncManager 驻留 TCP 线程（独立 QObject）
     OutboxDispatcher::GetInstance()->moveToThread(_tcp_thread);
     ChatSyncManager::GetInstance()->moveToThread(_tcp_thread);
+    //P1b-02：资源连接接线放常驻对象（LoginDialog 不再重复连接）；
+    //queued 跨 TCP→File 线程投递
+    QObject::connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_connect_resource,
+        FileTcpMgr::GetInstance().get(), &FileTcpMgr::slot_tcp_connect);
     QObject::connect(_tcp_thread, &QThread::finished, _tcp_thread, &QObject::deleteLater);
 
     _tcp_thread->start();

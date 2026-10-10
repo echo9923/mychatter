@@ -7,13 +7,14 @@
 #include <QSet>
 #include "singleton.h"
 #include "localmessageDTO.h"
+#include "resourcetransfer.h"
 
 //登记项当前等待的本地事务。条目只有在对应事务 commit 成功后
 //（结果信号 ok=true）才允许改变内存状态或离开登记簿。
 enum PendingStoreAction {
     PENDING_NONE = 0,           //网络发送阶段（首发/退避重试 1301/1503）
     PENDING_CONFIRM_TEXT,       //1302 成功 → messages=sent + 删 outbox
-    PENDING_CONFIRM_RESOURCE,   //1506/1508 Ready → messages=sent + 删 outbox
+    PENDING_CONFIRM_RESOURCE,   //引擎上传 Completed → messages=sent + 删 outbox
     PENDING_MARK_FAILED,        //永久失败 → messages=failed + 删 outbox
     PENDING_ADVANCE_STAGE       //1504 成功 → outbox.stage=uploading（不删条目）
 };
@@ -29,17 +30,22 @@ struct RuntimeEntry {
     LocalMessageResourceDTO resource;
 };
 
+//资源归档任务（P1b-02）：上传 Published 销账后异步复制到
+//resources/<uid>/<message_id>，成功后 updateResourceLocalPath；
+//失败只记日志，不影响"已发送"状态。
+class ResourceArchiveTask;
+
 //OutboxDispatcher：驻留 TCP 线程（与 TcpMgr 同线程，独立 QObject）。
 //单向状态模型：SQLite outbox 是唯一真值，_entries 只是运行时登记簿——
-//条目进入登记簿的前提是 enqueueSend 事务已 commit（sig_send_enqueued 携带
-//实际插入的 outbox 行增量登记，不做全表查询）；离开登记簿的前提是销账/推进
-//事务已 commit（结果信号 ok=true 后才删内存）。断线不清登记簿，进程内重连
-//按内存继续；全表 loadOutbox 仅用于冷启动/换用户恢复（sig_db_opened 作废
-//旧登记簿，slot_start 触发一次快照恢复，恢复期间暂停派发）。
+//条目进入登记簿的前提是 enqueueSend 事务已 commit；离开登记簿的前提是
+//销账/推进事务已 commit。
 //SEND_TEXT→1301；SEND_RESOURCE metadata→1503，1504 成功（stage 落库提交后）
-//→uploading 并向 ResourceServer 发 1507 查服务端真实偏移，1508 对齐后
-//FileTcpMgr 窗口续发 1505，1506 status=PUBLISHED → confirmResourceSent。
-//重试退避（retry_count/next_retry_at）为纯内存状态，不落盘。
+//→uploading 并向 TransferEngine 递交 StartUpload（message_id 为键；1507 同步、
+//窗口/退避/重连全部由引擎闭环）。引擎终态快照（sig_transfer_finished）：
+//上传 Completed → 先按源文件路径销账（PENDING_CONFIRM_RESOURCE），commit 后
+//QThreadPool 异步归档；上传 Failed → PENDING_MARK_FAILED。
+//上传启动只依赖资源连接就绪（_resource_ready）；聊天断线不清上传登记。
+//重试退避为纯内存状态，不落盘。
 class OutboxDispatcher : public QObject, public Singleton<OutboxDispatcher>,
         public std::enable_shared_from_this<OutboxDispatcher>
 {
@@ -56,14 +62,9 @@ public slots:
     //TcpMgr 转发的 1504 资源消息创建回包（含冲突/transient/permanent）
     void slot_resource_msg_meta_rsp(int error, QString clientMessageId,
         qint64 messageId);
-    //FileTcpMgr 资源上传收全（1506 status=PUBLISHED）
-    void slot_resource_upload_done(QString unique_name, QString local_file_path);
-    //FileTcpMgr 资源上传永久失败（2115/2116 等）
-    void slot_resource_upload_failed(QString unique_name, int error);
-    //FileTcpMgr 转发的 1508 上传进度回包（恢复续传的统一对齐点）
-    void slot_upload_progress_rsp(qint64 message_id, int error, qint64 server_offset,
-        int status);
-    //TcpMgr 断线通知：停止扫描，登记簿保留等重连
+    //FileTcpMgr 转发的引擎终态快照（上传/下载；此处只消费上传）
+    void slot_transfer_finished(TransferSnapshot snapshot);
+    //TcpMgr 断线通知：停止扫描，登记簿保留等重连（上传登记不再清空）
     void slot_connection_closed();
 private slots:
     void slot_start();
@@ -84,7 +85,7 @@ private slots:
     //用户库打开/切换：旧登记簿整体作废，待 slot_start 从新库恢复
     void slot_db_opened(bool ok, int uid);
     void slot_db_closed();
-    //ResourceServer 连接与鉴权独立于 ChatServer；1507/1505 只能在鉴权成功后发送
+    //ResourceServer 连接与鉴权独立于 ChatServer；上传字节只在 _resource_ready 后递交
     void slot_resource_login_success();
     void slot_resource_login_failed(QString reason);
     void slot_resource_connection_closed();
@@ -108,21 +109,27 @@ private:
     void beginAction(const QString& key, RuntimeEntry& rt, PendingStoreAction action);
     //动作事务 commit 确认后删除登记（连带清理 _uploading 会话簿记）
     void eraseEntry(const QString& key);
-    //重建 MsgInfo 并发 1507 查询服务端偏移（首传/续传统一入口）；
-    //源文件丢失→MARK_FAILED
+    //1504 stage=uploading 落库后：向引擎递交上传（message_id 键，引擎内 1507 同步）
     void startResourceUpload(RuntimeEntry& rt, qint64 message_id);
-    //1508 回包对齐 MsgInfo 后驱动窗口续发
-    void resumeUploadByProgress(qint64 message_id, qint64 server_offset, int status);
-    //指数退避推进（2s→30s），纯内存
+    //引擎终态分流：Completed→销账+异步归档；Failed→MARK_FAILED
+    void handleUploadFinished(const TransferSnapshot& snapshot);
+    //指数退避（2s→30s 封顶），纯内存运行时状态
     void scheduleRetry(RuntimeEntry& rt);
-    //资源发送失败收尾（映射 file_name → client_message_id）
-    void failResourceByName(const QString& unique_name);
+    //销账 commit 成功后异步归档（QThreadPool；失败不影响已发送）
+    //归档启动（须在 confirmResourceSent 事务 commit 成功后调用）：携带
+    //启动时 uid+generation，结果回到 TCP 线程校验代次后才发 store 更新
+    void scheduleArchive(qint64 message_id, qint64 owner_uid,
+        const QString& src_path, const QString& expected_sha256,
+        int generation);
+    //归档结果（invokeMethod queued 回到 TCP 线程）：代次/uid 校验后落库
+    void finishArchive(qint64 message_id, qint64 owner_uid, int generation,
+        const QString& dst_path);
     //进程内重连：uploading 条目按登记簿恢复（message_id 已知免查库）
     void resumeUploadingEntries();
 
     QTimer* _scan_timer;                    //250ms 扫描定时器，parent 到 this
     QMap<QString, RuntimeEntry> _entries;   //client_message_id → 运行时登记（只在 TCP 线程访问）
-    QMap<QString, QString> _uploading;      //file_name → client_message_id（上传中）
+    QMap<qint64, QString> _uploading;       //message_id → client_message_id（引擎已受理的上传）
     QSet<QString> _resume_pending;          //等待 getMessageByClientId 回查的恢复项
     qint64 _retry_initial_ms;               //配置 RequestRetryInitialMs
     qint64 _retry_max_ms;                   //配置 RequestRetryMaxMs
@@ -133,6 +140,9 @@ private:
     bool _restored;                         //当前用户登记簿是否已从库恢复
     bool _restoring;                        //恢复快照在途（暂停派发）
     int _active_uid;                        //登记簿所属用户，防同 uid 重复 open 清空运行态
+    int _generation;                        //用户代次：db open/close 递增，归档等迟到结果据此作废
+
+    friend class ResourceArchiveTask;
 };
 
 #endif // OUTBOXDISPATCHER_H

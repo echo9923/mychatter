@@ -108,6 +108,10 @@ public:
     void OnConnectionDown();
     void OnConnectionAuthenticated();
 
+    //静默重置（用户代次切换/主动登出）：关闭全部 QFile、清空方向登记表/
+    //等待队列/在途窗口，不发任何信号。自动网络断开请用 OnConnectionDown。
+    void Reset();
+
     //回包入口：1506/1508/1510/1512，其余 id 忽略。
     void OnFrame(quint16 msg_id, const QByteArray& payload);
 

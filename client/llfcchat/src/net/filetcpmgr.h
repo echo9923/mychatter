@@ -2,8 +2,11 @@
 #define FILETCPMGR_H
 
 #include <QTcpSocket>
+#include <QTimer>
 #include "singleton.h"
 #include "global.h"
+#include "resourcetransfer.h"
+#include "transferengine.h"
 #include <functional>
 #include <QObject>
 #include "userdata.h"
@@ -11,8 +14,7 @@
 #include <memory>
 #include <QThread>
 #include <QQueue>
-#include <memory>
-#include "global.h"
+#include <atomic>
 
 class FileTcpThread: public std::enable_shared_from_this<FileTcpThread>{
 public:
@@ -20,13 +22,26 @@ public:
     ~FileTcpThread();
 private:
     QThread * _file_tcp_thread;
-
 };
 
-//ResourceServer 连接管理（驻 File 线程）。
-//头像通道（1601-1604）保持旧 seq+MD5 协议；资源消息通道（1505/1507/1509/1511）
-//统一 offset+SHA-256 协议：上传以 message_id 为主键、按服务端 server_offset 对齐，
-//下载按 offset 逐片拉取并做片/整文件哈希校验后原子落盘。
+//ResourceServer 纯传输层（驻 File 线程，P1b-02）。
+//
+//职责边界：socket 读写、1501 鉴权、断线重连、头像旧通道（1601-1604）。
+//资源消息（1505/1507/1509/1511 及其回包）全部委托 TransferEngine：
+//引擎经 SetSendCallback 注入的 send 回调发帧，本类把 1506/1508/1510/1512
+//原样喂给 OnFrame；不再持有 MsgInfo 传输登记（usermgr 登记表已删除，
+//跨线程不共享可变 MsgInfo）。
+//
+//发送：每帧只调用一次 write()（Qt 内部缓冲保证整帧最终写完，
+//bytesWritten 只用于队列轮转，不再重发"剩余部分"）；bytesToWrite()
+//超过高水位（默认 4MiB）时入队背压。接收：_buffer.remove 消费，去掉
+//每帧 mid 拷贝与逐帧 qDebug 包体。
+//
+//连接生命周期：1501 由本类在 connected 后自行发送（uid 取缓存
+//ServerInfo，token 取 UserMgr）；_manual_close 区分主动断开——主动断开
+//不重连，异常断开按退避自动重连，1502 成功后引擎 OnConnectionAuthenticated
+//（活跃上传重发 1507、下载从 .part 续传）。只有 1502 返回 2010 才上抛
+//sig_resource_token_invalid 让主界面登出，普通断开不再登出。
 class FileTcpMgr : public QObject, public Singleton<FileTcpMgr>,
         public std::enable_shared_from_this<FileTcpMgr>
 {
@@ -34,45 +49,94 @@ class FileTcpMgr : public QObject, public Singleton<FileTcpMgr>,
 public:
     friend class Singleton<FileTcpMgr>;
     ~FileTcpMgr();
+
+    //---- 头像旧通道（1601/1603，保持不变）----
     void SendData(ReqId reqId, QByteArray data);
     void CloseConnection();
-    void SendDownloadInfo(std::shared_ptr<DownloadInfo> download,QString req_type);
-    //窗口发送下一批资源分片（1505）：从 MsgInfo 当前确认偏移续读。
-    //只能在 File 线程内调用；跨线程请用 PostBatchSend。
-    void BatchSend(std::shared_ptr<MsgInfo> msg_info);
-    //跨线程入口：投递到 File 线程执行 BatchSend（_cwnd_size 是 File 线程状态）
-    void PostBatchSend(std::shared_ptr<MsgInfo> msg_info);
-    //启动资源下载：1509 查元数据 -> 1511 逐片下载（自动/手动触发统一入口）
-    void StartResourceDownload(std::shared_ptr<MsgInfo> msg_info);
-    //暂停/继续/重试既有资源传输（GUI 信号入口）
-    void ContinueUploadFile(QString unique_name);
-    void ContinueDownloadFile(QString unique_name);
-    //复制文件到用户资源目录（发送完成后的本地归档）
-    bool CopyFile(QString src_path, QString dst_path, QString dst_dir);
+    void SendDownloadInfo(std::shared_ptr<DownloadInfo> download, QString req_type);
+
+    //---- 资源传输（线程安全入口：内部经信号投递到 File 线程再进引擎）----
+    void PostStartUpload(const UploadRequest& req);
+    void PostStartDownload(const DownloadRequest& req);
+    void PostPauseTransfer(int direction, qint64 message_id);
+    void PostResumeTransfer(int direction, qint64 message_id);
+    void PostCancelTransfer(int direction, qint64 message_id);
+    //回包入口（1506/1508/1510/1512；测试与传输层共用）
+    void PostFrame(quint16 msg_id, const QByteArray& payload);
+
+    //登录代次只读访问（GUI/TCP 线程 load；写仅在 File 线程 1502 成功/
+    //关闭/换代次时递增）：消费端用它过滤旧会话的迟到快照
+    int LoginGeneration() const { return _login_generation.load(); }
+
+signals:
+    void sig_close();
+    void sig_send_data(ReqId reqId, QByteArray data);
+    void sig_con_success(bool bsuccess);
+    void sig_connection_closed();      //仅 2010 致命场景（配合主界面登出）
+    void sig_resource_token_invalid(); //1502 返回 2010：Token 失效须登出
+    void sig_reset_label_icon(QString path);
+    //引擎快照转发（File 线程 → GUI/outbox queued）
+    void sig_transfer_updated(TransferSnapshot snapshot);
+    void sig_transfer_finished(TransferSnapshot snapshot);
+    //3.2 Resource 登录(1502)成功信号
+    void sig_resource_login_success();
+    //3.2 Resource 登录(1502)失败信号（携带用户可见错误）
+    void sig_resource_login_failed(QString reason);
+    //内部跨线程投递（File 线程执行）
+    void sig_internal_start_upload(UploadRequest req);
+    void sig_internal_start_download(DownloadRequest req);
+    void sig_internal_pause(int direction, qint64 message_id);
+    void sig_internal_resume(int direction, qint64 message_id);
+    void sig_internal_cancel(int direction, qint64 message_id);
+    void sig_internal_frame(quint16 msg_id, QByteArray payload);
+    void sig_internal_connect(std::shared_ptr<ServerInfo> si);
+
+public slots:
+    void slot_send_data(ReqId reqId, QByteArray data);
+    void slot_tcp_connect(std::shared_ptr<ServerInfo> si);
+    void slot_tcp_close();
+    //引擎与鉴权会合（自连接 sig_resource_login_success/failed 驱动，
+    //测试也可直接 emit 该组信号）
+    void slot_engine_connection_up();
+    void slot_engine_connection_down();
+
+private slots:
+    void slot_internal_start_upload(UploadRequest req);
+    void slot_internal_start_download(DownloadRequest req);
+    void slot_internal_pause(int direction, qint64 message_id);
+    void slot_internal_resume(int direction, qint64 message_id);
+    void slot_internal_cancel(int direction, qint64 message_id);
+    void slot_internal_frame(quint16 msg_id, QByteArray payload);
+    void slot_reconnect_timeout();
+
 private:
-    void initHandlers();
-    // 1502 Resource 登录回包
-    void handleResourceLoginRsp(ReqId id, int len, QByteArray data);
-    // 1602 头像上传回包
-    void handleUploadHeadIconRsp(ReqId id, int len, QByteArray data);
-    // 1604 头像/旧文件下载回包
-    void handleDownloadFileRsp(ReqId id, int len, QByteArray data);
-    // 1506 资源分片上传回包
-    void handleResourceChunkUploadRsp(ReqId id, int len, QByteArray data);
-    // 1508 上传进度查询回包
-    void handleResourceUploadProgressRsp(ReqId id, int len, QByteArray data);
-    // 1510 资源下载元数据回包
-    void handleResourceDownInfoRsp(ReqId id, int len, QByteArray data);
-    // 1512 资源分片下载回包
-    void handleResourceChunkDownRsp(ReqId id, int len, QByteArray data);
     explicit FileTcpMgr(QObject *parent = nullptr);
 
+    void initHandlers();
     void registerMetaType();
     void handleMsg(ReqId id, int len, QByteArray data);
-    //下载缓存目录：AppData/user/<uid>/cache/<message_id>/（按 message_id 隔离）
-    QString resourceCacheDir(qint64 message_id);
+    //1502 Resource 登录回包（含 2010 判定）
+    void handleResourceLoginRsp(ReqId id, int len, QByteArray data);
+    //1602 头像上传回包
+    void handleUploadHeadIconRsp(ReqId id, int len, QByteArray data);
+    //1604 头像/旧文件下载回包
+    void handleDownloadFileRsp(ReqId id, int len, QByteArray data);
+    //引擎配置：config.ini [Resource] 段（缺省即引擎默认）
+    TransferEngine::Config loadEngineConfig();
+    //1501：连接建立后自行鉴权（uid 取缓存 ServerInfo，token 取 UserMgr）
+    void sendResourceLogin();
+    //异常断开：退避自动重连（_manual_close 时不启动）
+    void scheduleReconnect();
+    //帧出队/背压轮转
+    void tryDequeueSend();
+    //部分接受后缀补写（write 返回值推进）
+    void flushPendingSuffix();
+    //复位收发/鉴权/队列/看门狗状态（不触发重连本身）
+    void resetConnection();
+    //1506/1508/1510/1512 原样转发引擎
+    void handleEngineFrameRsp(ReqId id, int len, QByteArray data);
 
-    QTcpSocket _socket;
+    QTcpSocket _socket;              //成员对象（父子亲缘随 moveToThread 迁移）
     QString _host;
     uint16_t _port;
     QByteArray _buffer;
@@ -81,52 +145,35 @@ private:
     quint32 _message_len;
     typedef void (FileTcpMgr::*FileHandler)(ReqId id, int len, QByteArray data);
     QMap<ReqId, FileHandler> _handlers;
-    //发送队列
+    //发送队列：每帧一次 write；高水位背压 + bytesWritten 轮转
     QQueue<QByteArray> _send_queue;
-    //正在发送的包
-    QByteArray  _current_block;
-    //当前已发送的字节数
-    qint64        _bytes_sent;
-    //是否正在发送
+    QByteArray _current_block;
+    qint64 _bytes_sent;
     bool _pending;
     //3.2 Resource 鉴权标志：1502 成功前禁止发送任何业务帧
     bool _authenticated;
-    //发送的拥塞窗口，控制发送数量
-    int _cwnd_size;
-signals:
-    void sig_close();
-     void sig_send_data(ReqId reqId, QByteArray data);
-     void sig_con_success(bool bsuccess);
-     void sig_connection_closed();
-     void sig_reset_label_icon(QString path);
-     void sig_update_upload_progress(std::shared_ptr<MsgInfo>);
-     void sig_start_resource_download(std::shared_ptr<MsgInfo>);
-     void sig_continue_upload_file(QString unique_name);
-     void sig_continue_download_file(QString unique_name);
-     void sig_batch_send(std::shared_ptr<MsgInfo>);
-     void sig_update_download_progress(std::shared_ptr<MsgInfo>);
-     void sig_download_finish(std::shared_ptr<MsgInfo>,QString file_path);
-     //资源上传收全（1506 status=1），OutboxDispatcher 据此 confirmResourceSent
-     void sig_resource_upload_done(QString unique_name, QString local_file_path);
-     //资源上传永久失败（2115/2116 等），OutboxDispatcher 据此 markSendFailed
-     void sig_resource_upload_failed(QString unique_name, int error);
-     //资源下载失败/终态（UI 据此把气泡置为失败/已过期）
-     void sig_download_failed(std::shared_ptr<MsgInfo>, int error);
-     //1507/1508 上传进度查询回包（OutboxDispatcher 重启恢复续传用）
-     void sig_upload_progress_rsp(qint64 message_id, int error, qint64 server_offset,
-          int status);
-     //3.2 Resource 登录(1502)成功信号
-     void sig_resource_login_success();
-     //3.2 Resource 登录(1502)失败信号（携带用户可见错误）
-     void sig_resource_login_failed(QString reason);
-public slots:
-    void slot_send_data(ReqId reqId, QByteArray data);
-    void slot_tcp_connect(std::shared_ptr<ServerInfo> si);
-    void slot_tcp_close();
-    void slot_start_resource_download(std::shared_ptr<MsgInfo> msg_info);
-    void slot_batch_send(std::shared_ptr<MsgInfo> msg_info);
-    void slot_continue_upload_file(QString unique_name);
-    void slot_continue_download_file(QString unique_name);
+    //主动关闭标志：主动断开不重连，异常断开按退避重连
+    bool _manual_close;
+    //重连退避（QTimer 子对象，随本对象线程亲缘）
+    QTimer* _reconnect_timer;
+    int _reconnect_attempt;
+    //缓存最近一次连接参数（重连与 1501 用）
+    std::shared_ptr<ServerInfo> _server_info;
+    //传输引擎（File 线程独占）
+    TransferEngine* _engine;
+    qint64 _send_high_watermark;     //bytesToWrite 流水背压高水位
+    QTimer* _auth_timer;             //1501 鉴权看门狗（超时按连接死亡重连）
+    int _auth_timeout_ms;
+    qint64 _send_queue_bytes;        //发送队列字节上界（满则重置连接）
+    qint64 _send_queue_limit_bytes;
+    qint64 _reconnect_initial_ms;
+    //连接时捕获的凭据值快照（1501 只用快照，不跨线程读 UserMgr）
+    int _auth_uid;
+    QString _auth_token;
+    //登录代次：1502 成功/主动关闭/换代次递增（File 线程写，原子）；
+    //转发快照时附加，GUI/Outbox 校验同代次后才允许写本地库
+    std::atomic<int> _login_generation;
+    qint64 _reconnect_max_ms;
 };
 
 #endif // FILETCPMGR_H

@@ -364,8 +364,14 @@ bool LocalChatDb::confirmResourceSent(const QString& clientMessageId,
 }
 
 bool LocalChatDb::updateResourceLocalPath(qint64 messageId,
-	const QString& localFilePath) {
+	const QString& localFilePath, qint64 expectedUid) {
 	if (!isOpen() || messageId <= 0 || localFilePath.isEmpty()) return false;
+	//归档结果排队后用户可能已切换：DB 归属不符则拒绝写入
+	if (expectedUid > 0 && _self_user_id != expectedUid) {
+		qWarning() << "[LocalChatDb] updateResourceLocalPath owner mismatch, expect"
+			<< expectedUid << "actual" << _self_user_id;
+		return false;
+	}
 	QSqlQuery query(_db);
 	query.prepare(QStringLiteral(
 		"UPDATE message_resources SET local_file_path=? WHERE local_message_id=("

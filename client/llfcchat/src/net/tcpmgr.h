@@ -64,7 +64,13 @@ private:
     void handleSyncMessageRsp(ReqId id, int len, QByteArray data);
     void handleMsg(ReqId id, int len, QByteArray data);
     void finishReconnectFailure();
-    QTcpSocket _socket;
+    QTcpSocket _socket; //父子亲缘：随对象 moveToThread 迁移
+    //P1b-02：单次 write + 未接受后缀补写 + 高水位流水背压 + 队列字节上界
+    qint64 _send_queue_bytes;
+    qint64 _send_high_watermark;
+    void tryDequeueSend();
+    void flushPendingSuffix();
+    void handleWriteFailure();
     QString _host;
     uint16_t _port;
     std::shared_ptr<ServerInfo> _server_info;  //登录流程保存，Chat 认证后传给 FileTcpMgr

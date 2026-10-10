@@ -7,6 +7,7 @@
 #include "ClickableLabel.h"
 #include <QProgressBar>
 #include "global.h"
+#include "resourcetransfer.h"
 class PictureBubble : public BubbleFrame
 {
     Q_OBJECT
@@ -24,9 +25,9 @@ public:
     void setDownloadFinish(std::shared_ptr<MsgInfo> msg, QString file_path);
 
 signals:
-    void pauseRequested(QString unique_name, TransferType transfer_type);   // 请求暂停
-    void resumeRequested(QString unique_name, TransferType transfer_type);  // 请求继续
-    void cancelRequested(QString unique_name, TransferType transfer_type);  // 请求取消
+    void pauseRequested(qint64 message_id, int direction);              // 请求暂停（引擎意图标志）
+    void resumeRequested(qint64 message_id, int direction);             // 请求继续
+    void cancelRequested(qint64 message_id, int direction);             // 请求取消
 
 private slots:
     void onPictureClicked();

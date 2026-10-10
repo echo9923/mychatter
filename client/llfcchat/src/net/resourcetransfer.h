@@ -49,6 +49,11 @@ struct TransferSnapshot {
     qint64 event_seq = 0;    //上传发布成功时服务端分配的事件号
     int error_code = 0;      //0=无错/本地错误；否则为协议错误码
     QString error_text;
+    //下载完成后的本地最终路径（上传为空）；由传输层在转发时附加
+    //owner uid/login generation，GUI 据此核验后才允许写本地库
+    QString download_local_path;
+    int owner_uid = 0;
+    int login_generation = 0;
 };
 
 Q_DECLARE_METATYPE(UploadRequest)

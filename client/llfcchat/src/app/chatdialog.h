@@ -6,6 +6,8 @@
 #include <QList>
 #include "statelabel.h"
 #include "global.h"
+#include "resourcetransfer.h"
+#include <QHash>
 #include "statewidget.h"
 #include <memory>
 #include "userdata.h"
@@ -98,13 +100,17 @@ public slots:
     void slot_send_confirmed(bool ok, LocalMessageDTO dto);
     void slot_send_failed_marked(bool ok, LocalMessageDTO dto);
     void slot_resource_stage_updated(bool ok, LocalMessageDTO dto);
+    //上传已发送事务 commit 成功：气泡进 Completed（上传终态唯一入口之一）
+    void slot_resource_confirmed_ui(bool ok, LocalMessageDTO dto);
     void slot_reset_icon(QString path);
-    void slot_update_upload_progress(std::shared_ptr<MsgInfo> msg_info);
-    void slot_update_download_progress(std::shared_ptr<MsgInfo> msg_info);
-    void slot_download_finish(std::shared_ptr<MsgInfo> msg_info, QString file_path);
-    void slot_download_failed(std::shared_ptr<MsgInfo> msg_info, int error);
+    void slot_transfer_updated(TransferSnapshot snapshot);
+    void slot_transfer_finished(TransferSnapshot snapshot);
 private slots:
     void slot_reset_head();
+private:
+    //GUI 线程快照表（message_id → 最近快照）与展示对象登记
+    QHash<qint64, TransferSnapshot> _transfer_snapshots;
+    QHash<qint64, std::shared_ptr<MsgInfo>> _msg_infos;
 };
 
 

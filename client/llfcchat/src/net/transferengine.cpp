@@ -123,6 +123,7 @@ struct ResourceTransferRuntime {
     QCryptographicHash* hasher;   //增量哈希
     qint64 hashed_len;            //已增量入哈希的字节数
     bool hash_valid;              //false→完成时回退整文件哈希
+    QString local_download_path;  //下载完成后的最终路径（快照携带）
 };
 
 TransferEngine::TransferEngine(QObject* parent)
@@ -481,6 +482,19 @@ void TransferEngine::OnConnectionDown()
             t->reconnect_requested = false;
         }
     }
+}
+
+void TransferEngine::Reset()
+{
+    //静默重置（用户代次切换/主动登出）：A 的传输不得在 B 登录后被重启。
+    //关闭全部文件句柄、清空两方向登记表与等待队列；不发终态/更新信号。
+    CloseAll();
+    _uploads.clear();
+    _downloads.clear();
+    _upload_wait.clear();
+    _download_wait.clear();
+    _conn_up = false;
+    _awaiting_reconnect = false;
 }
 
 void TransferEngine::OnConnectionAuthenticated()
@@ -1279,6 +1293,7 @@ void TransferEngine::FinishDownload(ResourceTransferRuntime* t)
         return;
     }
     t->acked_bytes = t->total_bytes;
+    t->local_download_path = dest; //快照携带下载完成路径（GUI 据此落库）
     CompleteTransfer(t, 0);
 }
 
@@ -1323,6 +1338,7 @@ TransferSnapshot TransferEngine::MakeSnapshot(
     s.event_seq = t->event_seq;
     s.error_code = t->error_code;
     s.error_text = t->error_text;
+    s.download_local_path = t->local_download_path;
     return s;
 }
 

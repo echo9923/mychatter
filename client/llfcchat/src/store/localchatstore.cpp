@@ -59,8 +59,9 @@ void LocalChatWorker::slot_confirm_resource_sent(QString clientMessageId,
 }
 
 void LocalChatWorker::slot_update_resource_local_path(qint64 messageId,
-	QString localFilePath) {
-	const bool ok = _db.updateResourceLocalPath(messageId, localFilePath);
+	QString localFilePath, qint64 expectedUid) {
+	const bool ok = _db.updateResourceLocalPath(messageId, localFilePath,
+		expectedUid);
 	emit sig_resource_local_path_updated(ok, messageId, localFilePath);
 }
 
@@ -265,8 +266,8 @@ void LocalChatStore::confirmResourceSent(const QString& clientMessageId,
 	emit sig_confirm_resource_sent(clientMessageId, localFilePath);
 }
 void LocalChatStore::updateResourceLocalPath(qint64 messageId,
-	const QString& localFilePath) {
-	emit sig_update_resource_local_path(messageId, localFilePath);
+	const QString& localFilePath, qint64 expectedUid) {
+	emit sig_update_resource_local_path(messageId, localFilePath, expectedUid);
 }
 void LocalChatStore::markSendFailed(const QString& clientMessageId) {
 	emit sig_mark_send_failed(clientMessageId);

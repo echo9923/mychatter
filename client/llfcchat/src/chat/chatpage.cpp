@@ -283,6 +283,10 @@ void ChatPage::UpdateChatStatus(std::shared_ptr<ChatDataBase> msg)
     iter.value()->setStatus(msg->GetStatus());
     _base_item_map[msg->GetMsgId()] = iter.value();
     _unrsp_item_map.erase(iter);
+    //发送方向气泡获得 message_id：登记展示对象供快照驱动更新
+    if (msg->_msg_info && msg->GetMsgId() > 0) {
+        RegisterBubbleMsgInfo(msg->GetMsgId(), msg->_msg_info);
+    }
 }
 
 void ChatPage::UpdateImgChatStatus(std::shared_ptr<ImgChatData> msg) {
@@ -315,7 +319,7 @@ void ChatPage::UpdateFileProgress(std::shared_ptr<MsgInfo> msg_info) {
     if (msg_info->_msg_type == MsgType::IMG_MSG) {
         auto bubble = iter.value()->getBubble();
         PictureBubble*  pic_bubble = dynamic_cast<PictureBubble*>(bubble);
-        pic_bubble->setProgress(msg_info->_rsp_size, msg_info->_total_size);
+        pic_bubble->setProgress(msg_info->_current_size, msg_info->_total_size);
     }
     else if (msg_info->_msg_type == MsgType::FILE_MSG) {
         auto bubble = iter.value()->getBubble();
@@ -326,7 +330,7 @@ void ChatPage::UpdateFileProgress(std::shared_ptr<MsgInfo> msg_info) {
                 || msg_info->_transfer_state == TransferState::Downloading) {
                 file_bubble->setState(msg_info->_transfer_state);
             }
-            file_bubble->setProgress(msg_info->_rsp_size, msg_info->_total_size);
+            file_bubble->setProgress(msg_info->_current_size, msg_info->_total_size);
         }
     }
 }
@@ -375,6 +379,7 @@ QWidget* ChatPage::makeResourceBubble(ChatMsgType type, const std::shared_ptr<Ms
     if (!info) {
         return nullptr;
     }
+    RegisterBubbleMsgInfo(info->_msg_id, info);
     if (type == ChatMsgType::PIC) {
         auto pic_bubble = new PictureBubble(info->_preview_pix, role, info->_total_size);
         pic_bubble->setMsgInfo(info);
@@ -390,11 +395,17 @@ QWidget* ChatPage::makeResourceBubble(ChatMsgType type, const std::shared_ptr<Ms
         file_bubble->setState(info->_transfer_state);
         //接收方向：下载按钮触发 1509；暂停/继续复用既有链路
         connect(file_bubble, &FileBubble::downloadRequested, this,
-            [this](QString unique_name) {
-                auto info = UserMgr::GetInstance()->GetTransFileByName(unique_name);
-                if (info && info->_msg_id > 0) {
-                    FileTcpMgr::GetInstance()->StartResourceDownload(info);
+            [this, info](qint64 message_id) {
+                if (message_id <= 0 || !info) {
+                    return;
                 }
+                DownloadRequest req;
+                req.message_id = message_id;
+                req.dest_file_path = ChatPage::resourceCachePath(
+                    message_id, info->_unique_name);
+                req.sha256 = info->_content_hash;
+                req.file_size_bytes = info->_total_size;
+                FileTcpMgr::GetInstance()->PostStartDownload(req);
             });
         connect(file_bubble, &FileBubble::pauseRequested,
             this, &ChatPage::on_clicked_paused);
@@ -516,16 +527,15 @@ void ChatPage::on_send_btn_clicked() {
         {
             message.message_type = static_cast<int>(type == MsgType::IMG_MSG
                 ? ChatMsgType::PIC : ChatMsgType::FILE);
-            //哈希在 MessageTextEdit 采集时已算好（整文件 + 分片），未算则此处补算
+            //哈希在 MessageTextEdit 采集时已算好（整文件），未算则此处补算；
+            //分片哈希由引擎发片时现算（P1b-02）
             if (msgList[i]->_content_hash.isEmpty()) {
-                QString whole;
-                QVector<QString> chunks;
-                if (!calculateFileSha256(msgList[i]->_text_or_url, whole, chunks)) {
+                const QString whole = calculateFileSha256Only(msgList[i]->_text_or_url);
+                if (whole.isEmpty()) {
                     qWarning() << "[ChatPage] hash source missing, skip:" << msgList[i]->_text_or_url;
                     continue;
                 }
                 msgList[i]->_content_hash = whole;
-                msgList[i]->_chunk_hashes = chunks;
             }
             resource.original_file_name = msgList[i]->_unique_name;
             resource.local_file_path = msgList[i]->_text_or_url;
@@ -592,6 +602,9 @@ void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto,
             return;
         }
         if (dto.message_type == static_cast<int>(ChatMsgType::PIC)) {
+            //发送方向：PIC 与 FILE 一致显式标 Upload（暂停/恢复走引擎上传表）
+            file_info->_transfer_type = TransferType::Upload;
+            file_info->_transfer_state = TransferState::Uploading;
             auto pic_bubble = new PictureBubble(QPixmap(resource.local_file_path), role,
                 file_info->_total_size);
             pic_bubble->setMsgInfo(file_info);
@@ -615,14 +628,16 @@ void ChatPage::slot_send_enqueued(bool ok, LocalMessageDTO dto,
             connect(file_bubble, &FileBubble::resumeRequested,
                 this, &ChatPage::on_clicked_resume);
         }
+        if (dto.message_id > 0) {
+            RegisterBubbleMsgInfo(dto.message_id, file_info);
+        }
         auto img_msg = std::make_shared<ImgChatData>(file_info, dto.client_message_id,
             dto.thread_id, static_cast<ChatMsgType>(dto.message_type), user_info->_uid, 0);
         //将未回复的消息加入到未回复列表中，以便后续处理
         if (thread_data) {
             thread_data->AppendUnRspMsg(dto.client_message_id, img_msg);
         }
-        //文件信息加入管理（1504 后 Dispatcher 复用同一 MsgInfo 启动上传）
-        UserMgr::GetInstance()->AddTransFile(resource.original_file_name, file_info);
+        //气泡持有自己的 MsgInfo（仅展示）；上传状态机在引擎（message_id 键）
     }
 
     //发送消息上屏（仅当前打开的会话）
@@ -675,24 +690,16 @@ void ChatPage::on_receive_btn_clicked()
     }
 }
 
-void ChatPage::on_clicked_paused(QString unique_name, TransferType transfer_type)
+void ChatPage::on_clicked_paused(qint64 message_id, int direction)
 {
-    UserMgr::GetInstance()->PauseTransFileByName(unique_name);
+    //暂停=引擎意图标志（覆盖 Queued/Querying/Backoff/Active）
+    FileTcpMgr::GetInstance()->PostPauseTransfer(direction, message_id);
 }
 
-void ChatPage::on_clicked_resume(QString unique_name, TransferType transfer_type)
+void ChatPage::on_clicked_resume(qint64 message_id, int direction)
 {
-    UserMgr::GetInstance()->ResumeTransFileByName(unique_name);
-    //继续发送或者下载
-    if (transfer_type == TransferType::Upload) {
-        FileTcpMgr::GetInstance()->ContinueUploadFile(unique_name);
-        return;
-    }
-
-    if (transfer_type == TransferType::Download) {
-        FileTcpMgr::GetInstance()->ContinueDownloadFile(unique_name);
-        return;
-    }
+    //恢复按当前阶段重同步（上传 1507 / 下载 1509 重建），槽位约束在引擎内
+    FileTcpMgr::GetInstance()->PostResumeTransfer(direction, message_id);
 }
 
 void ChatPage::clearItems()
@@ -700,4 +707,134 @@ void ChatPage::clearItems()
     ui->chat_data_list->removeAllItem();
     _unrsp_item_map.clear();
     _base_item_map.clear();
+}
+
+void ChatPage::RegisterBubbleMsgInfo(qint64 message_id,
+    const std::shared_ptr<MsgInfo>& info)
+{
+    //GUI 线程登记：快照驱动更新气泡进度/状态时反查展示对象
+    if (message_id > 0 && info) {
+        _msg_infos[message_id] = info;
+    }
+}
+
+QString ChatPage::resourceCachePath(qint64 message_id, const QString& file_name)
+{
+    //下载缓存按 message_id 隔离：AppData/user/<uid>/cache/<mid>/<文件名>
+    const qint64 uid = UserMgr::GetInstance()->GetUid();
+    const QString storage = QStandardPaths::writableLocation(
+        QStandardPaths::AppDataLocation);
+    return storage + "/user/" + QString::number(uid)
+        + "/cache/" + QString::number(message_id) + "/" + file_name;
+}
+
+void ChatPage::ApplyTransferSnapshot(const TransferSnapshot& s)
+{
+    //引擎快照 → 气泡：进度用 acked_bytes；阶段做 TransferState 投影；
+    //终态 Completed 时按缓存路径收尾（下载方向），Failed/过期由 error 区分
+    auto iter = _base_item_map.find(s.message_id);
+    if (iter == _base_item_map.end()) {
+        return;
+    }
+    TransferState st;
+    switch (s.phase) {
+    case TRANSFER_QUEUED:
+    case TRANSFER_QUERYING:
+    case TRANSFER_ACTIVE:
+    case TRANSFER_BACKOFF:
+        st = (s.direction == TRANSFER_DOWNLOAD) ? TransferState::Downloading
+            : TransferState::Uploading;
+        break;
+    case TRANSFER_PAUSED:
+        st = TransferState::Paused;
+        break;
+    case TRANSFER_COMPLETED:
+        st = TransferState::Completed;
+        break;
+    case TRANSFER_FAILED:
+    default:
+        st = TransferState::Failed;
+        break;
+    }
+    auto msg_info = _msg_infos.value(s.message_id);
+    if (msg_info) {
+        msg_info->_current_size = s.acked_bytes; //GUI 线程自有对象
+        //上传方向的 _transfer_state 不在快照路径写（终态提交后由
+        //SetUploadTerminal 收口）；下载方向随快照正常投影
+        if (s.direction == TRANSFER_DOWNLOAD) {
+            msg_info->_transfer_state = st;
+        }
+    }
+    //上传方向的终态只由本地库 commit 信号收口（slot_resource_confirmed /
+    //slot_send_failed_marked → SetUploadTerminal）：网络 Completed 仅推进
+    //进度到 100% 等待本地确认，网络 Failed 不直接置失败气泡
+    if (s.direction == TRANSFER_UPLOAD
+        && (s.phase == TRANSFER_COMPLETED || s.phase == TRANSFER_FAILED)) {
+        if (s.phase == TRANSFER_COMPLETED) {
+            QWidget* bubble = iter.value()->getBubble();
+            if (auto* pic = dynamic_cast<PictureBubble*>(bubble)) {
+                pic->setProgress(static_cast<int>(s.acked_bytes),
+                    static_cast<int>(s.total_bytes));
+            }
+            else if (auto* file_bubble = dynamic_cast<FileBubble*>(bubble)) {
+                file_bubble->setProgress(s.acked_bytes, s.total_bytes);
+            }
+        }
+        return;
+    }
+    QWidget* bubble = iter.value()->getBubble();
+    if (auto* pic = dynamic_cast<PictureBubble*>(bubble)) {
+        if (st == TransferState::Completed && s.direction == TRANSFER_DOWNLOAD
+            && msg_info) {
+            //路径以快照携带为准（传输层已核验 uid/代次后才放行落库）
+            const QString path = !s.download_local_path.isEmpty()
+                ? s.download_local_path
+                : resourceCachePath(s.message_id, msg_info->_unique_name);
+            pic->setDownloadFinish(msg_info, path);
+            return;
+        }
+        pic->setProgress(static_cast<int>(s.acked_bytes),
+            static_cast<int>(s.total_bytes));
+        pic->setState(st);
+        return;
+    }
+    if (auto* file_bubble = dynamic_cast<FileBubble*>(bubble)) {
+        if (st == TransferState::Completed && s.direction == TRANSFER_DOWNLOAD
+            && msg_info) {
+            const QString path = !s.download_local_path.isEmpty()
+                ? s.download_local_path
+                : resourceCachePath(s.message_id, msg_info->_unique_name);
+            file_bubble->setDownloadFinish(msg_info, path);
+            return;
+        }
+        file_bubble->setState(st);
+        file_bubble->setProgress(s.acked_bytes, s.total_bytes);
+    }
+}
+
+void ChatPage::SetUploadTerminal(qint64 message_id, bool completed)
+{
+    //上传终态唯一入口：本地库 commit 信号（confirmed/failed_marked）驱动
+    auto iter = _base_item_map.find(message_id);
+    if (iter == _base_item_map.end()) {
+        return;
+    }
+    auto msg_info = _msg_infos.value(message_id);
+    if (msg_info) {
+        msg_info->_transfer_state = completed ? TransferState::Completed
+            : TransferState::Failed;
+        if (completed) {
+            msg_info->_current_size = msg_info->_total_size;
+        }
+    }
+    QWidget* bubble = iter.value()->getBubble();
+    if (auto* pic = dynamic_cast<PictureBubble*>(bubble)) {
+        pic->setState(completed ? TransferState::Completed
+            : TransferState::Failed);
+        return;
+    }
+    if (auto* file_bubble = dynamic_cast<FileBubble*>(bubble)) {
+        file_bubble->setState(completed ? TransferState::Completed
+            : TransferState::Failed);
+    }
 }

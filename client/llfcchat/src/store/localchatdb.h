@@ -35,7 +35,9 @@ public:
 		const QString& stage, LocalMessageDTO* out);
 	bool confirmResourceSent(const QString& clientMessageId, const QString& localFilePath,
 		LocalMessageDTO* out);
-	bool updateResourceLocalPath(qint64 messageId, const QString& localFilePath);
+	//expectedUid>0 时校验当前 DB 归属用户，不匹配则拒绝（跨用户代次防串写）
+	bool updateResourceLocalPath(qint64 messageId, const QString& localFilePath,
+		qint64 expectedUid = 0);
 	bool markSendFailed(const QString& clientMessageId, LocalMessageDTO* out);
 	bool getMessageByClientId(const QString& clientMessageId, LocalMessageDTO* message,
 		LocalMessageResourceDTO* resource);

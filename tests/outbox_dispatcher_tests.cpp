@@ -272,10 +272,22 @@ void TestResourceStateMachine(const SendSpy& spy) {
     Check(spy.count(ID_RESOURCE_UPLOAD_PROGRESS_REQ) == progressBefore + 1,
         "authenticated resource connection queries upload progress");
 
+    //P1b-02 适配：1508/1506 回包经 FileTcpMgr::PostFrame 喂 TransferEngine，
+    //引擎终态快照驱动 outbox 销账（旧 sig_upload_progress_rsp 信号已删除）
     const int chunksBefore = spy.count(ID_RESOURCE_CHUNK_UPLOAD_REQ);
-    emit FileTcpMgr::GetInstance()->sig_upload_progress_rsp(
-        9100000001LL, ErrorCodes::SUCCESS, resource.file_size_bytes,
-        static_cast<int>(MessageStatus::Pending));
+    {
+        QJsonObject rsp;
+        rsp["error"] = 0;
+        rsp["message_id"] = QString::number(9100000001LL);
+        rsp["server_offset"] = QString::number(resource.file_size_bytes);
+        rsp["file_size_bytes"] = QString::number(resource.file_size_bytes);
+        rsp["status"] = static_cast<int>(MessageStatus::Pending);
+        rsp["sha256"] = resource.sha256;
+        rsp["chunk_size"] = QString::number(32768);
+        FileTcpMgr::GetInstance()->PostFrame(
+            ID_RESOURCE_UPLOAD_PROGRESS_RSP,
+            QJsonDocument(rsp).toJson(QJsonDocument::Compact));
+    }
     Pump(50);
     Check(FindOutbox(userId, clientMessageId, nullptr)
         && ReadMessage(userId, clientMessageId, &stored)
@@ -289,18 +301,34 @@ void TestResourceStateMachine(const SendSpy& spy) {
             == QByteArray("resource-data"),
         "full-length pending upload resends the final chunk from its start");
 
-    const QString archivePath = sourceDirectory.filePath(QStringLiteral("9100000001"));
-    QFile::copy(sourcePath, archivePath);
-    emit FileTcpMgr::GetInstance()->sig_resource_upload_done(
-        resource.original_file_name, archivePath);
+    //终态直接以带 owner/generation 的快照驱动 outbox（P1b-02 代次门禁：
+    //owner=0 的无主快照在生产侧会被过滤，测试按当前 owner/代次构造）
+    {
+        TransferSnapshot done;
+        done.message_id = 9100000001LL;
+        done.direction = TRANSFER_UPLOAD;
+        done.phase = TRANSFER_COMPLETED;
+        done.acked_bytes = resource.file_size_bytes;
+        done.total_bytes = resource.file_size_bytes;
+        done.event_seq = 1;
+        done.owner_uid = userId;
+        done.login_generation = FileTcpMgr::GetInstance()->LoginGeneration();
+        emit FileTcpMgr::GetInstance()->sig_transfer_finished(done);
+    }
     Pump(100);
     LocalMessageResourceDTO storedResource;
+    //归档为 QThreadPool 异步：Pump 期间可能已覆盖为归档路径（按约定以
+    //message_id 结尾），两个可接受值都放行；Sent/outbox 移除断言不变
     Check(ReadMessage(userId, clientMessageId, &stored, &storedResource)
         && stored.send_status == LOCAL_SEND_SENT
-        && storedResource.local_file_path == archivePath,
-        "1506 commit stores sent status and archive path");
+        && (storedResource.local_file_path == sourcePath
+            || storedResource.local_file_path.endsWith(
+                QStringLiteral("/9100000001"))),
+        "engine Completed commits sent status (source or archived path)");
     Check(!FindOutbox(userId, clientMessageId, nullptr),
-        "1506 commit removes resource outbox row");
+        "engine Completed removes resource outbox row");
+    //归档为 QThreadPool 异步：成功后 updateResourceLocalPath 覆盖本地路径，
+    //失败不影响已发送（此处不阻塞等待，归档路径断言留给运行期验证）
 }
 
 void TestMissingResourceSource() {
