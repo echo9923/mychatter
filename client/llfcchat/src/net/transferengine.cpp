@@ -155,7 +155,8 @@ void TransferEngine::InitConfig(const Config& config)
     }
     if (_cfg.json_error_limit < 1) _cfg.json_error_limit = 1;
     if (_cfg.chunk_retry_limit < 1) _cfg.chunk_retry_limit = 1;
-    if (_cfg.chunk_size < 1) _cfg.chunk_size = 1;
+    //wire 分片单位固定为共享常量：不接受任意传入值（防旧 32KiB 配置/1B 退化）
+    _cfg.chunk_size = static_cast<qint64>(llfc_wire::kResourceChunkSize);
     if (_cfg.tick_interval_ms < 10) _cfg.tick_interval_ms = 10;
 
     //快照走跨线程 queued 信号，先注册 metatype（幂等）。
@@ -1020,10 +1021,18 @@ void TransferEngine::HandleProgressRsp(const QByteArray& payload)
         FailTransfer(t, 0, QString::fromLatin1("file size mismatch with server"));
         return;
     }
-    //迟到 1508 且用户暂停：只保存元数据（chunk_size/确认位/阶段），不发片
-    //不开源文件；Resume 会重发 1507 再走到这里。
-    if (rsp.chunk_size > 0) {
-        t->chunk_size = rsp.chunk_size; //1508 分片对齐单位
+    //1508 chunk_size 如存在必须等于共享 wire 单位（256KiB）：不匹配即坏回包
+    if (rsp.chunk_size > 0
+        && rsp.chunk_size != static_cast<qint64>(llfc_wire::kResourceChunkSize)) {
+        t->json_error_count += 1;
+        if (t->json_error_count >= _cfg.json_error_limit) {
+            FailTransfer(t, llfc_proto::ERR_JSON,
+                QString::fromLatin1("server chunk_size mismatch"));
+            return;
+        }
+        ScheduleBackoff(t); //退避后 1507 重同步
+        EmitUpdate(t);
+        return;
     }
     qint64 so = rsp.server_offset >= 0 ? rsp.server_offset : 0;
     if (so > t->total_bytes) {

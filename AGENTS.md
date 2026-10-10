@@ -63,7 +63,7 @@ out/run/<Config>/ResourceServer/ResourceServer.exe
 
 ## 图片与文件统一资源传输（20260814 改造）
 
-- 图片与普通文件统一为“资源消息”：创建元数据（1503）→ 查询上传进度（1507）→ 分片上传（1505）→ 完整性校验 → 发布消息 → 查询下载信息（1509）→ 分片下载（1511）。分片 32KiB Base64 JSON 帧，帧格式与 MAX_FILE_LEN 维持不变。
+- 图片与普通文件统一为“资源消息”：创建元数据（1503）→ 查询上传进度（1507）→ 分片上传（1505）→ 完整性校验 → 发布消息 → 查询下载信息（1509）→ 分片下载（1511）。P1c 起分片为 256KiB 二进制帧：仅 1505 与 1512 改为 `[u16 meta_len 大端][meta JSON][raw]`（raw 为分片原始字节，不再 Base64），常量与编解码三端共用 `proto/resource_wire.h`（`kResourceChunkSize=256KiB`、`kMaxFrameBody=2B前缀+8KiB meta+256KiB 分片`，Encode/Decode 双向校验全部预算）；头像 1601/1603 仍为 32KiB Base64 JSON。**v2 与 v1 不兼容，服务端与客户端必须同批发布**。
 - `chat_messages.status` 保存 Pending/Published/Failed；`message_resources` 保存 `original_file_name/file_size_bytes/sha256/mime_type`。磁盘文件以 `message_id` 命名，进行中使用 `.part` 后缀。
 - 1503/1504 创建资源元数据；1505/1506 按 `message_id+offset+chunk_sha256` 上传；1507/1508 查询 `.part` 长度；1509/1510 查询下载信息；1511/1512 按偏移下载。资源发布后 1701 envelope 携带资源扩展字段。
 - ResourceServer 按 `message_id % worker 数` 固定路由；上传完成事务把 `chat_messages.status` 置为 Published，并为接收者分配 `event_seq`。失败/过期置 Failed，不分配事件。上传进度真值是磁盘 `.part` 长度。

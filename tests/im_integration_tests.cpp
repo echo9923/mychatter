@@ -46,6 +46,7 @@ ScenarioEntry kScenarios[] = {
 	{ "resource-create",     imt::ScenarioResourceCreate     },
 	{ "resource-upload",     imt::ScenarioResourceUpload     },
 	{ "resource-resume",     imt::ScenarioResourceResume     },
+	{ "resource-pipeline",   imt::ScenarioResourcePipeline   },
 	{ "resource-idempotent", imt::ScenarioResourceIdempotent },
 	{ "resource-corrupt",    imt::ScenarioResourceCorrupt    },
 	{ "resource-perm",       imt::ScenarioResourcePerm       },
@@ -63,7 +64,7 @@ int main(int argc, char** argv) {
 		const std::string a = argv[i];
 		if (a == "--scenario" && i + 1 < argc) { scenario = argv[++i]; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|friend-workflow|offline|pull-bytes|cross-server|resource-offline|status-discovery|chat-failover|simple-auth|sync-bootstrap|big-ids|resource-create|resource-upload|resource-resume|resource-idempotent|resource-corrupt|resource-perm|resource-offset|resource-expiry>\n");
+			std::printf("usage: im_integration_tests --scenario <gate-smoke|order-n4|order-n1|dedup|friend-workflow|offline|pull-bytes|cross-server|resource-offline|status-discovery|chat-failover|simple-auth|sync-bootstrap|big-ids|resource-create|resource-upload|resource-resume|resource-pipeline|resource-idempotent|resource-corrupt|resource-perm|resource-offset|resource-expiry>\n");
 			return 0;
 		}
 	}

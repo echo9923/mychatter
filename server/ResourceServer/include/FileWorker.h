@@ -107,8 +107,10 @@ struct ResourceDownInfoTask {
 /// 下载一个分片（1511）：从最终文件（已通过 .part 原子改名）按 offset 读取。
 /// 文件路径/大小由 DownloadWorker 内的已发布资源缓存解析（不再逐片查 DB）。
 struct ResourceChunkDownTask {
+	//P1c：1512 二进制回包——meta JSON + raw 分片一并回调
 	ResourceChunkDownTask(std::shared_ptr<CSession> session, long long message_id,
-		long long offset, std::function<void(const json&)> callback,
+		long long offset,
+		std::function<void(const json&, const std::string&)> callback,
 		std::shared_ptr<SessionTaskQuota> quota = nullptr)
 		:_session(std::move(session)), _message_id(message_id), _offset(offset),
 		_callback(std::move(callback)), _quota(std::move(quota))
@@ -116,7 +118,7 @@ struct ResourceChunkDownTask {
 	std::shared_ptr<CSession> _session;
 	long long _message_id;
 	long long _offset;
-	std::function<void(const json&)> _callback;
+	std::function<void(const json&, const std::string&)> _callback;
 	/// 会话在途字节令牌（首层传递而来）：任务销毁即归还
 	std::shared_ptr<SessionTaskQuota> _quota;
 };

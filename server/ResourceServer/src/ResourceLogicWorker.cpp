@@ -91,6 +91,38 @@ boost::filesystem::path ResourceFilePath(long long sender_id, long long message_
 }
 } // namespace
 
+namespace {
+
+//P1c 统一回包出口：1506/1508/1510 等仍为 JSON；1512 一律二进制线协议
+//（[u16 meta_len BE][meta][raw]，含错误分支与鉴权拦截），raw 可为空。
+void SendRspFrame(const std::shared_ptr<CSession>& session, short rsp_id,
+    const json& meta, const std::string& raw = std::string())
+{
+    if (rsp_id == ID_RESOURCE_CHUNK_DOWN_RSP) {
+        std::string body;
+        if (llfc_wire::EncodeFrame(meta.dump(), raw, &body)) {
+            session->Send(body, rsp_id);
+        }
+        return;
+    }
+    session->Send(meta.dump(), rsp_id);
+}
+
+void SendRspFrameAndClose(const std::shared_ptr<CSession>& session,
+    short rsp_id, const json& meta)
+{
+    if (rsp_id == ID_RESOURCE_CHUNK_DOWN_RSP) {
+        std::string body;
+        if (llfc_wire::EncodeFrame(meta.dump(), std::string(), &body)) {
+            session->SendAndClose(body, rsp_id);
+        }
+        return;
+    }
+    session->SendAndClose(meta.dump(), rsp_id);
+}
+
+} // namespace
+
 ResourceLogicWorker::ResourceLogicWorker()
 {
 	RegisterCallBacks();
@@ -283,37 +315,46 @@ void ResourceLogicWorker::handleDownloadFile(shared_ptr<CSession> session, const
 void ResourceLogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session, const short& msg_type,
 	const string& msg_data, shared_ptr<SessionTaskQuota> quota)
 {
-	auto root = json::parse(msg_data, nullptr, false);
+	//P1c：1505 为二进制帧 [u16 meta_len][meta JSON][raw]；raw 即分片原始
+	//字节（不再 Base64）。解析失败/字段非法回 1506 JSON（1506 仍是 JSON）。
+	std::string meta_str;
+	std::string file_data;
+	if (!llfc_wire::DecodeFrame(msg_data, &meta_str, &file_data)) {
+		json rtvalue;
+		rtvalue["error"] = ErrorCodes::Error_Json;
+		SendRspFrame(session, ID_RESOURCE_CHUNK_UPLOAD_RSP, rtvalue);
+		return;
+	}
+	auto root = json::parse(meta_str, nullptr, false);
 	if (root.is_discarded() || !root.is_object()) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
-		session->Send(rtvalue.dump(), ID_RESOURCE_CHUNK_UPLOAD_RSP);
+		SendRspFrame(session, ID_RESOURCE_CHUNK_UPLOAD_RSP, rtvalue);
 		return;
 	}
 
 	unsigned long long message_id = 0, offset = 0;
 	if (!root.contains("message_id") || !root.contains("offset") ||
-		!root.contains("chunk_sha256") || !root.contains("data") ||
+		!root.contains("chunk_sha256") ||
 		!ParseJsonUInt64(root["message_id"], message_id) ||
 		!ParseJsonUInt64(root["offset"], offset) ||
-		!root["chunk_sha256"].is_string() || !root["data"].is_string()) {
+		!root["chunk_sha256"].is_string() || file_data.empty()) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
 		rtvalue["message_id"] = root.contains("message_id")
 			&& root["message_id"].is_string() ? root["message_id"].get<std::string>() : "0";
-		session->Send(rtvalue.dump(), ID_RESOURCE_CHUNK_UPLOAD_RSP);
+		SendRspFrame(session, ID_RESOURCE_CHUNK_UPLOAD_RSP, rtvalue);
 		return;
 	}
 
 	auto chunk_sha256 = root["chunk_sha256"].get<std::string>();
-	auto file_data = root["data"].get<std::string>();
 
-	//协议字段格式校验：片哈希必须是 64 位小写 hex（真值比对在 FileWorker 解码后进行）
+	//协议字段格式校验：片哈希必须是 64 位小写 hex（真值比对在 FileWorker 进行）
 	if (message_id == 0 || !llfc::IsValidSha256Hex(chunk_sha256)) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
 		rtvalue["message_id"] = std::to_string(message_id);
-		session->Send(rtvalue.dump(), ID_RESOURCE_CHUNK_UPLOAD_RSP);
+		SendRspFrame(session, ID_RESOURCE_CHUNK_UPLOAD_RSP, rtvalue);
 		return;
 	}
 
@@ -323,7 +364,7 @@ void ResourceLogicWorker::handleResourceChunkUpload(shared_ptr<CSession> session
 	};
 
 	//在途字节配额令牌（quota 参数）由首层 AsyncReadBody 获取并随任务传入
-	//（按整帧字节计，覆盖 Base64 载荷）；转入 ResourceChunkTask，
+	//（按整帧字节计，覆盖 raw 分片与 meta）；转入 ResourceChunkTask，
 	//FileWorker 队列驻留期间持续占用。
 
 	int index = ResourceWorkerIndex(static_cast<long long>(message_id), FILE_WORKER_COUNT);
@@ -463,12 +504,16 @@ void ResourceLogicWorker::handleResourceChunkDown(shared_ptr<CSession> session, 
 		!ParseJsonUInt64(root["offset"], offset) || message_id == 0) {
 		json rtvalue;
 		rtvalue["error"] = ErrorCodes::Error_Json;
-		session->Send(rtvalue.dump(), ID_RESOURCE_CHUNK_DOWN_RSP);
+		SendRspFrame(session, ID_RESOURCE_CHUNK_DOWN_RSP, rtvalue); //二进制
 		return;
 	}
 
-	auto callback = [session](const json& result) {
-		session->Send(result.dump(), ID_RESOURCE_CHUNK_DOWN_RSP);
+	//P1c：1512 二进制帧（meta+raw）；鉴权失败走拦截路径同样二进制
+	auto callback = [session](const json& result, const std::string& raw) {
+		std::string body;
+		if (llfc_wire::EncodeFrame(result.dump(), raw, &body)) {
+			session->Send(body, ID_RESOURCE_CHUNK_DOWN_RSP);
+		}
 	};
 
 	//下载只读最终文件（rename 后与写天然互斥）；固定路由保持同一 message_id
@@ -544,13 +589,14 @@ void ResourceLogicWorker::task_callback(std::shared_ptr<LogicNode> task)
 		return;
 	}
 
-	//鉴权门控：除登录外所有消息都要求会话已认证，否则返回TokenInvalid并关闭连接
+	//鉴权门控：除登录外所有消息都要求会话已认证，否则返回TokenInvalid并关闭
+	//连接（1512 拦截回包同样走二进制线协议，不回 JSON）
 	if (!session->IsAuthed()) {
 		short rsp_id = ReqToRspId(msg_type);
 		if (rsp_id != 0) {
 			json rtvalue;
 			rtvalue["error"] = ErrorCodes::TokenInvalid;
-			session->SendAndClose(rtvalue.dump(), rsp_id);
+			SendRspFrameAndClose(session, rsp_id, rtvalue);
 		}
 		else {
 			session->Close();

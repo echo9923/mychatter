@@ -293,7 +293,7 @@ void CSession::AsyncReadHead(int total_len)
 			msg_len = boost::asio::detail::socket_ops::network_to_host_long(msg_len);
 
 			//长度非法（零长度包体无合法语义，且会绕过按字节计的配额）
-			if (msg_len == 0 || msg_len > MAX_LENGTH) {
+			if (msg_len == 0 || msg_len > kMaxFrameBodyLen) { //线协议 v2 帧预算（含 meta+raw）
 				std::cerr << "invalid data length is " << msg_len << std::endl;
 				Close();
 				return;

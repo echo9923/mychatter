@@ -1056,17 +1056,22 @@ static std::string BuildResourceCreateReq(int target_user_id,
 	return j.dump();
 }
 
-// Build a 1505 resource-chunk-upload body: {message_id, offset, chunk_sha256, data}
-// （message_id/offset 十进制字符串；data 为 <=32KiB 分片的 Base64）
+// Build a 1505 resource-chunk-upload body（P1c 线协议 v2 二进制帧）：
+// [u16 meta_len BE][meta JSON {message_id, offset, chunk_sha256}][raw 分片]。
+// raw 为 <=256KiB 的分片原始字节（不再 Base64）。
 static std::string BuildChunkUploadReq(std::int64_t message_id, long long offset,
 	                               const std::string& chunk_sha256,
-	                               const std::string& data_b64) {
+	                               const std::string& chunk_raw) {
 	json j;
 	j["message_id"] = ToIdStr(message_id);
 	j["offset"] = std::to_string(offset);
 	j["chunk_sha256"] = chunk_sha256;
-	j["data"] = data_b64;
-	return j.dump();
+	std::string body;
+	if (!imt::BuildChunkUploadReqBody(message_id, offset, chunk_sha256,
+		    chunk_raw, &body)) {
+		return std::string();
+	}
+	return body;
 }
 
 // Build a 1507 upload-progress query body: {message_id}
@@ -1091,49 +1096,6 @@ static std::string BuildChunkDownReq(std::int64_t message_id, long long offset) 
 	return j.dump();
 }
 
-// Minimal base64 encoder (no line breaks; standard alphabet).
-static const char kB64[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static std::string Base64Encode(const std::string& in) {
-	std::string out;
-	int val = 0, valb = -6;
-	for (unsigned char c : in) {
-		val = (val << 8) + c;
-		valb += 8;
-		while (valb >= 0) {
-			out.push_back(kB64[(val >> valb) & 0x3F]);
-			valb -= 6;
-		}
-	}
-	if (valb > -6) out.push_back(kB64[((val << 8) >> (valb + 8)) & 0x3F]);
-	while (out.size() % 4) out.push_back('=');
-	return out;
-}
-
-// Minimal base64 decoder（下载校验用；忽略填充）。
-static std::string Base64Decode(const std::string& in) {
-	auto val_of = [](char c) -> int {
-		if (c >= 'A' && c <= 'Z') return c - 'A';
-		if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-		if (c >= '0' && c <= '9') return c - '0' + 52;
-		if (c == '+') return 62;
-		if (c == '/') return 63;
-		return -1;
-	};
-	std::string out;
-	int val = 0, valb = -8;
-	for (char c : in) {
-		const int d = val_of(c);
-		if (d < 0) break;
-		val = (val << 6) + d;
-		valb += 6;
-		if (valb >= 0) {
-			out.push_back(static_cast<char>((val >> valb) & 0xFF));
-			valb -= 8;
-		}
-	}
-	return out;
-}
 
 // 生成确定性测试载荷（n 字节），逐字节可与下载结果比对
 static std::string MakeBlob(long long n) {
@@ -1869,11 +1831,11 @@ bool ScenarioResourceOffline() {
 	int final_rs = -1;
 	std::uint64_t final_event_seq = 0;
 	for (long long off = 0; off < file_size; ) {
-		const long long n = (std::min<long long>)(file_size - off, 32768);
+		const long long n = (std::min<long long>)(file_size - off, kTestChunkSize);
 		const std::string chunk = blob.substr(static_cast<std::size_t>(off),
 			static_cast<std::size_t>(n));
 		res.Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
-			BuildChunkUploadReq(msg_id, off, llfc::Sha256Hex(chunk), Base64Encode(chunk)));
+			BuildChunkUploadReq(msg_id, off, llfc::Sha256Hex(chunk), chunk));
 		Frame uf;
 		if (!res.Wait(ID_RESOURCE_CHUNK_UPLOAD_RSP, 10000, &uf)) { final_rs = -2; break; }
 		auto j = ParseJson(uf.body);
@@ -3049,12 +3011,11 @@ int UploadChunks(ResClient& res, std::int64_t msg_id, const std::string& blob,
 	int rs = MESSAGE_PENDING;
 	std::uint64_t event_seq = 0;
 	for (long long off = from_offset; off < total; ) {
-		const long long n = (std::min<long long>)(total - off, 32768);
+		const long long n = (std::min<long long>)(total - off, kTestChunkSize);
 		const std::string chunk = blob.substr(static_cast<std::size_t>(off),
 			static_cast<std::size_t>(n));
 		if (!res.Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
-			BuildChunkUploadReq(msg_id, off, llfc::Sha256Hex(chunk),
-				Base64Encode(chunk)))) {
+			BuildChunkUploadReq(msg_id, off, llfc::Sha256Hex(chunk), chunk))) {
 			return -4;
 		}
 		Frame uf;
@@ -3079,7 +3040,7 @@ int UploadOneChunk(ResClient& res, std::int64_t msg_id, long long offset,
 	const std::string& chunk, const std::string& chunk_sha, long long* server_offset,
 	std::uint64_t* event_seq_out = nullptr, long long* echo_offset = nullptr) {
 	res.Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
-		BuildChunkUploadReq(msg_id, offset, chunk_sha, Base64Encode(chunk)));
+		BuildChunkUploadReq(msg_id, offset, chunk_sha, chunk));
 	Frame uf;
 	if (!res.Wait(ID_RESOURCE_CHUNK_UPLOAD_RSP, 10000, &uf)) return -4;
 	auto j = ParseJson(uf.body);
@@ -3113,16 +3074,18 @@ long long QueryServerOffset(ResClient& res, std::int64_t msg_id, int* status_out
 	return static_cast<long long>(JsonIdStr(j, "server_offset", -1));
 }
 
-//按偏移逐片下载完整资源；返回拼装内容（失败返回空串；total 带出总大小）
+//按偏移逐片下载完整资源（P1c：1512 为二进制帧 [u16 meta_len][meta][raw]）；
+//返回拼装内容（失败返回空串）
 std::string DownloadWhole(ResClient& res, std::int64_t msg_id, long long total) {
 	std::string out;
 	for (long long off = 0; off < total; ) {
 		res.Send(ID_RESOURCE_CHUNK_DOWN_REQ, BuildChunkDownReq(msg_id, off));
 		Frame f;
 		if (!res.Wait(ID_RESOURCE_CHUNK_DOWN_RSP, 10000, &f)) return std::string();
-		auto j = ParseJson(f.body);
+		json j;
+		std::string chunk;
+		if (!imt::ParseChunkDownRspBody(f.body, &j, &chunk)) return std::string();
 		if (!j.is_object() || j.value("error", -1) != ERR_SUCCESS) return std::string();
-		const std::string chunk = Base64Decode(j.value("data", ""));
 		//逐片校验：服务端随片下发的 SHA-256 必须匹配
 		if (llfc::Sha256Hex(chunk) != j.value("chunk_sha256", "")) return std::string();
 		out += chunk;
@@ -3244,7 +3207,8 @@ bool ScenarioResourceUpload() {
 	}
 
 	const std::string tag = RunTag();
-	const std::string blob = MakeBlob(100000);  // 4 片（3×32KiB + 2176B）
+	//P1c v2：2 片 + 尾片（单 100000B 会首片即 Published，失去逐片推进语义）
+	const std::string blob = MakeBlob(kTestChunkSize * 2 + 100);
 	const std::string hash = llfc::Sha256Hex(blob);
 	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-up-" + tag, MSG_TYPE_FILE, "upload_" + tag + ".bin",
@@ -3257,15 +3221,15 @@ bool ScenarioResourceUpload() {
 
 	//1506 必须回显请求 offset（P1b 引擎按此比对在途分片）
 	long long echo_off = -1;
-	const int first_err = UploadOneChunk(*res, mid, 0, blob.substr(0, 32768),
-		llfc::Sha256Hex(blob.substr(0, 32768)), nullptr, nullptr, &echo_off);
+	const int first_err = UploadOneChunk(*res, mid, 0, blob.substr(0, kTestChunkSize),
+		llfc::Sha256Hex(blob.substr(0, kTestChunkSize)), nullptr, nullptr, &echo_off);
 	Check(first_err == ERR_SUCCESS && echo_off == 0,
 		"resource-upload: 1506 echoes request offset",
 		("err=" + std::to_string(first_err) + " echo=" + std::to_string(echo_off)).c_str());
 	if (first_err != ERR_SUCCESS || echo_off != 0) all_ok = false;
 
 	int rs = -1;
-	const int up_err = UploadChunks(*res, mid, blob, 32768, &rs);
+	const int up_err = UploadChunks(*res, mid, blob, kTestChunkSize, &rs);
 	Check(up_err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED,
 		"resource-upload: all chunks uploaded -> Ready",
 		("err=" + std::to_string(up_err) + " rs=" + std::to_string(rs)).c_str());
@@ -3280,9 +3244,9 @@ bool ScenarioResourceUpload() {
 			"resource-upload: 1507 reports total_size & Ready",
 			("off=" + std::to_string(off) + " st=" + std::to_string(st)).c_str());
 		if (off != (long long)blob.size()) all_ok = false;
-		Check(cs == 32768, "resource-upload: 1508 carries chunk_size",
+		Check(cs == kTestChunkSize, "resource-upload: 1508 carries chunk_size",
 			("chunk_size=" + std::to_string(cs)).c_str());
-		if (cs != 32768) all_ok = false;
+		if (cs != (long long)kTestChunkSize) all_ok = false;
 	}
 
 	//1509（下载信息）：发送者与接收者都可查（接收方需先取得自己的 token，
@@ -3340,15 +3304,19 @@ bool ScenarioResourceResume() {
 	}
 
 	const std::string tag = RunTag();
-	const std::string blob = MakeBlob(100000);
+	//P1c v2：按 256KiB 分片网格构造 2.5 片文件，覆盖整片/脏尾/全量残留
+	const std::string blob = MakeBlob(kTestChunkSize * 2 + 100000);
 	const std::string hash = llfc::Sha256Hex(blob);
 	struct ResumeCase { const char* name; std::size_t length; long long offset; bool query_first; };
+	//期望值严格按 RecoverUploadFile 的 ((size-1)/k)*k：恰好一片(k)也会被
+	//回退到 0（最后一片可能是完成点重写残留），两片(2k)回退到 k——
+	//不要假设"整片残留即保留"
 	const ResumeCase cases[] = {
-		{ "aligned", 65536, 32768, true },
-		{ "partial", 81920, 65536, true },
-		{ "damaged-aligned", 98304, 65536, true },
-		{ "full-pending", 100000, 98304, true },
-		{ "direct-retry", 81920, 65536, false }
+		{ "aligned", (std::size_t)kTestChunkSize, 0, true },
+		{ "partial", (std::size_t)kTestChunkSize + 50000, kTestChunkSize, true },
+		{ "damaged-aligned", (std::size_t)kTestChunkSize * 2, kTestChunkSize, true },
+		{ "full-pending", blob.size(), kTestChunkSize * 2, true },
+		{ "direct-retry", (std::size_t)kTestChunkSize + 50000, kTestChunkSize, false }
 	};
 	for (const auto& test : cases) {
 		const std::string label = std::string("resource-resume: ") + test.name;
@@ -3362,8 +3330,8 @@ bool ScenarioResourceResume() {
 		auto res = ResLogin(li.token, SENDER_UID, "resource-resume");
 		if (!res) { cS.Close(); stack.StopAll(); return false; }
 		int rs = -1;
-		if (!Check(UploadChunks(*res, mid, blob.substr(0, 65536), 0, &rs) == ERR_SUCCESS,
-			label + " upload first two chunks", "")) all_ok = false;
+		if (!Check(UploadChunks(*res, mid, blob.substr(0, (std::size_t)kTestChunkSize), 0, &rs) == ERR_SUCCESS,
+			label + " upload first chunk", "")) all_ok = false;
 		res->Close();
 		if (!stack.pm.StopOne("ResourceServer")) {
 			Fail(label + " stop server", "failed");
@@ -3414,6 +3382,107 @@ bool ScenarioResourceResume() {
 }
 
 // ---------------------------------------------------------------------------
+// resource-pipeline（P1c 新增）：4 片同时在途，回包有序且 offset 一一对应；
+// 下载侧同样 4 个 1511 在途，1512 按请求顺序返回。验证二进制帧
+// [u16 meta_len][meta][raw] 在流水线窗口下的正确性。
+// ---------------------------------------------------------------------------
+bool ScenarioResourcePipeline() {
+	std::printf("\n=== scenario: resource-pipeline ===\n");
+	ResStack stack;
+	bool all_ok = true;
+	if (!stack.StartAll("resource-pipeline")) { stack.StopAll(); return false; }
+
+	TcpClient cS;
+	auto li = LoginUser(cS, SENDER_UID);
+	if (!li.ok) {
+		Fail("resource-pipeline: login sender", "failed"); stack.StopAll(); return false;
+	}
+	const std::string tag = RunTag();
+	//恰好 4 片（256KiB 网格）
+	const std::string blob = MakeBlob(kTestChunkSize * 4);
+	const std::string hash = llfc::Sha256Hex(blob);
+	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
+		"imtest-pipe-" + tag, MSG_TYPE_FILE, "pipe_" + tag + ".bin",
+		(long long)blob.size(), hash, "application/octet-stream", nullptr);
+	if (!Check(mid > 0, "resource-pipeline: create resource msg",
+			("mid=" + std::to_string(mid)).c_str())) {
+		cS.Close(); stack.StopAll(); return false;
+	}
+	auto res = ResLogin(li.token, SENDER_UID, "resource-pipeline");
+	if (!res) { cS.Close(); stack.StopAll(); return false; }
+
+	//上传：4 片一次性在途（不等待回包）
+	for (int i = 0; i < 4; ++i) {
+		const long long off = kTestChunkSize * i;
+		const std::string chunk = blob.substr(static_cast<std::size_t>(off),
+			static_cast<std::size_t>(kTestChunkSize));
+		res->Send(ID_RESOURCE_CHUNK_UPLOAD_REQ,
+			BuildChunkUploadReq(mid, off, llfc::Sha256Hex(chunk), chunk));
+	}
+	//回包必须按请求顺序到达，且 message_id/offset 与片序一一对应
+	long long expect_server_offset = 0;
+	int publish_status = -1;
+	for (int i = 0; i < 4; ++i) {
+		Frame f;
+		if (!Check(res->Wait(ID_RESOURCE_CHUNK_UPLOAD_RSP, 15000, &f),
+				"resource-pipeline: 1506 in order", "")) { all_ok = false; break; }
+		auto j = ParseJson(f.body);
+		if (!Check(j.is_object() && j.value("error", -1) == ERR_SUCCESS,
+				"resource-pipeline: chunk accepted", "")) { all_ok = false; break; }
+		const long long so = static_cast<long long>(JsonIdStr(j, "server_offset", -1));
+		if (!Check(so == kTestChunkSize * (i + 1),
+				"resource-pipeline: offset corresponds one-to-one",
+				("i=" + std::to_string(i) + " so=" + std::to_string(so)).c_str())) {
+			all_ok = false;
+		}
+		expect_server_offset = so;
+		publish_status = j.value("status", -1);
+	}
+	if (!Check(expect_server_offset == (long long)blob.size()
+			&& publish_status == MESSAGE_PUBLISHED,
+			"resource-pipeline: last chunk publishes",
+			("status=" + std::to_string(publish_status)).c_str())) all_ok = false;
+	res->Close();
+
+	//下载：4 个 1511 一次性在途，1512 有序且 raw 与本地字节一致
+	auto down = ResLogin(li.token, SENDER_UID, "resource-pipeline");
+	if (!down) { cS.Close(); stack.StopAll(); return false; }
+	for (int i = 0; i < 4; ++i) {
+		down->Send(ID_RESOURCE_CHUNK_DOWN_REQ,
+			BuildChunkDownReq(mid, kTestChunkSize * i));
+	}
+	std::string got;
+	for (int i = 0; i < 4; ++i) {
+		Frame f;
+		if (!Check(down->Wait(ID_RESOURCE_CHUNK_DOWN_RSP, 15000, &f),
+				"resource-pipeline: 1512 in order", "")) { all_ok = false; break; }
+		json j;
+		std::string chunk;
+		if (!Check(imt::ParseChunkDownRspBody(f.body, &j, &chunk)
+				&& j.is_object() && j.value("error", -1) == ERR_SUCCESS,
+				"resource-pipeline: 1512 binary decode ok", "")) {
+			all_ok = false; break;
+		}
+		const long long off = static_cast<long long>(JsonIdStr(j, "offset", -1));
+		if (!Check(off == kTestChunkSize * i
+				&& chunk == blob.substr(static_cast<std::size_t>(kTestChunkSize * i),
+					static_cast<std::size_t>(kTestChunkSize)),
+				"resource-pipeline: chunk bytes match at offset",
+				("i=" + std::to_string(i)).c_str())) {
+			all_ok = false;
+		}
+		got += chunk;
+	}
+	if (!Check(got == blob, "resource-pipeline: downloaded bytes identical", "")) {
+		all_ok = false;
+	}
+	down->Close();
+	cS.Close();
+	stack.StopAll();
+	return all_ok;
+}
+
+// ---------------------------------------------------------------------------
 // resource-idempotent：模拟 1506 响应丢失后客户端重发已确认分片，
 // 服务端幂等确认且不追加第二次（.part 长度不翻倍）
 // ---------------------------------------------------------------------------
@@ -3430,7 +3499,8 @@ bool ScenarioResourceIdempotent() {
 	}
 
 	const std::string tag = RunTag();
-	const std::string blob = MakeBlob(65536);  // 恰 2 片
+	//两整片：末片 substr(k) 非空，保留"重发已确认片不双写"语义
+	const std::string blob = MakeBlob(kTestChunkSize * 2);
 	const std::string hash = llfc::Sha256Hex(blob);
 	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-idem-" + tag, MSG_TYPE_FILE, "idem_" + tag + ".bin",
@@ -3441,31 +3511,31 @@ bool ScenarioResourceIdempotent() {
 	auto res = ResLogin(li.token, SENDER_UID, "resource-idempotent");
 	if (!res) { cS.Close(); stack.StopAll(); return false; }
 
-	const std::string chunk0 = blob.substr(0, 32768);
+	const std::string chunk0 = blob.substr(0, kTestChunkSize);
 	const std::string sha0 = llfc::Sha256Hex(chunk0);
 
 	//第一片正常上传
 	long long so = -1;
 	int err = UploadOneChunk(*res, mid, 0, chunk0, sha0, &so);
-	Check(err == ERR_SUCCESS && so == 32768, "resource-idempotent: chunk0 accepted",
+	Check(err == ERR_SUCCESS && so == (long long)kTestChunkSize, "resource-idempotent: chunk0 accepted",
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
 
 	//模拟响应丢失：原样重发同一片（同 offset 同哈希）→ 幂等成功，server_offset 不翻倍
 	err = UploadOneChunk(*res, mid, 0, chunk0, sha0, &so);
-	Check(err == ERR_SUCCESS && so == 32768,
+	Check(err == ERR_SUCCESS && so == (long long)kTestChunkSize,
 		"resource-idempotent: duplicate chunk0 acked without re-append",
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
-	if (so != 32768) all_ok = false;
+	if (so != (long long)kTestChunkSize) all_ok = false;
 
 	//1507 交叉验证磁盘真值
 	const long long disk_off = QueryServerOffset(*res, mid, nullptr);
-	Check(disk_off == 32768, "resource-idempotent: 1507 agrees (no double write)",
+	Check(disk_off == (long long)kTestChunkSize, "resource-idempotent: 1507 agrees (no double write)",
 		("offset=" + std::to_string(disk_off)).c_str());
 
 	//第二片完成后整文件就绪
 	int rs = -1;
 	std::uint64_t first_event_seq = 0;
-	err = UploadChunks(*res, mid, blob, 32768, &rs, &first_event_seq);
+	err = UploadChunks(*res, mid, blob, kTestChunkSize, &rs, &first_event_seq);
 	Check(err == ERR_SUCCESS && rs == MESSAGE_PUBLISHED && first_event_seq > 0,
 		"resource-idempotent: completes after duplicate chunk",
 		("err=" + std::to_string(err) + " rs=" + std::to_string(rs) +
@@ -3473,9 +3543,9 @@ bool ScenarioResourceIdempotent() {
 	if (rs != MESSAGE_PUBLISHED || first_event_seq == 0) all_ok = false;
 
 	//完成响应丢失后再次发送原末片，必须返回同一个接收者序号。
-	const std::string chunk1 = blob.substr(32768);
+	const std::string chunk1 = blob.substr(kTestChunkSize);
 	std::uint64_t retry_event_seq = 0;
-	err = UploadOneChunk(*res, mid, 32768, chunk1, llfc::Sha256Hex(chunk1),
+	err = UploadOneChunk(*res, mid, kTestChunkSize, chunk1, llfc::Sha256Hex(chunk1),
 		&so, &retry_event_seq);
 	Check(err == ERR_SUCCESS && so == static_cast<long long>(blob.size()) &&
 		retry_event_seq == first_event_seq,
@@ -3522,7 +3592,7 @@ bool ScenarioResourceCorrupt() {
 
 	//1) 分片哈希错误（数据与声明哈希不符）→ 2112 且 server_offset 不前进
 	long long so = -1;
-	int err = UploadOneChunk(*res, mid, 0, blob.substr(0, 32768),
+	int err = UploadOneChunk(*res, mid, 0, blob.substr(0, kTestChunkSize),
 		llfc::Sha256Hex(MakeBlob(2)), &so);
 	Check(err == ERR_RS_HASH_MISMATCH && so == 0,
 		"resource-corrupt: bad chunk hash -> 2112, offset stays 0",
@@ -3589,7 +3659,7 @@ bool ScenarioResourcePerm() {
 	}
 
 	const std::string tag = RunTag();
-	const std::string blob = MakeBlob(32768);
+	const std::string blob = MakeBlob(kTestChunkSize);
 	const std::string hash = llfc::Sha256Hex(blob);
 	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-perm-" + tag, MSG_TYPE_FILE, "perm_" + tag + ".bin",
@@ -3623,10 +3693,21 @@ bool ScenarioResourcePerm() {
 		Check(ok && err == ERR_SUCCESS, "resource-perm: receiver 1509 allowed",
 			("err=" + std::to_string(err)).c_str());
 
-		//越界偏移 1511（total 只有 32768，offset=65536）→ 2107
-		res_r->Send(ID_RESOURCE_CHUNK_DOWN_REQ, BuildChunkDownReq(mid, 65536));
+		//越界偏移 1511（total 只有 kTestChunkSize，offset=2*k 越界）→ 2107
+		res_r->Send(ID_RESOURCE_CHUNK_DOWN_REQ,
+			BuildChunkDownReq(mid, kTestChunkSize * 2));
 		ok = res_r->Wait(ID_RESOURCE_CHUNK_DOWN_RSP, 10000, &f);
-		const int err2 = ok ? ParseJson(f.body).value("error", -3) : -2;
+		int err2 = -2;
+		if (ok) {
+			json j2;
+			std::string raw2;
+			if (imt::ParseChunkDownRspBody(f.body, &j2, &raw2) && j2.is_object()) {
+				err2 = j2.value("error", -3);
+			}
+			else {
+				err2 = -3;
+			}
+		}
 		Check(ok && err2 == ERR_RS_OFFSET_INVALID,
 			"resource-perm: out-of-range offset -> 2107",
 			("err=" + std::to_string(err2)).c_str());
@@ -3641,7 +3722,7 @@ bool ScenarioResourcePerm() {
 		auto li2 = LoginUser(cS2, RECEIVER_UID);
 		std::int64_t mid2 = -1;
 		if (li2.ok) {
-			const std::string blob2 = MakeBlob(32768);
+			const std::string blob2 = MakeBlob(kTestChunkSize);
 			mid2 = CreateResource(cS2, SENDER_UID,
 				"imtest-perm2-" + tag, MSG_TYPE_FILE, "perm2_" + tag + ".bin",
 				(long long)blob2.size(), llfc::Sha256Hex(blob2),
@@ -3652,7 +3733,7 @@ bool ScenarioResourcePerm() {
 		if (mid2 > 0) {
 			auto res_s = ResLogin(li.token, SENDER_UID, "resource-perm");
 			if (res_s) {
-				const std::string chunk = MakeBlob(32768);
+				const std::string chunk = MakeBlob(kTestChunkSize);
 				long long so = -1;
 				const int err3 = UploadOneChunk(*res_s, mid2, 0, chunk,
 					llfc::Sha256Hex(chunk), &so);
@@ -3688,7 +3769,8 @@ bool ScenarioResourceOffset() {
 	}
 
 	const std::string tag = RunTag();
-	const std::string blob = MakeBlob(98304);  // 3 片
+	//P1c v2：2 片 + 尾片（98304B 已不足一片，substr(k) 会越界）
+	const std::string blob = MakeBlob(kTestChunkSize * 2 + 100);
 	const std::string hash = llfc::Sha256Hex(blob);
 	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-off-" + tag, MSG_TYPE_FILE, "off_" + tag + ".bin",
@@ -3699,10 +3781,10 @@ bool ScenarioResourceOffset() {
 	auto res = ResLogin(li.token, SENDER_UID, "resource-offset");
 	if (!res) { cS.Close(); stack.StopAll(); return false; }
 
-	//跳片：第一片直接发 offset=32768 → 2107 + server_offset=0
+	//跳片：第一片直接发 offset=kTestChunkSize → 2107 + server_offset=0
 	long long so = -1;
-	int err = UploadOneChunk(*res, mid, 32768, blob.substr(32768, 32768),
-		llfc::Sha256Hex(blob.substr(32768, 32768)), &so);
+	int err = UploadOneChunk(*res, mid, kTestChunkSize, blob.substr(kTestChunkSize, kTestChunkSize),
+		llfc::Sha256Hex(blob.substr(kTestChunkSize, kTestChunkSize)), &so);
 	Check(err == ERR_RS_OFFSET_INVALID && so == 0,
 		"resource-offset: skip-ahead chunk -> 2107 with server_offset=0",
 		("err=" + std::to_string(err) + " so=" + std::to_string(so)).c_str());
@@ -3740,7 +3822,8 @@ bool ScenarioResourceExpiry() {
 	}
 
 	const std::string tag = RunTag();
-	const std::string blob = MakeBlob(98304);
+	//P1c v2：≥2 片确保首片上传后仍 Pending（单 98304B 文件会整文件发布）
+	const std::string blob = MakeBlob(kTestChunkSize * 2 + 100);
 	const std::string hash = llfc::Sha256Hex(blob);
 	const std::int64_t mid = CreateResource(cS, RECEIVER_UID,
 		"imtest-expiry-" + tag, MSG_TYPE_FILE, "expiry_" + tag + ".bin",
@@ -3753,7 +3836,7 @@ bool ScenarioResourceExpiry() {
 	if (!res) { cS.Close(); stack.StopAll(); return false; }
 	{
 		int rs = -1;
-		UploadChunks(*res, mid, blob.substr(0, 32768), 0, &rs);
+		UploadChunks(*res, mid, blob.substr(0, kTestChunkSize), 0, &rs);
 	}
 	res->Close();
 
@@ -3810,9 +3893,9 @@ bool ScenarioResourceExpiry() {
 	//过期资源继续上传被拒（2116）
 	auto res2 = ResLogin(li.token, SENDER_UID, "resource-expiry");
 	if (res2 && expired) {
-		const std::string chunk = blob.substr(0, 32768);
+		const std::string chunk = blob.substr(0, kTestChunkSize);
 		long long so = -1;
-		const int err = UploadOneChunk(*res2, mid, 32768, chunk,
+		const int err = UploadOneChunk(*res2, mid, kTestChunkSize, chunk,
 			llfc::Sha256Hex(chunk), &so);
 		Check(err == ERR_RS_STATE_INVALID,
 			"resource-expiry: upload to expired resource -> 2116",

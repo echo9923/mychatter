@@ -24,10 +24,10 @@
 | 1405/1406 | `MSG_SYNC_USER_MESSAGE_REQ` / `MSG_SYNC_USER_MESSAGE_RSP` | 按 `event_seq` 增量同步用户事件 |
 | 1501/1502 | `MSG_RESOURCE_LOGIN_REQ` / `MSG_RESOURCE_LOGIN_RSP` | ResourceServer 登录 |
 | 1503/1504 | `MSG_CREATE_RESOURCE_REQ` / `MSG_CREATE_RESOURCE_RSP` | 创建图片或文件元数据，此时消息为 `Pending` |
-| 1505/1506 | `MSG_RESOURCE_CHUNK_UPLOAD_REQ` / `MSG_RESOURCE_CHUNK_UPLOAD_RSP` | 上传资源分片；响应回显请求 `offset`，完成响应可带 `event_seq` |
+| 1505/1506 | `MSG_RESOURCE_CHUNK_UPLOAD_REQ` / `MSG_RESOURCE_CHUNK_UPLOAD_RSP` | 上传资源分片；**P1c 起 1505 为二进制帧 `[u16 meta_len 大端][meta JSON][raw]`**（meta=`{message_id,offset,chunk_sha256}` 十进制字符串/hex，raw=分片原始字节≤256KiB，不再 Base64）；1506 仍为 JSON，回显请求 `offset`，完成响应可带 `event_seq` |
 | 1507/1508 | `MSG_RESOURCE_UPLOAD_PROGRESS_REQ` / `MSG_RESOURCE_UPLOAD_PROGRESS_RSP` | 查询服务端 `.part` 实际长度和消息状态；响应带 `chunk_size`（服务端分片对齐单位） |
 | 1509/1510 | `MSG_RESOURCE_DOWN_INFO_REQ` / `MSG_RESOURCE_DOWN_INFO_RSP` | 查询下载元数据和权限 |
-| 1511/1512 | `MSG_RESOURCE_CHUNK_DOWN_REQ` / `MSG_RESOURCE_CHUNK_DOWN_RSP` | 下载资源分片 |
+| 1511/1512 | `MSG_RESOURCE_CHUNK_DOWN_REQ` / `MSG_RESOURCE_CHUNK_DOWN_RSP` | 下载资源分片；**P1c 起 1512 一律二进制帧 `[u16 meta_len 大端][meta JSON][raw]`（含错误分支与未鉴权拦截）**：meta=`{error,message_id,offset,bytes,chunk_sha256,total_size,is_last}`，raw=分片原始字节 |
 | 1601/1602 | `MSG_UPLOAD_HEAD_ICON_REQ` / `MSG_UPLOAD_HEAD_ICON_RSP` | 上传头像 |
 | 1603/1604 | `MSG_DOWN_LOAD_FILE_REQ` / `MSG_DOWN_LOAD_FILE_RSP` | 下载头像 |
 | 1701 | `MSG_NOTIFY_USER_MESSAGE` | 唯一实时用户事件通知，无回包 |

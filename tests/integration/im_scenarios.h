@@ -32,6 +32,7 @@ bool ScenarioResourceResume();     // resource-resume: 杀 ResourceServer 重启
 bool ScenarioResourceIdempotent(); // resource-idempotent: 重复分片幂等不双写
 bool ScenarioResourceCorrupt();    // resource-corrupt: 坏分片/整文件哈希 2112 与重置
 bool ScenarioResourcePerm();       // resource-perm: 非会话成员上传 2115、越界下载 2107
+bool ScenarioResourcePipeline();  // resource-pipeline: 4 片在途回包有序且 offset 一一对应（P1c）
 bool ScenarioResourceOffset();     // resource-offset: 跳片 2107 + server_offset 对齐
 bool ScenarioResourceExpiry();     // resource-expiry: 7 天清理标记失败并回收磁盘
 

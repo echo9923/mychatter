@@ -10,6 +10,9 @@
 
 #include <nlohmann/json.hpp>
 
+//共享线协议头必须在任何命名空间之前全局引入（llfc_wire 为全局命名空间）
+#include "resource_wire.h"
+
 namespace imt {
 
 inline constexpr int HEAD_TOTAL_LEN = 4;  // 2 (type) + 2 (len)
@@ -76,5 +79,31 @@ inline void EncodeResFrame(short type, const std::string& body, std::string& out
 inline json ParseJson(const std::string& s) {
 	return json::parse(s, nullptr, false);
 }
+
+// ---- P1c resource wire v2: [u16 meta_len BE][meta JSON][raw] --------------
+// 常量与编解码在 proto/resource_wire.h（见文件顶部全局 include）。
+
+// Build a 1505 binary chunk-upload body: meta = {message_id, offset,
+// chunk_sha256}, raw = chunk bytes (no Base64). Returns false if meta overflows.
+inline bool BuildChunkUploadReqBody(long long message_id, long long offset,
+    const std::string& chunk_sha256, const std::string& raw, std::string* out) {
+	json meta;
+	meta["message_id"] = std::to_string(message_id);
+	meta["offset"] = std::to_string(offset);
+	meta["chunk_sha256"] = chunk_sha256;
+	return llfc_wire::EncodeFrame(meta.dump(), raw, out);
+}
+
+// Parse a 1512 binary chunk-down body into meta JSON + raw chunk bytes.
+inline bool ParseChunkDownRspBody(const std::string& body, json* meta,
+    std::string* raw) {
+	std::string meta_str;
+	if (!llfc_wire::DecodeFrame(body, &meta_str, raw)) {
+		return false;
+	}
+	*meta = json::parse(meta_str, nullptr, false);
+	return !meta->is_discarded() && meta->is_object();
+}
+
 
 } // namespace imt

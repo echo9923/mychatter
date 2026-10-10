@@ -99,6 +99,28 @@ llfc_apply_msvc_defaults(sha256_tests)
 
 add_test(NAME sha256_tests COMMAND sha256_tests)
 
+# --- P1c resource wire v2 codec round-trip (header-only, no deps) ----------
+add_executable(resource_wire_tests
+  resource_wire_tests.cpp
+)
+
+target_include_directories(resource_wire_tests PRIVATE
+  "${LLFC_REPO_ROOT}/proto"
+)
+
+target_compile_features(resource_wire_tests PRIVATE cxx_std_11)
+# 根级 CXX_STANDARD 17 会覆盖 compile_features 的最低标准要求——显式钉住
+# C++11（该 target 验证纯 C++11 头文件的可移植性，防止被升到 17 仍通过）
+set_target_properties(resource_wire_tests PROPERTIES
+  CXX_STANDARD 11
+  CXX_STANDARD_REQUIRED YES
+  CXX_EXTENSIONS NO
+)
+llfc_apply_msvc_defaults(resource_wire_tests)
+
+
+add_test(NAME resource_wire_tests COMMAND resource_wire_tests)
+
 # Exercise the production upload recovery/writer against real temporary files.
 find_package(Boost CONFIG REQUIRED COMPONENTS filesystem)
 add_executable(resource_upload_tests
@@ -315,7 +337,8 @@ if(LLFC_RUN_INTEGRATION_TESTS)
     offline pull-bytes cross-server resource-offline
     status-discovery chat-failover simple-auth
     sync-bootstrap big-ids
-    resource-create resource-upload resource-resume resource-idempotent
+    resource-create resource-upload resource-resume resource-pipeline
+    resource-idempotent
     resource-corrupt resource-perm resource-offset resource-expiry
   )
   foreach(_scn ${_im_scenarios})

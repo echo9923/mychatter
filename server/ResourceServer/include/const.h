@@ -46,7 +46,10 @@ enum ErrorCodes {
 
 // Defer 已迁移至 common/include/Defer.h
 
-#define MAX_LENGTH  1024*50
+/// 帧体上限（P1c 线协议 v2）：分片 256KiB + 8KiB meta 预算；
+/// 与客户端/测试共用 proto/resource_wire.h，三端同批发布。
+#include "resource_wire.h"
+constexpr unsigned int kMaxFrameBodyLen = llfc_wire::kMaxFrameBody;
 //头部总长度
 #define HEAD_TOTAL_LEN 6
 //头部消息类型长度
@@ -109,10 +112,11 @@ inline int ResourceWorkerIndex(long long message_id, int worker_count) {
 //最大传输文件的大小（线协议 v1 分片上限：32KiB Base64 JSON 帧）
 #define MAX_FILE_LEN 1024*32
 
-/// 资源分片上传的分片对齐单位（字节）：与线协议 v1 的 MAX_FILE_LEN 一致
-/// （32KiB Base64 JSON 帧）；.part 恢复按该单位回退末片，1508 原样下发。
-/// P1c 线协议 v2 将换用 proto/resource_wire.h 的 256KiB 常量。
-constexpr unsigned long long kResourceUploadChunkSize = MAX_FILE_LEN;
+/// 资源分片上传的分片对齐单位（字节）：P1c 线协议 v2 的 256KiB 二进制
+/// 分片（proto/resource_wire.h 共享）；.part 恢复按该单位回退末片，
+/// 1508 原样下发。头像 1601/1603 旧协议仍用 MAX_FILE_LEN（32KiB Base64）。
+constexpr unsigned long long kResourceUploadChunkSize =
+    llfc_wire::kResourceChunkSize;
 
 #define USERIPPREFIX  "uip_"
 #define IPCOUNTPREFIX  "ipcount_"

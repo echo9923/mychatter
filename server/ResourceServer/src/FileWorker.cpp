@@ -314,7 +314,7 @@ void FileWorker::HandleResourceChunk(std::shared_ptr<ResourceChunkTask> task) {
 	const auto part_path = base_path.string() + ".part";
 	const unsigned long long offset = static_cast<unsigned long long>(task->_offset);
 	const unsigned long long received_before = session->received;
-	const std::string decoded = base64_decode(task->_file_data);
+	const std::string& decoded = task->_file_data; //P1c：1505 raw 直传，不再 Base64
 	const int error = llfc::WriteUploadChunk(part_path, session->file_size_bytes,
 		kUploadChunkSize, offset, decoded, task->_chunk_sha256, session->received);
 	if (error != ErrorCodes::Success) {
@@ -864,8 +864,10 @@ void DownloadWorker::EvictIdleFileHandles() {
 }
 
 void DownloadWorker::HandleResourceChunkDown(std::shared_ptr<ResourceChunkDownTask> task) {
-	//1512 统一响应：{error, message_id, offset, bytes, chunk_sha256, data, total_size, is_last}
-	auto respond = [task](int error, const std::string& data, unsigned long long bytes,
+	//P1c：1512 统一改为二进制帧 [u16 meta_len][meta][raw]——
+	//meta = {error, message_id, offset, bytes, chunk_sha256, total_size,
+	//is_last}，raw = 分片原始字节（错误分支 raw 为空；Base64 仅剩头像）
+	auto respond = [task](int error, const std::string& raw, unsigned long long bytes,
 		const std::string& chunk_hash, bool is_last, unsigned long long total) {
 		json result;
 		result["error"] = error;
@@ -875,13 +877,10 @@ void DownloadWorker::HandleResourceChunkDown(std::shared_ptr<ResourceChunkDownTa
 		if (!chunk_hash.empty()) {
 			result["chunk_sha256"] = chunk_hash;
 		}
-		if (!data.empty()) {
-			result["data"] = data;
-		}
 		result["total_size"] = std::to_string(total);
 		result["is_last"] = is_last;
 		if (task->_callback) {
-			task->_callback(result);
+			task->_callback(result, raw);
 		}
 	};
 
@@ -948,7 +947,8 @@ void DownloadWorker::HandleResourceChunkDown(std::shared_ptr<ResourceChunkDownTa
 	std::ifstream& in = handle_it->second.in;
 	in.clear();
 	in.seekg(static_cast<std::streamoff>(offset));
-	const unsigned long long want = std::min<unsigned long long>(MAX_FILE_LEN, total - offset);
+	const unsigned long long want = std::min<unsigned long long>(
+		kResourceUploadChunkSize, total - offset); //v2：256KiB 分片
 	std::string buf(want, '\0');
 	in.read(&buf[0], static_cast<std::streamsize>(want));
 	const unsigned long long got = static_cast<unsigned long long>(in.gcount());
@@ -961,6 +961,6 @@ void DownloadWorker::HandleResourceChunkDown(std::shared_ptr<ResourceChunkDownTa
 		return;
 	}
 
-	respond(ErrorCodes::Success, base64_encode(buf), got,
+	respond(ErrorCodes::Success, buf, got,
 		llfc::Sha256Hex(buf), offset + got >= total, total);
 }

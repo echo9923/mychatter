@@ -10,6 +10,8 @@
 #include <memory>
 
 #include "resourcetransfer.h"
+//线协议分片单位唯一真值（全局 include，任何命名空间之前）
+#include "resource_wire.h"
 
 //引擎内部运行时状态（仅 transferengine.cpp 可见完整定义）。
 //注意不得与 global.h 的 enum class TransferState 同名（FileTcpMgr/GUI 会
@@ -68,7 +70,10 @@ public:
         int backoff_max_ms = 30000;    //退避上限
         int json_error_limit = 3;      //连续 2001/坏回包转永久的阈值
         int chunk_retry_limit = 3;     //单分片连续重试上限（下载校验/2112）
-        qint64 chunk_size = 32 * 1024; //与服务端 32KiB 对齐，1508 可校正
+        //P1c：wire 分片单位唯一真值 = llfc_wire::kResourceChunkSize（256KiB）。
+        //不可配置——旧 32KiB 配置会造成客户端窗口与 1512 raw 分片错位。
+        //1508 如带 chunk_size，必须等于该值，不匹配按坏回包处理。
+        qint64 chunk_size = static_cast<qint64>(llfc_wire::kResourceChunkSize);
         int tick_interval_ms = 250;    //tick 周期（测试可调小以加速超时/退避）
     };
 

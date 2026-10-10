@@ -54,3 +54,13 @@ ResourceServer 以 `message_id % worker_count` 固定路由，保证同一 `.par
 - 同服、跨服和离线资源都能由 1701 或 1405/1406 最终到达。
 - Pending/Failed 资源不会进入接收者事件流。
 - 重复或乱序事件不会产生重复消息、重复未读或游标越过缺口。
+
+## P1c 线协议 v2（三端同批发布，与 v1 不兼容）
+
+- 常量与编解码唯一来源：`proto/resource_wire.h`（纯 C++11 标准库，服务端/客户端/测试共用）——`kResourceChunkSize=256KiB`、`kMaxFrameBody=2B前缀+8KiB meta+256KiB 分片`、`kMaxMetaLen=8KiB`；`EncodeFrame`（空 meta/超限 meta/超限 raw/总帧超限全部先校验后写 out）与 `DecodeFrame`（总帧上下界→meta 预算→raw 预算，全通过前不改输出）双向无符号校验。
+- 仅 1505 请求与 1512 响应改为二进制体 `[u16 meta_len 大端][meta JSON][raw]`；raw 为分片原始字节，不再 Base64。1512 的错误分支与未鉴权拦截回包同样二进制（服务端统一出口 `SendRspFrame`/`SendRspFrameAndClose`）。其余消息（1501/1502/1506/1507/1508/1509/1510 及头像 1601-1604）保持 JSON，头像仍 32KiB Base64。
+- 服务端：`CSession` 帧上限改用 `kMaxFrameBody`；`kResourceUploadChunkSize=256KiB`（.part 对齐/恢复单位随之变更，1508 原样下发）；FileWorker/DownloadWorker 直接读写原始字节；分片路由、幂等、配额、发布事务不变。
+- 客户端：只改 `resourcecodec.cpp`（1505 编码/1512 解码走 wire）与引擎分片常量（256KiB）；FileTcpMgr 接收帧上限改用 `kMaxFrameBody`，`config.ini` 的 `ChunkSizeKB` 键已删除——分片单位固定为 `proto/resource_wire.h` 共享 256KiB（唯一真值，不可配置，旧键一律忽略）。
+- 测试：`tests/integration/im_frame.h` 新增 `BuildChunkUploadReqBody/ParseChunkDownRspBody`；`im_common.h` 共享 `kTestChunkSize`（替换全部 32768 硬编码）；新增 `resource-pipeline` 场景（4 片在途、回包有序、offset 一一对应）；`tests/resource_wire_tests.cpp` 编解码往返/边界单元测试。
+- 基准：`bench_run/bench_resource.py` 为真实全链路工具——ChatServer 4B 帧 1101 鉴权 + 1503/1504 创建 Pending、ResourceServer 6B 帧 1501 鉴权 + 1507 元数据/fresh 校验、二进制 1505 逐片上传（校验回显 offset/server_offset 前进/末片 Published+event_seq）、可选 `--download` 1510/1511/1512 逐片 hash/bytes/offset/total 与整文件 SHA 校验（0 字节分片立即报错）；输出 MB/s、每片 p99、帧数；`--message-id` 可复用既有 Pending，`--file` 指定源文件。
+- **升级注意**：v2 与 v1 不兼容，ResourceServer、ChatServer（1503 校验不变但需同批）、客户端必须同批发布；旧客户端对新服务端的上传/下载会在 1505/1512 解析层失败（按坏帧断连），属预期。

@@ -4,15 +4,15 @@
 #include <QByteArray>
 #include <QString>
 
-//资源域帧编解码（P1b-01）。当前仍为 JSON+Base64 旧线协议；P1c 换二进制帧时
-//只改本文件，引擎与传输层接口不变。64 位字段（message_id/offset/server_offset/
-//file_size_bytes/bytes/total_size/event_seq）线上为十进制字符串，解析端兼容
-//数字字面量（服务端各回包均为字符串）。
+//资源域帧编解码（P1c 线协议 v2）。1505/1512 为二进制帧
+//[u16 meta_len 大端][meta JSON][raw]（raw=分片原始字节，proto/resource_wire.h）；
+//其余（1507/1508/1509/1510）仍为 JSON。64 位字段（message_id/offset/
+//server_offset/file_size_bytes/bytes/total_size/event_seq）线上为十进制字符串，
+//解析端严格只收字符串（拒绝数字字面量/符号/空白）；无 Base64、无 data 字段。
 
 namespace rc {
 
-//与服务端 kResourceUploadChunkSize（=MAX_FILE_LEN=32KiB）对齐的分片单位；
-//P1c 随线协议 v2 迁移到 proto/resource_wire.h。
+//wire 分片单位唯一真值：引用 proto/resource_wire.h 的 256KiB（不可配置）。
 extern const qint64 kChunkSize;
 
 //1506 上传分片回包：{error, message_id, offset, server_offset, status, event_seq?}
@@ -54,8 +54,8 @@ struct DownInfoRsp {
     int status = -1;
 };
 
-//1512 分片下载回包：{error, message_id, offset, bytes, chunk_sha256?, data?,
-//total_size, is_last}
+//1512 分片下载回包（二进制帧）：meta={error, message_id, offset, bytes,
+//chunk_sha256, total_size, is_last}，raw=分片原始字节（data 字段已废除）
 struct ChunkDownRsp {
     bool ok = false;
     int error = 0;
@@ -63,12 +63,12 @@ struct ChunkDownRsp {
     qint64 offset = -1;
     qint64 bytes = -1;          //声明数据长度（解码后字节数）
     QString chunk_sha256;       //小写 hex
-    QByteArray data;            //已 Base64 解码的原始分片
+    QByteArray data;            //帧 raw 部分的原始分片字节（无 Base64）
     qint64 total_size = -1;
     bool is_last = false;
 };
 
-//1505：{message_id, offset, chunk_sha256, data(Base64)}
+//1505（二进制帧）：meta={message_id, offset, chunk_sha256}，raw=分片原始字节
 QByteArray EncodeChunkUploadReq(qint64 message_id, qint64 offset,
     const QString& chunk_sha256, const QByteArray& raw);
 bool DecodeChunkUploadRsp(const QByteArray& payload, ChunkUploadRsp* out);

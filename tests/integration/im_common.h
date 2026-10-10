@@ -14,6 +14,8 @@
 #include <string>
 
 #include "protocol_ids.h"  // 协议号单一来源（proto/protocol_ids.h）
+//共享线协议头必须在任何命名空间之前全局引入（llfc_wire 为全局命名空间）
+#include "resource_wire.h"
 
 namespace imt {
 
@@ -90,6 +92,10 @@ inline constexpr short ID_NOTIFY_USER_MESSAGE     = llfc_proto::MSG_NOTIFY_USER_
 // 资源消息（图片/文件统一传输）：创建-分片上传-进度查询-下载信息-分片下载
 inline constexpr short ID_CREATE_RESOURCE_MSG_REQ   = llfc_proto::MSG_CREATE_RESOURCE_REQ;   // 1503
 inline constexpr short ID_CREATE_RESOURCE_MSG_RSP   = llfc_proto::MSG_CREATE_RESOURCE_RSP;  // 1504
+//P1c：资源分片对齐单位（v2 二进制帧 256KiB），三端共用 proto/resource_wire.h
+//（该头在文件顶部全局引入；此处仅在 imt 内引用全局 ::llfc_wire）
+inline constexpr long long kTestChunkSize =
+    static_cast<long long>(llfc_wire::kResourceChunkSize);
 inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_REQ = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_REQ;   // 1505
 inline constexpr short ID_RESOURCE_CHUNK_UPLOAD_RSP = llfc_proto::MSG_RESOURCE_CHUNK_UPLOAD_RSP;  // 1506
 inline constexpr short ID_RESOURCE_UPLOAD_PROGRESS_REQ = llfc_proto::MSG_RESOURCE_UPLOAD_PROGRESS_REQ;  // 1507

@@ -1,6 +1,8 @@
 #include "resourcecodec.h"
 
+#include <QDebug> //qWarning 流完整依赖（P1c 收尾：显式 include）
 #include <QJsonDocument>
+#include "resource_wire.h"
 #include <QJsonObject>
 #include <QJsonValue>
 
@@ -9,7 +11,8 @@
 
 namespace rc {
 
-const qint64 kChunkSize = 32 * 1024;
+//P1c：与 proto/resource_wire.h 共享（v2 二进制分片 256KiB）
+const qint64 kChunkSize = static_cast<qint64>(llfc_wire::kResourceChunkSize);
 
 namespace {
 
@@ -119,12 +122,20 @@ bool ReadError(const QJsonObject& obj, int* error)
 QByteArray EncodeChunkUploadReq(qint64 message_id, qint64 offset,
     const QString& chunk_sha256, const QByteArray& raw)
 {
+    //P1c：1505 二进制帧 [u16 meta_len BE][meta JSON][raw]（raw 不再 Base64）
     QJsonObject req;
     req["message_id"] = QString::number(message_id);
     req["offset"] = QString::number(offset);
     req["chunk_sha256"] = chunk_sha256;
-    req["data"] = QString::fromLatin1(raw.toBase64());
-    return QJsonDocument(req).toJson(QJsonDocument::Compact);
+    const QByteArray meta = QJsonDocument(req).toJson(QJsonDocument::Compact);
+    const std::string meta_str(meta.constData(), static_cast<std::size_t>(meta.size()));
+    const std::string raw_str(raw.constData(), static_cast<std::size_t>(raw.size()));
+    std::string frame;
+    if (!llfc_wire::EncodeFrame(meta_str, raw_str, &frame)) {
+        qWarning() << "[rc] 1505 meta overflow, encode failed";
+        return QByteArray();
+    }
+    return QByteArray(frame.data(), static_cast<int>(frame.size()));
 }
 
 bool DecodeChunkUploadRsp(const QByteArray& payload, ChunkUploadRsp* out)
@@ -229,9 +240,21 @@ QByteArray EncodeChunkDownReq(qint64 message_id, qint64 offset)
 
 bool DecodeChunkDownRsp(const QByteArray& payload, ChunkDownRsp* out)
 {
+    //P1c：1512 二进制帧 [u16 meta_len BE][meta JSON][raw]；raw 为分片字节
+    std::string meta_str;
+    std::string raw_str;
+    const std::string frame(payload.constData(),
+        static_cast<std::size_t>(payload.size()));
+    if (!llfc_wire::DecodeFrame(frame, &meta_str, &raw_str)) {
+        return false; //连 message_id 都不可读，无法定位传输
+    }
+    if (!raw_str.empty()) {
+        out->data = QByteArray(raw_str.data(), static_cast<int>(raw_str.size()));
+    }
+    const QByteArray meta(meta_str.data(), static_cast<int>(meta_str.size()));
     QJsonObject obj;
     bool ok = false;
-    if (!ParseObject(payload, &out->message_id, &obj, &ok)) {
+    if (!ParseObject(meta, &out->message_id, &obj, &ok)) {
         return false;
     }
     if (!ReadError(obj, &out->error)) {
@@ -240,10 +263,7 @@ bool DecodeChunkDownRsp(const QByteArray& payload, ChunkDownRsp* out)
     out->offset = OptU64(obj, "offset", -1);
     out->bytes = OptU64(obj, "bytes", -1);
     out->chunk_sha256 = ReadString(obj, "chunk_sha256");
-    const QString data_b64 = ReadString(obj, "data");
-    if (!data_b64.isEmpty()) {
-        out->data = QByteArray::fromBase64(data_b64.toLatin1());
-    }
+    //data 已由帧 raw 部分承载（不再 Base64/JSON 字段）
     out->total_size = OptU64(obj, "total_size", -1);
     out->is_last = obj.value(QLatin1String("is_last")).toBool();
     if (out->error != 0) {

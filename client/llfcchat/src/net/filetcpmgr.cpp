@@ -10,6 +10,7 @@
 #include <QCoreApplication>
 
 #include "protocol_ids.h"
+#include "resource_wire.h"
 
 FileTcpMgr::FileTcpMgr(QObject* parent) : QObject(parent),
 	_socket(this), //父子亲缘：moveToThread 时随本对象一起迁移
@@ -78,7 +79,7 @@ FileTcpMgr::FileTcpMgr(QObject* parent) : QObject(parent),
 				//头部合法性先验证再消费：0 长度/超上限/超 int 范围/msg_id
 				//越界（ChatServer 侧 kMaxMsgId 同规则）都按坏连接处理
 				if (_message_len == 0
-					|| _message_len > static_cast<quint32>(1024 * 1024)
+					|| _message_len > static_cast<quint32>(llfc_wire::kMaxFrameBody)
 					|| _message_type == 0
 					|| _message_type > llfc_proto::kMaxMsgId) {
 					qWarning() << "[FileTcpMgr] bad frame header, reset: id="
@@ -226,8 +227,9 @@ TransferEngine::Config FileTcpMgr::loadEngineConfig()
 	if (ok && v > 0) cfg.backoff_initial_ms = static_cast<int>(v);
 	v = settings.value("Resource/BackoffMaxMs", cfg.backoff_max_ms).toLongLong(&ok);
 	if (ok && v > 0) cfg.backoff_max_ms = static_cast<int>(v);
-	v = settings.value("Resource/ChunkSizeKB", 32).toLongLong(&ok);
-	if (ok && v > 0) cfg.chunk_size = v * 1024;
+	//P1c：wire 分片单位不可配置——cfg.chunk_size 由引擎固定为共享
+	//llfc_wire::kResourceChunkSize（256KiB）。旧 Resource/ChunkSizeKB
+	//配置键（含 32KiB 旧值）一律忽略；窗口/超时/退避仍可配。
 	v = settings.value("Resource/TickIntervalMs",
 		cfg.tick_interval_ms).toLongLong(&ok);
 	if (ok && v > 0) cfg.tick_interval_ms = static_cast<int>(v);
