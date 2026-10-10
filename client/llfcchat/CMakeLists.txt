@@ -81,6 +81,8 @@ set(LLFCCHAT_SOURCES
   src/net/tcpmgr.cpp
   src/net/httpmgr.cpp
   src/net/filetcpmgr.cpp
+  src/net/resourcecodec.cpp
+  src/net/transferengine.cpp
   src/store/usermgr.cpp
   src/store/localchatdb.cpp
   src/store/localchatstore.cpp
@@ -138,6 +140,9 @@ set(LLFCCHAT_HEADERS
   src/net/tcpmgr.h
   src/net/httpmgr.h
   src/net/filetcpmgr.h
+  src/net/resourcecodec.h
+  src/net/resourcetransfer.h
+  src/net/transferengine.h
   src/store/usermgr.h
   src/store/localchatdb.h
   src/store/localchatstore.h
